@@ -77,6 +77,37 @@ def amount(data: dict[str, Any], *path: str) -> str:
     return str(value)
 
 
+def account_display_name(account: dict[str, Any]) -> str:
+    name = account.get("name", "")
+    if isinstance(name, dict):
+        return str(name.get("userDefinedName") or name.get("defaultName") or "")
+    return str(name)
+
+
+def account_row(account: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        str(account.get("id", "")),
+        account_display_name(account),
+        str(account.get("type", "")),
+        amount(account, "totalValue"),
+        amount(account, "buyingPower"),
+        str(account.get("status", "")),
+    )
+
+
+def account_rows_from_overview(overview: dict[str, Any]) -> list[dict[str, Any]]:
+    accounts = overview.get("accounts", [])
+    return [account for account in accounts if isinstance(account, dict) and account.get("id")]
+
+
+def account_id_for_item(item: dict[str, Any]) -> str:
+    return str(nested_value(item, "account", "id"))
+
+
+def matches_account(item: dict[str, Any], account_id: str | None) -> bool:
+    return not account_id or account_id_for_item(item) == account_id
+
+
 def position_row(item: dict[str, Any]) -> tuple[str, ...]:
     instrument = item.get("instrument") or {}
     orderbook = instrument.get("orderbook") or {}
@@ -194,6 +225,8 @@ class AvanzaTradingTui(App):
     def __init__(self) -> None:
         super().__init__()
         self.avanza: Avanza | None = None
+        self.accounts: list[dict[str, Any]] = []
+        self.selected_account_id: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -229,6 +262,12 @@ class AvanzaTradingTui(App):
                     yield Button("Place Live", id="place-live", variant="error")
 
             with Vertical(id="right"):
+                yield Static("Accounts", classes="panel")
+                yield DataTable(id="accounts-table")
+                with Horizontal():
+                    yield Button("Use Selected Account", id="select-account", variant="primary")
+                    yield Button("Refresh Accounts", id="refresh-accounts")
+                yield Static("Selected account: none", id="selected-account")
                 yield Static("Portfolio Positions", classes="panel")
                 yield DataTable(id="portfolio-table")
                 with Horizontal():
@@ -242,6 +281,18 @@ class AvanzaTradingTui(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        accounts_table = self.query_one("#accounts-table", DataTable)
+        accounts_table.add_columns(
+            "Account ID",
+            "Name",
+            "Type",
+            "Total Value",
+            "Buying Power",
+            "Status",
+        )
+        accounts_table.cursor_type = "row"
+        accounts_table.zebra_stripes = True
+
         stoploss_table = self.query_one("#stoploss-table", DataTable)
         stoploss_table.add_columns(
             "ID",
@@ -289,7 +340,24 @@ class AvanzaTradingTui(App):
             raise RuntimeError("Log in first.")
         return self.avanza
 
+    def require_selected_account_id(self) -> str:
+        if not self.selected_account_id:
+            raise RuntimeError("Select an account first.")
+        return self.selected_account_id
+
+    def set_selected_account(self, account: dict[str, Any]) -> None:
+        account_id = str(account.get("id", ""))
+        if not account_id:
+            raise ValueError("Selected account has no id.")
+
+        self.selected_account_id = account_id
+        self.query_one("#account-id", Input).value = account_id
+        label = f"Selected account: {account_display_name(account)} ({account_id})"
+        self.query_one("#selected-account", Static).update(label)
+        self.log(f"Selected account {account_display_name(account)} ({account_id}).")
+
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
+        selected_account_id = self.require_selected_account_id()
         valid_until = date.fromisoformat(self.input_value("valid-until"))
         trigger = StopLossTrigger(
             type=enum_value(StopLossTriggerType, self.input_value("trigger-type")),
@@ -306,7 +374,7 @@ class AvanzaTradingTui(App):
             short_selling_allowed=False,
         )
         preview = {
-            "account_id": self.input_value("account-id"),
+            "account_id": selected_account_id,
             "order_book_id": self.input_value("order-book-id"),
             "parent_stop_loss_id": "0",
             "stop_loss_trigger": {
@@ -337,11 +405,35 @@ class AvanzaTradingTui(App):
             self.log(json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False))
             return
 
+        visible_count = 0
         for item in data:
             if isinstance(item, dict):
+                if not matches_account(item, self.selected_account_id):
+                    continue
                 table.add_row(*stop_loss_row(item), key=str(item.get("id", "")))
+                visible_count += 1
 
-        self.log(f"Loaded {len(data)} open stop-loss order(s).")
+        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
+        self.log(f"Loaded {visible_count} open stop-loss order(s){suffix}.")
+
+    def refresh_accounts(self) -> None:
+        avanza = self.require_connection()
+        table = self.query_one("#accounts-table", DataTable)
+        table.clear()
+
+        overview = avanza.get_overview()
+        if not isinstance(overview, dict):
+            self.log("[yellow]Unexpected account overview response:[/yellow]")
+            self.log(json.dumps(overview, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+            return
+
+        self.accounts = account_rows_from_overview(overview)
+        for account in self.accounts:
+            table.add_row(*account_row(account), key=str(account.get("id", "")))
+
+        self.log(f"Loaded {len(self.accounts)} account(s).")
+        if self.accounts and not self.selected_account_id:
+            self.set_selected_account(self.accounts[0])
 
     def refresh_portfolio(self) -> None:
         avanza = self.require_connection()
@@ -358,15 +450,20 @@ class AvanzaTradingTui(App):
         for section in ("withOrderbook", "withoutOrderbook"):
             for item in data.get(section, []):
                 if isinstance(item, dict):
+                    if not matches_account(item, self.selected_account_id):
+                        continue
                     table.add_row(*position_row(item), key=str(item.get("id", f"{section}-{count}")))
                     count += 1
 
         for item in data.get("cashPositions", []):
             if isinstance(item, dict):
+                if not matches_account(item, self.selected_account_id):
+                    continue
                 table.add_row(*cash_row(item), key=str(item.get("id", f"cash-{count}")))
                 count += 1
 
-        self.log(f"Loaded {count} portfolio row(s).")
+        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
+        self.log(f"Loaded {count} portfolio row(s){suffix}.")
 
     def action_refresh_stoplosses(self) -> None:
         try:
@@ -380,11 +477,27 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
+    def selected_account_from_table(self) -> dict[str, Any]:
+        table = self.query_one("#accounts-table", DataTable)
+        row_index = table.cursor_coordinate.row
+        if row_index < 0 or row_index >= len(self.accounts):
+            raise ValueError("No account row is selected.")
+        return self.accounts[row_index]
+
+    def select_account_from_table(self) -> None:
+        self.set_selected_account(self.selected_account_from_table())
+        self.refresh_portfolio()
+        self.refresh_stoplosses()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
         try:
             if button_id == "login":
                 self.handle_login()
+            elif button_id == "select-account":
+                self.select_account_from_table()
+            elif button_id == "refresh-accounts":
+                self.refresh_accounts()
             elif button_id == "refresh":
                 self.refresh_stoplosses()
             elif button_id == "refresh-portfolio":
@@ -409,6 +522,7 @@ class AvanzaTradingTui(App):
         self.avanza = Avanza({"username": username, "password": password, "totpCode": totp})
         self.clear_secret_inputs()
         self.log("[green]Logged in. Secret fields cleared.[/green]")
+        self.refresh_accounts()
         self.refresh_portfolio()
         self.refresh_stoplosses()
 
@@ -428,7 +542,7 @@ class AvanzaTradingTui(App):
 
         result = avanza.place_stop_loss_order(
             parent_stop_loss_id="0",
-            account_id=self.input_value("account-id"),
+            account_id=self.require_selected_account_id(),
             order_book_id=self.input_value("order-book-id"),
             stop_loss_trigger=trigger,
             stop_loss_order_event=order_event,

@@ -86,6 +86,8 @@ python avanza_cli.py tui
 
 The TUI masks password and TOTP inputs, clears those fields after a successful login, and requires typing `PLACE` before the live placement button will send an order. Use `Dry Run` first and review the request in the log panel.
 
+After login, the TUI enumerates all accounts in an accounts table. Select an account row and press `Use Selected Account` to switch the active account at any time. Portfolio and stop-loss tables are filtered to the selected account, and live stop-loss placement uses that selected account.
+
 ## Safety
 
 This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of percentage and gliding stop-loss fields with very small size before trusting it for meaningful orders.

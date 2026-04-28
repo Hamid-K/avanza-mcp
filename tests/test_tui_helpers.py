@@ -1,8 +1,63 @@
-from avanza_cli import amount, cash_row, position_row, stop_loss_row
+from avanza_cli import (
+    account_display_name,
+    account_row,
+    account_rows_from_overview,
+    amount,
+    cash_row,
+    matches_account,
+    position_row,
+    stop_loss_row,
+)
 
 
 def test_amount_formats_value_objects():
     assert amount({"value": {"value": 123.45, "unit": "SEK"}}, "value") == "123.45 SEK"
+
+
+def test_account_display_name_prefers_user_defined_name():
+    assert (
+        account_display_name(
+            {"name": {"defaultName": "ISK", "userDefinedName": "Trading"}}
+        )
+        == "Trading"
+    )
+
+
+def test_account_row_formats_overview_account():
+    row = account_row(
+        {
+            "id": "acc-1",
+            "name": {"defaultName": "ISK", "userDefinedName": None},
+            "type": "ISK",
+            "totalValue": {"value": 10000, "unit": "SEK"},
+            "buyingPower": {"value": 2500, "unit": "SEK"},
+            "status": "ACTIVE",
+        }
+    )
+
+    assert row == ("acc-1", "ISK", "ISK", "10000 SEK", "2500 SEK", "ACTIVE")
+
+
+def test_account_rows_from_overview_uses_accounts_list():
+    accounts = account_rows_from_overview(
+        {
+            "accounts": [
+                {"id": "acc-1", "name": {"defaultName": "ISK"}},
+                {"name": {"defaultName": "missing id"}},
+                "not-account",
+            ]
+        }
+    )
+
+    assert accounts == [{"id": "acc-1", "name": {"defaultName": "ISK"}}]
+
+
+def test_matches_account_filters_by_nested_account_id():
+    item = {"account": {"id": "acc-1"}}
+
+    assert matches_account(item, None)
+    assert matches_account(item, "acc-1")
+    assert not matches_account(item, "acc-2")
 
 
 def test_position_row_extracts_nested_position_data():
