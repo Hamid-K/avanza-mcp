@@ -25,7 +25,7 @@ Use the TUI for a table view:
 python avanza_cli.py tui
 ```
 
-After login, the TUI loads all accounts. Select an account row and press `Use Selected Account` to switch context. Portfolio and stop-loss views are filtered to the active account.
+After login, the TUI hides the credential screen and loads the trading workspace. Use the account selector in the top bar to switch accounts. The position and stop-loss/open-order tables are filtered to the selected account and refresh live every 5 seconds.
 
 ## Stop-Loss
 

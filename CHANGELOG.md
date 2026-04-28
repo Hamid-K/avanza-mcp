@@ -9,4 +9,5 @@
 - Replaced raw console/TUI API payload output with human-readable tables and summaries.
 - Improved console help with examples, safety notes, and detailed stop-loss option guidance.
 - Fixed TUI startup by avoiding a Textual logger name collision and added a headless TUI smoke test.
+- Redesigned the TUI around a temporary login screen, top-bar account switching, live selected-account refresh, position state table, combined stop-loss/open-order table, and a cleaner stop-loss entry panel with selects and switches.
 - Added project documentation, packaging metadata, and tests.

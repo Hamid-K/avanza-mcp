@@ -88,9 +88,9 @@ Run the terminal UI from the same script:
 python avanza_cli.py tui
 ```
 
-The TUI masks password and TOTP inputs, clears those fields after a successful login, and requires typing `PLACE` before the live placement button will send an order. Use `Dry Run` first and review the request in the log panel.
+The TUI masks password and TOTP inputs, clears those fields after a successful login, and hides the login screen. Use `Dry Run` first and review the request in the log panel.
 
-After login, the TUI enumerates all accounts in an accounts table. Select an account row and press `Use Selected Account` to switch the active account at any time. Portfolio and stop-loss tables are filtered to the selected account, and live stop-loss placement uses that selected account.
+After login, use the account selector in the top bar to switch accounts. The main table shows the selected account's stock/share positions with day movement and profit state. The lower table shows stop-losses and open orders for the selected account. Position and order state refreshes live every 5 seconds.
 
 ## Safety
 

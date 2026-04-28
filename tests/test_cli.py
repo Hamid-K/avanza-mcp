@@ -59,9 +59,66 @@ def test_tui_mounts_headless():
         app = AvanzaTradingTui()
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.query_one("#accounts-table") is not None
+            assert app.query_one("#login-screen").display is True
+            assert app.query_one("#workspace").display is False
+            assert app.query_one("#account-select") is not None
             assert app.query_one("#portfolio-table") is not None
             assert app.query_one("#stoploss-table") is not None
+            assert app.query_one("#stoploss-modal").display is False
+
+    asyncio.run(run_app())
+
+
+def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, credentials):
+            self.credentials = credentials
+
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {
+                        "id": "acc-1",
+                        "name": {"defaultName": "ISK", "userDefinedName": "Trading"},
+                        "type": "ISK",
+                        "totalValue": {"value": 1000, "unit": "SEK"},
+                        "buyingPower": {"value": 250, "unit": "SEK"},
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": [], "cashPositions": []}
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.query_one("#username").value = "alice"
+            app.query_one("#password").value = "secret-password"
+            app.query_one("#totp").value = "123456"
+
+            app.handle_login()
+            await pilot.pause()
+
+            assert app.query_one("#login-screen").display is False
+            assert app.query_one("#workspace").display is True
+            assert app.query_one("#password").value == ""
+            assert app.query_one("#totp").value == ""
+            assert app.selected_account_id == "acc-1"
+            assert "Trading" in str(app.query_one("#selected-account").render())
+            assert app.query_one("#account-select").value == "acc-1"
+            assert app.live_refresh_timer is not None
 
     asyncio.run(run_app())
 

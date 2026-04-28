@@ -5,6 +5,7 @@ from avanza_cli import (
     amount,
     cash_row,
     matches_account,
+    position_state_row,
     position_row,
     stop_loss_row,
 )
@@ -91,6 +92,38 @@ def test_position_row_extracts_nested_position_data():
         "90 SEK",
         "900 SEK",
         "1.2 %",
+    )
+
+
+def test_position_state_row_includes_day_and_profit_state():
+    row = position_state_row(
+        {
+            "account": {"name": "ISK", "id": "acc-1"},
+            "instrument": {
+                "name": "Example AB",
+                "orderbook": {"id": "ob-1"},
+            },
+            "volume": {"value": 10, "unit": "st"},
+            "value": {"value": 1100, "unit": "SEK"},
+            "averageAcquiredPrice": {"value": 90, "unit": "SEK"},
+            "acquiredValue": {"value": 900, "unit": "SEK"},
+            "lastTradingDayPerformance": {
+                "relative": {"value": 1.25, "unit": "%"},
+                "absolute": {"value": 13.75, "unit": "SEK"},
+            },
+        }
+    )
+
+    assert row == (
+        "Example AB",
+        "ob-1",
+        "10 st",
+        "1100 SEK",
+        "90 SEK",
+        "+1.25%",
+        "+13.75 SEK",
+        "+22.22%",
+        "+200.00 SEK",
     )
 
 

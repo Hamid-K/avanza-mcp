@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
 
 
 console = Console()
@@ -28,6 +28,7 @@ TRIGGER_TYPE_CHOICES = [
 ]
 PRICE_TYPE_CHOICES = ["monetary", "percentage"]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
+LIVE_REFRESH_SECONDS = 5.0
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -185,6 +186,55 @@ def position_row(item: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def value_number(data: dict[str, Any], *path: str) -> float | None:
+    value = nested_value(data, *path)
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def percent_text(value: float | None) -> str:
+    if value is None:
+        return ""
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.2f}%"
+
+
+def money_text(value: float | None, unit: str = "SEK") -> str:
+    if value is None:
+        return ""
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:,.2f} {unit}"
+
+
+def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
+    instrument = item.get("instrument") or {}
+    orderbook = instrument.get("orderbook") or {}
+    performance = item.get("lastTradingDayPerformance") or {}
+    current_value = value_number(item, "value")
+    acquired_value = value_number(item, "acquiredValue")
+    profit_amount = None
+    profit_percent = None
+    if current_value is not None and acquired_value not in (None, 0):
+        profit_amount = current_value - acquired_value
+        profit_percent = (profit_amount / acquired_value) * 100
+
+    value_unit = nested_value(item, "value", "unit") or "SEK"
+    return (
+        str(instrument.get("name", "")),
+        str(orderbook.get("id", "")),
+        amount(item, "volume"),
+        amount(item, "value"),
+        amount(item, "averageAcquiredPrice"),
+        percent_text(value_number(performance, "relative")),
+        money_text(value_number(performance, "absolute"), str(value_unit)),
+        percent_text(profit_percent),
+        money_text(profit_amount, str(value_unit)),
+    )
+
+
 def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
     return (
         str(nested_value(item, "account", "name")),
@@ -197,6 +247,21 @@ def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
         "",
         "",
         "",
+    )
+
+
+def open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
+    orderbook = item.get("orderbook") or item.get("instrument") or {}
+    return (
+        "Order",
+        str(item.get("id", "") or item.get("orderId", "")),
+        str(item.get("status", "")),
+        str(orderbook.get("name", "")),
+        str(orderbook.get("id", "") or item.get("orderbookId", "")),
+        str(item.get("type", "") or item.get("orderType", "")),
+        str(item.get("volume", "")),
+        str(item.get("price", "")),
+        str(item.get("validUntil", "")),
     )
 
 
@@ -215,6 +280,24 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(orderbook.get("id", "")),
         f"{trigger.get('type', '')} {trigger.get('value', '')} {trigger.get('valueType', '')}",
         f"{order.get('type', '')} {order.get('volume', '')} @ {order.get('price', '')} {order.get('priceType', '')}",
+        str(trigger.get("validUntil", "")),
+    )
+
+
+def stop_loss_activity_row(item: dict[str, Any]) -> tuple[str, ...]:
+    orderbook = item.get("orderbook") or {}
+    trigger = item.get("trigger") or {}
+    order = item.get("order") or {}
+
+    return (
+        "Stop-loss",
+        str(item.get("id", "")),
+        str(item.get("status", "")),
+        str(orderbook.get("name", "")),
+        str(orderbook.get("id", "")),
+        f"{trigger.get('type', '')} {trigger.get('value', '')} {trigger.get('valueType', '')}",
+        str(order.get("volume", "")),
+        str(order.get("price", "")),
         str(trigger.get("validUntil", "")),
     )
 
@@ -396,49 +479,122 @@ class AvanzaTradingTui(App):
     CSS = """
     Screen {
         layout: vertical;
+        background: $surface;
     }
 
-    #content {
+    #login-screen {
+        height: 1fr;
+        align: center middle;
+        padding: 2 4;
+    }
+
+    #login-card {
+        width: 54;
+        height: auto;
+        border: tall $primary;
+        padding: 2 3;
+        background: $panel;
+    }
+
+    #login-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #login-subtitle {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #workspace {
+        display: none;
         height: 1fr;
     }
 
-    .panel {
-        border: solid $accent;
-        padding: 1;
-        height: auto;
+    #topbar {
+        height: 3;
+        padding: 0 1;
+        background: $panel;
+        border-bottom: solid $primary;
+        align: left middle;
     }
 
-    #left {
-        width: 42;
-        height: 100%;
+    #app-title {
+        width: 18;
+        text-style: bold;
     }
 
-    #right {
+    #account-select {
+        width: 44;
+        margin-right: 1;
+    }
+
+    #selected-account {
         width: 1fr;
-        height: 100%;
+        color: $text-muted;
+    }
+
+    #live-status {
+        width: 18;
+        color: $success;
+    }
+
+    #main {
+        height: 1fr;
+        padding: 1;
+    }
+
+    .panel {
+        border: solid $primary;
+        padding: 0 1;
+        height: auto;
     }
 
     DataTable {
         height: 1fr;
+        background: $panel;
+        color: $text;
     }
 
-    #portfolio-table {
+    #positions-panel {
         height: 2fr;
         margin-bottom: 1;
     }
 
+    #activity-panel {
+        height: 1fr;
+    }
+
+    #portfolio-table {
+        height: 1fr;
+    }
+
     #stoploss-table {
-        height: 2fr;
+        height: 1fr;
+    }
+
+    #stoploss-modal {
+        display: none;
+        dock: right;
+        width: 64;
+        height: 100%;
+        margin: 1;
+        padding: 1 2;
+        border: tall $warning;
+        background: $panel;
+    }
+
+    #stoploss-modal Select,
+    #stoploss-modal Input {
         margin-bottom: 1;
     }
 
     #log {
-        height: 9;
-        border: solid $secondary;
+        height: 6;
+        border: solid $primary;
     }
 
     Button {
-        margin-top: 1;
         margin-right: 1;
     }
 
@@ -458,12 +614,14 @@ class AvanzaTradingTui(App):
         self.avanza: Avanza | None = None
         self.accounts: list[dict[str, Any]] = []
         self.selected_account_id: str | None = None
+        self.live_refresh_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Horizontal(id="content"):
-            with Vertical(id="left"):
-                yield Static("Login", classes="panel")
+        with Vertical(id="login-screen"):
+            with Vertical(id="login-card"):
+                yield Static("Avanza Trading Console", id="login-title")
+                yield Static("Sign in once. Credentials disappear after login.", id="login-subtitle")
                 yield Input(placeholder="Username", id="username")
                 yield Input(placeholder="Password", id="password", password=True)
                 yield Input(
@@ -475,65 +633,80 @@ class AvanzaTradingTui(App):
                 )
                 yield Button("Login", id="login", variant="primary")
 
+        with Vertical(id="workspace"):
+            with Horizontal(id="topbar"):
+                yield Static("Avanza", id="app-title")
+                yield Select([], prompt="Select account", allow_blank=True, id="account-select")
+                yield Static("Selected account: none", id="selected-account")
+                yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
+                yield Button("Refresh", id="refresh-all", variant="primary")
+                yield Button("Add Stop-Loss", id="open-stoploss-modal", variant="warning")
+            with Vertical(id="main"):
+                with Vertical(id="positions-panel"):
+                    yield Static("Selected Account Positions", classes="panel")
+                    yield DataTable(id="portfolio-table")
+                with Vertical(id="activity-panel"):
+                    yield Static("Stop-Losses and Open Orders", classes="panel")
+                    yield DataTable(id="stoploss-table")
+                    with Horizontal():
+                        yield Button("Refresh Account", id="refresh-account", variant="primary")
+                        yield Button("Clear Log", id="clear-log")
+                    yield RichLog(id="log", highlight=True, markup=True)
+            with Vertical(id="stoploss-modal"):
                 yield Static("New Stop-Loss", classes="panel")
-                yield Input(placeholder="Account ID", id="account-id")
+                yield Static("Uses the selected account.", id="stoploss-account-note")
                 yield Input(placeholder="Order book ID", id="order-book-id")
                 yield Input(placeholder="Volume", id="volume", type="number")
-                yield Input(value="follow-upwards", placeholder="Trigger type", id="trigger-type")
+                yield Select(
+                    [(label, label) for label in TRIGGER_TYPE_CHOICES],
+                    value="follow-upwards",
+                    allow_blank=False,
+                    id="trigger-type",
+                )
                 yield Input(placeholder="Trigger value", id="trigger-value", type="number")
-                yield Input(value="percentage", placeholder="Trigger value type", id="trigger-value-type")
+                yield Select(
+                    [(label, label) for label in PRICE_TYPE_CHOICES],
+                    value="percentage",
+                    allow_blank=False,
+                    id="trigger-value-type",
+                )
                 yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="valid-until")
-                yield Input(value="sell", placeholder="Order type", id="order-type")
+                yield Select(
+                    [(label, label) for label in ORDER_TYPE_CHOICES],
+                    value="sell",
+                    allow_blank=False,
+                    id="order-type",
+                )
                 yield Input(placeholder="Order price", id="order-price", type="number")
-                yield Input(value="percentage", placeholder="Order price type", id="order-price-type")
+                yield Select(
+                    [(label, label) for label in PRICE_TYPE_CHOICES],
+                    value="percentage",
+                    allow_blank=False,
+                    id="order-price-type",
+                )
                 yield Input(value="1", placeholder="Order valid days", id="order-valid-days", type="integer")
+                yield Switch(value=False, id="trigger-on-market-maker-quote")
+                yield Static("Trigger on market-maker quote")
+                yield Switch(value=False, id="short-selling-allowed")
+                yield Static("Allow short selling")
                 yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
                 with Horizontal():
                     yield Button("Dry Run", id="dry-run", variant="default")
                     yield Button("Place Live", id="place-live", variant="error")
-
-            with Vertical(id="right"):
-                yield Static("Accounts", classes="panel")
-                yield DataTable(id="accounts-table")
-                with Horizontal():
-                    yield Button("Use Selected Account", id="select-account", variant="primary")
-                    yield Button("Refresh Accounts", id="refresh-accounts")
-                yield Static("Selected account: none", id="selected-account")
-                yield Static("Portfolio Positions", classes="panel")
-                yield DataTable(id="portfolio-table")
-                with Horizontal():
-                    yield Button("Refresh Portfolio", id="refresh-portfolio", variant="primary")
-                yield Static("Open Stop-Loss Orders", classes="panel")
-                yield DataTable(id="stoploss-table")
-                with Horizontal():
-                    yield Button("Refresh Stop-Losses", id="refresh", variant="primary")
-                    yield Button("Clear Log", id="clear-log")
-                yield RichLog(id="log", highlight=True, markup=True)
+                    yield Button("Close", id="close-stoploss-modal")
         yield Footer()
 
     def on_mount(self) -> None:
-        accounts_table = self.query_one("#accounts-table", DataTable)
-        accounts_table.add_columns(
-            "Account ID",
-            "Name",
-            "Type",
-            "Total Value",
-            "Buying Power",
-            "Status",
-        )
-        accounts_table.cursor_type = "row"
-        accounts_table.zebra_stripes = True
-
         stoploss_table = self.query_one("#stoploss-table", DataTable)
         stoploss_table.add_columns(
+            "Kind",
             "ID",
             "Status",
-            "Account",
-            "Account ID",
             "Instrument",
             "Order Book ID",
-            "Trigger",
-            "Order",
+            "Trigger/Side",
+            "Volume",
+            "Price",
             "Valid Until",
         )
         stoploss_table.cursor_type = "row"
@@ -541,23 +714,30 @@ class AvanzaTradingTui(App):
 
         portfolio_table = self.query_one("#portfolio-table", DataTable)
         portfolio_table.add_columns(
-            "Account",
-            "Account ID",
             "Instrument",
             "Order Book ID",
-            "ISIN",
             "Volume",
             "Value",
             "Avg Price",
-            "Acquired",
             "Day %",
+            "Day SEK",
+            "Profit %",
+            "Profit",
         )
         portfolio_table.cursor_type = "row"
         portfolio_table.zebra_stripes = True
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
 
     def input_value(self, widget_id: str) -> str:
-        return self.query_one(f"#{widget_id}", Input).value.strip()
+        widget = self.query_one(f"#{widget_id}")
+        if isinstance(widget, Input):
+            return widget.value.strip()
+        if isinstance(widget, Select):
+            return str(widget.value)
+        raise TypeError(f"Unsupported input widget: {widget_id}")
+
+    def switch_value(self, widget_id: str) -> bool:
+        return bool(self.query_one(f"#{widget_id}", Switch).value)
 
     def clear_secret_inputs(self) -> None:
         self.query_one("#password", Input).value = ""
@@ -582,9 +762,11 @@ class AvanzaTradingTui(App):
             raise ValueError("Selected account has no id.")
 
         self.selected_account_id = account_id
-        self.query_one("#account-id", Input).value = account_id
         label = f"Selected account: {account_display_name(account)} ({account_id})"
         self.query_one("#selected-account", Static).update(label)
+        account_select = self.query_one("#account-select", Select)
+        if account_select.value != account_id:
+            account_select.value = account_id
         self.write_log(f"Selected account {account_display_name(account)} ({account_id}).")
 
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
@@ -595,6 +777,7 @@ class AvanzaTradingTui(App):
             value=float(self.input_value("trigger-value")),
             valid_until=valid_until,
             value_type=enum_value(StopLossPriceType, self.input_value("trigger-value-type")),
+            trigger_on_market_maker_quote=self.switch_value("trigger-on-market-maker-quote"),
         )
         order_event = StopLossOrderEvent(
             type=enum_value(OrderType, self.input_value("order-type")),
@@ -602,7 +785,7 @@ class AvanzaTradingTui(App):
             volume=float(self.input_value("volume")),
             valid_days=int(self.input_value("order-valid-days")),
             price_type=enum_value(StopLossPriceType, self.input_value("order-price-type")),
-            short_selling_allowed=False,
+            short_selling_allowed=self.switch_value("short-selling-allowed"),
         )
         preview = {
             "account_id": selected_account_id,
@@ -613,6 +796,7 @@ class AvanzaTradingTui(App):
                 "value": trigger.value,
                 "valid_until": trigger.valid_until.isoformat(),
                 "value_type": trigger.value_type.value,
+                "trigger_on_market_maker_quote": trigger.trigger_on_market_maker_quote,
             },
             "stop_loss_order_event": {
                 "type": order_event.type.value,
@@ -630,39 +814,61 @@ class AvanzaTradingTui(App):
         table = self.query_one("#stoploss-table", DataTable)
         table.clear()
 
-        data = avanza.get_all_stop_losses()
-        if not isinstance(data, list):
-            self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
-            return
-
         visible_count = 0
-        for item in data:
+        data = avanza.get_all_stop_losses()
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    if not matches_account(item, self.selected_account_id):
+                        continue
+                    table.add_row(*stop_loss_activity_row(item), key=f"stoploss-{item.get('id', visible_count)}")
+                    visible_count += 1
+        else:
+            self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
+
+        order_count = 0
+        try:
+            orders = avanza.get_orders()
+        except Exception as exc:
+            self.write_log(f"[yellow]Could not load open orders:[/yellow] {exc}")
+            orders = []
+
+        if isinstance(orders, dict):
+            order_items = orders.get("orders") or orders.get("items") or []
+        elif isinstance(orders, list):
+            order_items = orders
+        else:
+            order_items = []
+
+        for item in order_items:
             if isinstance(item, dict):
                 if not matches_account(item, self.selected_account_id):
                     continue
-                table.add_row(*stop_loss_row(item), key=str(item.get("id", "")))
-                visible_count += 1
+                table.add_row(*open_order_row(item), key=f"order-{item.get('id', order_count)}")
+                order_count += 1
 
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
-        self.write_log(f"Loaded {visible_count} open stop-loss order(s){suffix}.")
+        self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
 
     def refresh_accounts(self) -> None:
         avanza = self.require_connection()
-        table = self.query_one("#accounts-table", DataTable)
-        table.clear()
-
         overview = avanza.get_overview()
         if not isinstance(overview, dict):
             self.write_log(f"[yellow]Unexpected account overview response type:[/yellow] {type(overview).__name__}")
             return
 
         self.accounts = account_rows_from_overview(overview)
-        for account in self.accounts:
-            table.add_row(*account_row(account), key=str(account.get("id", "")))
+        account_options = [
+            (f"{account_display_name(account)} ({account.get('type', '')})", str(account.get("id", "")))
+            for account in self.accounts
+        ]
+        account_select = self.query_one("#account-select", Select)
+        account_select.set_options(account_options)
 
         self.write_log(f"Loaded {len(self.accounts)} account(s).")
         if self.accounts and not self.selected_account_id:
             self.set_selected_account(self.accounts[0])
+            account_select.value = self.selected_account_id
 
     def refresh_portfolio(self) -> None:
         avanza = self.require_connection()
@@ -680,15 +886,8 @@ class AvanzaTradingTui(App):
                 if isinstance(item, dict):
                     if not matches_account(item, self.selected_account_id):
                         continue
-                    table.add_row(*position_row(item), key=str(item.get("id", f"{section}-{count}")))
+                    table.add_row(*position_state_row(item), key=str(item.get("id", f"{section}-{count}")))
                     count += 1
-
-        for item in data.get("cashPositions", []):
-            if isinstance(item, dict):
-                if not matches_account(item, self.selected_account_id):
-                    continue
-                table.add_row(*cash_row(item), key=str(item.get("id", f"cash-{count}")))
-                count += 1
 
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
@@ -705,31 +904,61 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
-    def selected_account_from_table(self) -> dict[str, Any]:
-        table = self.query_one("#accounts-table", DataTable)
-        row_index = table.cursor_coordinate.row
-        if row_index < 0 or row_index >= len(self.accounts):
-            raise ValueError("No account row is selected.")
-        return self.accounts[row_index]
+    def refresh_selected_account_live(self) -> None:
+        if not self.avanza or not self.selected_account_id:
+            return
+        try:
+            self.refresh_portfolio()
+            self.refresh_stoplosses()
+        except Exception as exc:
+            self.write_log(f"[red]Live refresh failed:[/red] {exc}")
 
-    def select_account_from_table(self) -> None:
-        self.set_selected_account(self.selected_account_from_table())
+    def start_live_refresh(self) -> None:
+        if self.live_refresh_timer is None:
+            self.live_refresh_timer = self.set_interval(
+                LIVE_REFRESH_SECONDS,
+                self.refresh_selected_account_live,
+                pause=False,
+            )
+            self.write_log(f"Live refresh enabled every {LIVE_REFRESH_SECONDS:g}s.")
+
+    def account_by_id(self, account_id: str) -> dict[str, Any] | None:
+        for account in self.accounts:
+            if str(account.get("id", "")) == account_id:
+                return account
+        return None
+
+    def select_account(self, account_id: str) -> None:
+        account = self.account_by_id(account_id)
+        if not account:
+            raise ValueError(f"Unknown account id: {account_id}")
+        self.set_selected_account(account)
         self.refresh_portfolio()
         self.refresh_stoplosses()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "account-select" and event.value:
+            try:
+                self.select_account(str(event.value))
+            except Exception as exc:
+                self.write_log(f"[red]Account switch failed:[/red] {exc}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
         try:
             if button_id == "login":
                 self.handle_login()
-            elif button_id == "select-account":
-                self.select_account_from_table()
-            elif button_id == "refresh-accounts":
+            elif button_id == "refresh-all":
                 self.refresh_accounts()
-            elif button_id == "refresh":
-                self.refresh_stoplosses()
-            elif button_id == "refresh-portfolio":
                 self.refresh_portfolio()
+                self.refresh_stoplosses()
+            elif button_id in {"refresh", "refresh-account"}:
+                self.refresh_portfolio()
+                self.refresh_stoplosses()
+            elif button_id == "open-stoploss-modal":
+                self.query_one("#stoploss-modal").display = True
+            elif button_id == "close-stoploss-modal":
+                self.query_one("#stoploss-modal").display = False
             elif button_id == "clear-log":
                 self.query_one("#log", RichLog).clear()
             elif button_id == "dry-run":
@@ -749,10 +978,13 @@ class AvanzaTradingTui(App):
         self.write_log("Logging in...")
         self.avanza = Avanza({"username": username, "password": password, "totpToken": totp})
         self.clear_secret_inputs()
+        self.query_one("#login-screen").display = False
+        self.query_one("#workspace").display = True
         self.write_log("[green]Logged in. Secret fields cleared.[/green]")
         self.refresh_accounts()
         self.refresh_portfolio()
         self.refresh_stoplosses()
+        self.start_live_refresh()
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
@@ -784,6 +1016,7 @@ class AvanzaTradingTui(App):
             self.write_log(f"[green]Avanza status:[/green] {status}{suffix}")
         else:
             self.write_log("[green]Avanza accepted the request.[/green]")
+        self.query_one("#stoploss-modal").display = False
         self.refresh_stoplosses()
 
 
