@@ -128,7 +128,7 @@ def plain_cell_value(value: Any) -> str:
 
 def sortable_cell_value(value: Any) -> tuple[int, Any]:
     text = plain_cell_value(value).strip()
-    normalized = text.lower()
+    normalized = text.lower().lstrip("●○ ").strip()
     if normalized in {"", "-", "none", "unknown"}:
         return (0, "")
     if normalized in {"no", "false"}:
@@ -144,6 +144,15 @@ def sortable_cell_value(value: Any) -> tuple[int, Any]:
             pass
 
     return (3, normalized)
+
+
+def realtime_status_badge(status: str) -> Text:
+    normalized = status.strip().lower()
+    if normalized == "yes":
+        return Text("● Yes", style=POSITIVE_CELL_STYLE)
+    if normalized == "no":
+        return Text("● No", style=CHANGED_CELL_STYLE)
+    return Text("● Unknown", style=f"dim {CHANGED_CELL_STYLE}")
 
 
 def render_table(title: str, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
@@ -539,7 +548,7 @@ def position_state_row(item: dict[str, Any], realtime_override: str | None = Non
         money_text(value_number(performance, "absolute"), str(value_unit)),
         percent_text(profit_percent),
         money_text(profit_amount, str(value_unit)),
-        realtime_override or realtime_status(item),
+        realtime_status_badge(realtime_override or realtime_status(item)),
     )
 
 
@@ -848,6 +857,31 @@ def render_stoplosses(stoplosses: Any) -> None:
     )
 
 
+class PaneResizer(Static):
+    def __init__(self) -> None:
+        super().__init__("drag to resize", id="pane-resizer")
+
+    @staticmethod
+    def event_y(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
+        return int(event.screen_y if event.screen_y is not None else event.y)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.capture_mouse(True)
+        self.add_class("dragging")
+        self.app.start_pane_resize(self.event_y(event))
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self.app.update_pane_resize(self.event_y(event))
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        self.remove_class("dragging")
+        self.app.finish_pane_resize()
+        event.stop()
+
+
 class AvanzaTradingTui(App):
     CSS = """
     Screen {
@@ -942,6 +976,11 @@ class AvanzaTradingTui(App):
     #pane-resizer:hover {
         color: $text;
         background: $primary-darken-3;
+    }
+
+    #pane-resizer.dragging {
+        color: $text;
+        background: $accent;
     }
 
     #activity-panel {
@@ -1080,7 +1119,7 @@ class AvanzaTradingTui(App):
                 with Vertical(id="positions-panel"):
                     yield Static("Selected Account Positions", classes="panel")
                     yield DataTable(id="portfolio-table")
-                yield Static("drag to resize", id="pane-resizer")
+                yield PaneResizer()
                 with Vertical(id="activity-panel"):
                     yield Static("Stop-Losses and Open Orders", classes="panel")
                     yield DataTable(id="stoploss-table")
@@ -1183,35 +1222,25 @@ class AvanzaTradingTui(App):
         self.query_one("#activity-panel").styles.height = f"{activity_weight}fr"
         self.query_one("#main").refresh(layout=True)
 
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        if getattr(event.widget, "id", None) != "pane-resizer":
-            return
+    def start_pane_resize(self, screen_y: int) -> None:
         self.is_resizing_panes = True
-        self.resize_start_y = int(event.screen_y if event.screen_y is not None else event.y)
+        self.resize_start_y = screen_y
         self.resize_start_positions_weight = self.positions_pane_weight
         self.resize_start_activity_weight = self.activity_pane_weight
-        self.capture_mouse(event.widget)
-        event.stop()
 
-    def on_mouse_move(self, event: events.MouseMove) -> None:
+    def update_pane_resize(self, screen_y: int) -> None:
         if not self.is_resizing_panes:
             return
-        current_y = int(event.screen_y if event.screen_y is not None else event.y)
-        delta_rows = current_y - self.resize_start_y
+        delta_rows = screen_y - self.resize_start_y
         weights = pane_weights_after_drag(
             self.resize_start_positions_weight,
             self.resize_start_activity_weight,
             delta_rows,
         )
         self.apply_pane_weights(*weights)
-        event.stop()
 
-    def on_mouse_up(self, event: events.MouseUp) -> None:
-        if not self.is_resizing_panes:
-            return
+    def finish_pane_resize(self) -> None:
         self.is_resizing_panes = False
-        self.capture_mouse(None)
-        event.stop()
 
     def sort_table(self, table: DataTable, column_key: Any, reverse: bool) -> None:
         table.sort(column_key, key=sortable_cell_value, reverse=reverse)

@@ -22,4 +22,5 @@
 - Added a portfolio stock column showing whether Avanza reports real-time quote data for the instrument.
 - Added clickable TUI table-header sorting with repeated clicks toggling ascending/descending order.
 - Resolved missing real-time quote statuses from Avanza market/orderbook/instrument detail endpoints with a short cache.
+- Rendered real-time status as green/yellow dot indicators and fixed TUI pane drag resizing.
 - Added project documentation, packaging metadata, and tests.

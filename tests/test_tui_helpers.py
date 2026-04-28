@@ -17,6 +17,7 @@ from avanza_cli import (
     position_row,
     lookup_realtime_status,
     realtime_status,
+    realtime_status_badge,
     sortable_cell_value,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
@@ -37,6 +38,7 @@ def test_formatted_typed_value_uses_percent_symbol():
 def test_sortable_cell_value_normalizes_human_table_values():
     assert sortable_cell_value("+1.25%") == (2, 1.25)
     assert sortable_cell_value("1,100.00 SEK") == (2, 1100.0)
+    assert sortable_cell_value(realtime_status_badge("Yes")) > sortable_cell_value(realtime_status_badge("No"))
     assert sortable_cell_value("Yes") > sortable_cell_value("No")
     assert sortable_cell_value("Unknown") < sortable_cell_value("No")
 
@@ -180,7 +182,7 @@ def test_position_state_row_includes_day_and_profit_state():
         }
     )
 
-    assert row == (
+    assert row[:9] == (
         "Example AB",
         "ob-1",
         "10 st",
@@ -190,8 +192,16 @@ def test_position_state_row_includes_day_and_profit_state():
         "+13.75 SEK",
         "+22.22%",
         "+200.00 SEK",
-        "Yes",
     )
+    assert row[9].plain == "● Yes"
+    assert str(row[9].style) == "#7fbf8f"
+
+
+def test_realtime_status_badge_uses_green_or_yellow_dot():
+    assert realtime_status_badge("Yes").plain == "● Yes"
+    assert str(realtime_status_badge("Yes").style) == "#7fbf8f"
+    assert realtime_status_badge("No").plain == "● No"
+    assert str(realtime_status_badge("No").style) == "#d7ba7d"
 
 
 def test_realtime_status_reads_known_realtime_and_delayed_flags():

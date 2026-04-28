@@ -72,12 +72,27 @@ def test_tui_mounts_headless():
             assert app.query_one("#workspace").display is False
             assert app.query_one("#account-select") is not None
             assert app.query_one("#portfolio-table") is not None
-            assert app.query_one("#pane-resizer") is not None
+            resizer = app.query_one("#pane-resizer")
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
             app.apply_pane_weights(3, 2)
             assert app.positions_pane_weight == 3
             assert app.activity_pane_weight == 2
+
+            class FakeMouse:
+                def __init__(self, screen_y):
+                    self.screen_y = screen_y
+                    self.y = screen_y
+
+                def stop(self):
+                    pass
+
+            resizer.on_mouse_down(FakeMouse(10))
+            resizer.on_mouse_move(FakeMouse(12))
+            assert app.positions_pane_weight == 5
+            assert app.activity_pane_weight == 1
+            resizer.on_mouse_up(FakeMouse(12))
+            assert app.is_resizing_panes is False
 
     asyncio.run(run_app())
 
