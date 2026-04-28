@@ -221,22 +221,15 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             return []
 
         def search_for_stock(self, query, limit):
-            return {
-                "hits": [
-                    {
-                        "instrumentType": "STOCK",
-                        "topHits": [
-                            {
-                                "name": "NewCo AB",
-                                "tickerSymbol": "NEW",
-                                "id": "ob-2",
-                                "isin": "SE0000000002",
-                                "currency": "SEK",
-                            }
-                        ],
-                    }
-                ]
-            }
+            return [
+                {
+                    "name": "NewCo AB",
+                    "tickerSymbol": "NEW",
+                    "id": "ob-2",
+                    "isin": "SE0000000002",
+                    "currency": "SEK",
+                }
+            ]
 
         def delete_stop_loss_order(self, account_id, stop_loss_id):
             return {"deleted": True, "account_id": account_id, "stop_loss_id": stop_loss_id}
@@ -325,8 +318,9 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             app.query_one("#regular-order-price").value = "100"
             app.query_one("#regular-order-volume").value = "3"
             app.query_one("#order-search").value = "new"
-            app.handle_order_search()
+            app.handle_order_search_from_timer()
             assert app.query_one("#order-instrument-select").value == "ob-2"
+            assert "result" in str(app.query_one("#order-search-status").render())
             app.handle_order_place_live()
             paper_after_order = app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})["orders"]
             assert any(order["kind"] == "Order" and order["instrument"] == "NewCo AB" for order in paper_after_order)

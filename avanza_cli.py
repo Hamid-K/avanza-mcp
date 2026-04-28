@@ -1194,15 +1194,31 @@ def render_portfolio_summary(positions: dict[str, Any]) -> None:
 
 
 def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
-    if not isinstance(results, dict):
+    rows: list[dict[str, Any]] = []
+
+    if isinstance(results, list):
+        source = results
+    elif isinstance(results, dict):
+        if "hits" in results:
+            source = results.get("hits") or []
+        elif "topHits" in results:
+            source = results.get("topHits") or []
+        else:
+            source = [results]
+    else:
         return []
 
-    rows: list[dict[str, Any]] = []
-    for hit_group in results.get("hits", []):
+    for hit_group in source:
         if not isinstance(hit_group, dict):
             continue
         group_type = hit_group.get("instrumentType", "")
         top_hits = hit_group.get("topHits") or []
+        if not top_hits:
+            row = dict(hit_group)
+            if group_type:
+                row.setdefault("instrumentType", group_type)
+            rows.append(row)
+            continue
         for hit in top_hits:
             if isinstance(hit, dict):
                 row = dict(hit)
@@ -2136,6 +2152,11 @@ class AvanzaTradingTui(App):
         width: 1fr;
     }
 
+    #order-search-status {
+        height: 1;
+        color: $text-muted;
+    }
+
     #stoploss-modal Select,
     #stoploss-modal Input,
     #order-modal Select,
@@ -2227,6 +2248,7 @@ class AvanzaTradingTui(App):
         self.selected_account_id: str | None = None
         self.live_refresh_timer = None
         self.clock_timer = None
+        self.order_search_timer = None
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
@@ -2392,6 +2414,7 @@ class AvanzaTradingTui(App):
                     with Horizontal(id="order-search-row"):
                         yield Input(placeholder="Search stock, ticker, or ISIN", id="order-search")
                         yield Button("Search", id="order-search-button", variant="primary")
+                    yield Static("Type at least 2 characters to search stocks.", id="order-search-status")
                     yield Select([], prompt="Select stock/order book", allow_blank=True, id="order-instrument-select")
                     yield Select(
                         [(label, label) for label in ORDER_TYPE_CHOICES],
@@ -2861,6 +2884,9 @@ class AvanzaTradingTui(App):
         self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
 
     def on_unmount(self) -> None:
+        if self.order_search_timer is not None:
+            self.order_search_timer.stop()
+            self.order_search_timer = None
         self.stop_mcp_bridge()
 
     def require_mcp_write(self, confirmed: bool) -> None:
@@ -3342,6 +3368,19 @@ class AvanzaTradingTui(App):
             if not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "order-search":
+            return
+        query = event.value.strip()
+        self.stop_order_search_timer()
+        if len(query) < 2:
+            self.query_one("#order-search-status", Static).update("Type at least 2 characters to search stocks.")
+            if not query:
+                self.restore_order_holding_options()
+            return
+        self.query_one("#order-search-status", Static).update(f"Searching '{query}'...")
+        self.order_search_timer = self.set_timer(0.35, self.handle_order_search_from_timer)
+
     def on_switch_changed(self, event: Switch.Changed) -> None:
         try:
             return
@@ -3504,12 +3543,48 @@ class AvanzaTradingTui(App):
         self.close_cancel_modal()
         self.refresh_stoplosses()
 
-    def handle_order_search(self) -> None:
+    def restore_order_holding_options(self) -> None:
+        if self.latest_portfolio_data is None:
+            return
+        holding_options = stoploss_holding_options(self.latest_portfolio_data, self.selected_account_id)
+        select = self.query_one("#order-instrument-select", Select)
+        previous_value = self.input_value("order-instrument-select")
+        select.set_options(holding_options)
+        values = {value for _, value in holding_options}
+        if previous_value in values:
+            select.value = previous_value
+        elif holding_options:
+            select.value = holding_options[0][1]
+        self.order_search_labels_by_order_book = {}
+
+    def stop_order_search_timer(self) -> None:
+        if self.order_search_timer is not None:
+            self.order_search_timer.stop()
+            self.order_search_timer = None
+
+    def handle_order_search_from_timer(self) -> None:
+        self.stop_order_search_timer()
+        try:
+            self.handle_order_search(automatic=True)
+        except Exception as exc:
+            try:
+                self.write_log(f"[yellow]Order search failed:[/yellow] {exc}")
+            except Exception:
+                pass
+
+    def handle_order_search(self, automatic: bool = False) -> None:
+        self.stop_order_search_timer()
         query = self.input_value("order-search")
         if len(query) < 2:
+            self.query_one("#order-search-status", Static).update("Type at least 2 characters to search stocks.")
             raise ValueError("Type at least 2 characters to search stocks.")
 
-        hits = flattened_search_hits(self.require_connection().search_for_stock(query, 20))
+        try:
+            hits = flattened_search_hits(self.require_connection().search_for_stock(query, 20))
+        except Exception as exc:
+            self.query_one("#order-search-status", Static).update(f"Search failed: {exc}")
+            raise
+
         options: list[tuple[str, str]] = []
         labels_by_order_book: dict[str, str] = {}
         seen: set[str] = set()
@@ -3527,9 +3602,13 @@ class AvanzaTradingTui(App):
         self.order_search_labels_by_order_book = labels_by_order_book
         if options:
             select.value = options[0][1]
-            self.write_log(f"Found {len(options)} stock/order book result(s) for '{query}'.")
+            self.query_one("#order-search-status", Static).update(f"{len(options)} result(s). First result selected.")
+            if not automatic:
+                self.write_log(f"Found {len(options)} stock/order book result(s) for '{query}'.")
         else:
-            self.write_log(f"[yellow]No stock/order book results for '{query}'.[/yellow]")
+            self.query_one("#order-search-status", Static).update(f"No stock/order book results for '{query}'.")
+            if not automatic:
+                self.write_log(f"[yellow]No stock/order book results for '{query}'.[/yellow]")
 
     def handle_place_live(self) -> None:
         if self.paper_mode_enabled:

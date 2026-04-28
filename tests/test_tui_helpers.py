@@ -13,6 +13,7 @@ from avanza_cli import (
     create_paper_order,
     create_paper_stop_loss_order,
     default_account,
+    flattened_search_hits,
     formatted_typed_value,
     load_paper_session,
     market_clock_text,
@@ -52,6 +53,22 @@ def test_amount_formats_value_objects():
 def test_formatted_typed_value_uses_percent_symbol():
     assert formatted_typed_value(5, "PERCENTAGE") == "5%"
     assert formatted_typed_value(95.5, "MONETARY") == "95.5 SEK"
+
+
+def test_flattened_search_hits_accepts_avanza_list_shape():
+    hits = flattened_search_hits(
+        [
+            {
+                "name": "NewCo AB",
+                "tickerSymbol": "NEW",
+                "id": "ob-2",
+                "currency": "SEK",
+            }
+        ]
+    )
+
+    assert hits[0]["name"] == "NewCo AB"
+    assert hits[0]["id"] == "ob-2"
 
 
 def test_sortable_cell_value_normalizes_human_table_values():
