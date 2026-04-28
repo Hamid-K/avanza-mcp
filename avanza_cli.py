@@ -25,7 +25,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
+from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
 
 
 console = Console()
@@ -1153,6 +1153,25 @@ def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def search_hit_order_book_id(hit: dict[str, Any]) -> str:
+    orderbook = hit.get("orderbook") if isinstance(hit.get("orderbook"), dict) else {}
+    return str(hit.get("id") or hit.get("orderbookId") or orderbook.get("id") or "")
+
+
+def search_hit_label(hit: dict[str, Any]) -> str:
+    name = str(hit.get("name") or hit.get("shortName") or "").strip()
+    ticker = str(hit.get("tickerSymbol") or hit.get("symbol") or "").strip()
+    instrument_type = str(hit.get("instrumentType") or "").strip()
+    currency = str(hit.get("currency") or "").strip()
+    order_book_id = search_hit_order_book_id(hit)
+
+    parts = [name or order_book_id]
+    meta = [value for value in (ticker, instrument_type, currency, order_book_id) if value]
+    if meta:
+        parts.append(f"({' / '.join(meta)})")
+    return " ".join(parts)
+
+
 def render_search_results(results: Any) -> None:
     hits = flattened_search_hits(results)
     if not hits:
@@ -1166,7 +1185,7 @@ def render_search_results(results: Any) -> None:
                 hit.get("name", ""),
                 hit.get("tickerSymbol", ""),
                 hit.get("instrumentType", ""),
-                hit.get("id", "") or hit.get("orderbookId", ""),
+                search_hit_order_book_id(hit),
                 hit.get("isin", ""),
                 hit.get("currency", ""),
             )
@@ -1786,25 +1805,14 @@ class AvanzaTradingTui(App):
     }
 
     #toggle-controls {
-        height: 4;
+        height: 2;
         align: right middle;
     }
 
     .toggle-control {
-        width: 12;
-        height: 4;
-        align: center middle;
-        margin-left: 1;
-    }
-
-    .toggle-label {
+        width: 10;
         height: 1;
-        content-align: left middle;
-        color: $text-muted;
-    }
-
-    .toggle-control .toggle-label {
-        content-align: center middle;
+        margin-left: 1;
     }
 
     #live-status {
@@ -1812,11 +1820,11 @@ class AvanzaTradingTui(App):
         color: $success;
     }
 
-    #paper-mode-enabled,
-    #mcp-enabled,
-    #mcp-write-enabled {
-        width: 6;
+    Checkbox {
         height: 1;
+        width: auto;
+        padding: 0 1;
+        color: $text;
     }
 
     #main {
@@ -1906,12 +1914,40 @@ class AvanzaTradingTui(App):
     #order-modal {
         display: none;
         dock: right;
-        width: 58;
+        width: 64;
         height: 100%;
         margin: 1;
         padding: 1 2;
         border: tall $warning;
         background: $panel;
+    }
+
+    .modal-header {
+        height: 3;
+        align: left middle;
+    }
+
+    .modal-title {
+        width: 1fr;
+        text-style: bold;
+        content-align: left middle;
+    }
+
+    .modal-close {
+        min-width: 3;
+        width: 3;
+        margin-right: 1;
+        background: $error-darken-3;
+        color: $error-lighten-2;
+        text-style: bold;
+    }
+
+    #order-search-row {
+        height: 3;
+    }
+
+    #order-search {
+        width: 1fr;
     }
 
     #stoploss-modal Select,
@@ -1975,8 +2011,9 @@ class AvanzaTradingTui(App):
         margin-top: 1;
     }
 
-    #place-live {
-        min-width: 11;
+    #place-live,
+    #order-place-live {
+        min-width: 18;
     }
 
     Input {
@@ -2001,6 +2038,7 @@ class AvanzaTradingTui(App):
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
         self.holding_labels_by_order_book: dict[str, str] = {}
+        self.order_search_labels_by_order_book: dict[str, str] = {}
         self.table_sort_state: dict[str, tuple[Any, bool]] = {}
         self.realtime_status_by_order_book: dict[str, str] = {}
         self.realtime_status_checked_at: dict[str, datetime] = {}
@@ -2069,15 +2107,9 @@ class AvanzaTradingTui(App):
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
                     with Horizontal(id="toggle-controls"):
-                        with Vertical(id="paper-controls", classes="toggle-control"):
-                            yield Static("Paper", id="paper-label", classes="toggle-label")
-                            yield Switch(value=True, id="paper-mode-enabled")
-                        with Vertical(id="mcp-controls", classes="toggle-control"):
-                            yield Static("MCP", id="mcp-label", classes="toggle-label")
-                            yield Switch(value=False, id="mcp-enabled")
-                        with Vertical(id="mcp-write-controls", classes="toggle-control"):
-                            yield Static("R/W", id="mcp-write-label", classes="toggle-label")
-                            yield Switch(value=False, id="mcp-write-enabled")
+                        yield Checkbox("Paper", value=True, id="paper-mode-enabled", classes="toggle-control")
+                        yield Checkbox("MCP", value=False, id="mcp-enabled", classes="toggle-control")
+                        yield Checkbox("R/W", value=False, id="mcp-write-enabled", classes="toggle-control")
             with Horizontal(id="body"):
                 with Vertical(id="main"):
                     with Vertical(id="positions-panel"):
@@ -2098,7 +2130,9 @@ class AvanzaTradingTui(App):
                     yield Static("Active Trades", classes="panel")
                     yield DataTable(id="active-trades-table")
             with Vertical(id="stoploss-modal"):
-                yield Static("New Stop-Loss", classes="panel")
+                with Horizontal(classes="modal-header"):
+                    yield Button("X", id="close-stoploss-modal", classes="modal-close")
+                    yield Static("New Stop-Loss", classes="modal-title")
                 yield Static("Uses the selected account.", id="stoploss-account-note")
                 yield Select([], prompt="Select portfolio holding", allow_blank=True, id="instrument-select")
                 yield Input(placeholder="Volume", id="volume", type="number")
@@ -2136,13 +2170,17 @@ class AvanzaTradingTui(App):
                 yield Static("Allow short selling")
                 yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
                 with Horizontal():
-                    yield Button("Dry Run", id="dry-run", variant="default")
-                    yield Button("Place Paper", id="place-live", variant="warning")
-                    yield Button("Close", id="close-stoploss-modal")
+                    yield Button("Preview", id="dry-run", variant="default")
+                    yield Button("Create Paper Stop-Loss", id="place-live", variant="warning")
             with Vertical(id="order-modal"):
-                yield Static("New Buy/Sell Order", classes="panel")
+                with Horizontal(classes="modal-header"):
+                    yield Button("X", id="close-order-modal", classes="modal-close")
+                    yield Static("New Buy/Sell Order", classes="modal-title")
                 yield Static("Uses the selected account.", id="order-account-note")
-                yield Select([], prompt="Select portfolio holding", allow_blank=True, id="order-instrument-select")
+                with Horizontal(id="order-search-row"):
+                    yield Input(placeholder="Search stock, ticker, or ISIN", id="order-search")
+                    yield Button("Search", id="order-search-button", variant="primary")
+                yield Select([], prompt="Select stock/order book", allow_blank=True, id="order-instrument-select")
                 yield Select(
                     [(label, label) for label in ORDER_TYPE_CHOICES],
                     value="buy",
@@ -2160,9 +2198,8 @@ class AvanzaTradingTui(App):
                 yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="regular-order-valid-until")
                 yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
                 with Horizontal():
-                    yield Button("Dry Run", id="order-dry-run", variant="default")
-                    yield Button("Place Paper", id="order-place-live", variant="warning")
-                    yield Button("Close", id="close-order-modal")
+                    yield Button("Preview", id="order-dry-run", variant="default")
+                    yield Button("Create Paper Order", id="order-place-live", variant="warning")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2384,13 +2421,17 @@ class AvanzaTradingTui(App):
         self.update_active_trades_table()
 
     def update_paper_mode_ui(self) -> None:
-        for selector in ("#place-live", "#order-place-live"):
+        labels = {
+            "#place-live": ("Create Paper Stop-Loss", "Submit Live Stop-Loss"),
+            "#order-place-live": ("Create Paper Order", "Submit Live Order"),
+        }
+        for selector, (paper_label, live_label) in labels.items():
             button = self.query_one(selector, Button)
             if self.paper_mode_enabled:
-                button.label = "Place Paper"
+                button.label = paper_label
                 button.variant = "warning"
             else:
-                button.label = "Place Live"
+                button.label = live_label
                 button.variant = "error"
 
     def active_trade_rows(self) -> list[tuple[str, ...]]:
@@ -2576,7 +2617,7 @@ class AvanzaTradingTui(App):
                     "name": hit.get("name", ""),
                     "ticker": hit.get("tickerSymbol", ""),
                     "instrument_type": hit.get("instrumentType", ""),
-                    "order_book_id": hit.get("id", "") or hit.get("orderbookId", ""),
+                    "order_book_id": search_hit_order_book_id(hit),
                     "isin": hit.get("isin", ""),
                     "currency": hit.get("currency", ""),
                 }
@@ -2764,7 +2805,7 @@ class AvanzaTradingTui(App):
         selected_account_id = self.require_selected_account_id()
         order_book_id = self.input_value("order-instrument-select")
         if not order_book_id:
-            raise ValueError("Select a portfolio holding first.")
+            raise ValueError("Select a stock/order book first.")
         return build_order_preview(
             {
                 "account_id": selected_account_id,
@@ -2868,16 +2909,19 @@ class AvanzaTradingTui(App):
         order_holding_select = self.query_one("#order-instrument-select", Select)
         previous_holding = self.input_value("instrument-select")
         previous_order_holding = self.input_value("order-instrument-select")
+        order_search_query = self.input_value("order-search")
         holding_select.set_options(holding_options)
-        order_holding_select.set_options(holding_options)
+        if not order_search_query:
+            order_holding_select.set_options(holding_options)
         if previous_holding and previous_holding in {value for _, value in holding_options}:
             holding_select.value = previous_holding
         elif holding_options:
             holding_select.value = holding_options[0][1]
-        if previous_order_holding and previous_order_holding in {value for _, value in holding_options}:
-            order_holding_select.value = previous_order_holding
-        elif holding_options:
-            order_holding_select.value = holding_options[0][1]
+        if not order_search_query:
+            if previous_order_holding and previous_order_holding in {value for _, value in holding_options}:
+                order_holding_select.value = previous_order_holding
+            elif holding_options:
+                order_holding_select.value = holding_options[0][1]
         self.holding_volumes_by_order_book = stoploss_volume_by_order_book(data, self.selected_account_id)
         self.holding_labels_by_order_book = {
             value: label.split(" - owned", 1)[0]
@@ -2970,26 +3014,34 @@ class AvanzaTradingTui(App):
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
         try:
-            if event.switch.id == "paper-mode-enabled":
+            return
+        except Exception as exc:
+            self.write_mcp_log(f"[red]MCP switch failed:[/red] {exc}")
+            if event.switch.id == "mcp-enabled":
+                event.switch.value = False
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        try:
+            if event.checkbox.id == "paper-mode-enabled":
                 self.paper_mode_enabled = bool(event.value)
                 self.update_paper_mode_ui()
                 mode = "paper" if self.paper_mode_enabled else "live"
-                self.write_log(f"Stop-loss placement mode: {mode}.")
+                self.write_log(f"Order placement mode: {mode}.")
                 self.record_event("trading", "paper_mode_changed", {"enabled": self.paper_mode_enabled})
-            elif event.switch.id == "mcp-enabled":
+            elif event.checkbox.id == "mcp-enabled":
                 if event.value:
                     self.start_mcp_bridge()
                 else:
                     self.stop_mcp_bridge()
-            elif event.switch.id == "mcp-write-enabled":
+            elif event.checkbox.id == "mcp-write-enabled":
                 self.mcp_write_enabled = bool(event.value)
                 self.update_mcp_session_file()
                 mode = "read/write" if self.mcp_write_enabled else "read-only"
                 self.write_mcp_log(f"MCP mode: {mode}.")
         except Exception as exc:
-            self.write_mcp_log(f"[red]MCP switch failed:[/red] {exc}")
-            if event.switch.id == "mcp-enabled":
-                event.switch.value = False
+            self.write_mcp_log(f"[red]Checkbox failed:[/red] {exc}")
+            if event.checkbox.id == "mcp-enabled":
+                event.checkbox.value = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -3017,6 +3069,8 @@ class AvanzaTradingTui(App):
                 self.handle_dry_run()
             elif button_id == "place-live":
                 self.handle_place_live()
+            elif button_id == "order-search-button":
+                self.handle_order_search()
             elif button_id == "order-dry-run":
                 self.handle_order_dry_run()
             elif button_id == "order-place-live":
@@ -3053,6 +3107,33 @@ class AvanzaTradingTui(App):
         self.write_log("[yellow]Dry-run buy/sell order request:[/yellow]")
         for line in order_request_log_lines(preview):
             self.write_log(line)
+
+    def handle_order_search(self) -> None:
+        query = self.input_value("order-search")
+        if len(query) < 2:
+            raise ValueError("Type at least 2 characters to search stocks.")
+
+        hits = flattened_search_hits(self.require_connection().search_for_stock(query, 20))
+        options: list[tuple[str, str]] = []
+        labels_by_order_book: dict[str, str] = {}
+        seen: set[str] = set()
+        for hit in hits:
+            order_book_id = search_hit_order_book_id(hit)
+            if not order_book_id or order_book_id in seen:
+                continue
+            label = search_hit_label(hit)
+            options.append((label, order_book_id))
+            labels_by_order_book[order_book_id] = str(hit.get("name") or label)
+            seen.add(order_book_id)
+
+        select = self.query_one("#order-instrument-select", Select)
+        select.set_options(options)
+        self.order_search_labels_by_order_book = labels_by_order_book
+        if options:
+            select.value = options[0][1]
+            self.write_log(f"Found {len(options)} stock/order book result(s) for '{query}'.")
+        else:
+            self.write_log(f"[yellow]No stock/order book results for '{query}'.[/yellow]")
 
     def handle_place_live(self) -> None:
         if self.paper_mode_enabled:
@@ -3116,7 +3197,10 @@ class AvanzaTradingTui(App):
     def handle_order_place_live(self) -> None:
         order_type, condition, preview = self.build_regular_order_request()
         order_book_id = self.input_value("order-instrument-select")
-        instrument = self.holding_labels_by_order_book.get(order_book_id, order_book_id)
+        instrument = (
+            self.order_search_labels_by_order_book.get(order_book_id)
+            or self.holding_labels_by_order_book.get(order_book_id, order_book_id)
+        )
 
         if self.paper_mode_enabled:
             paper_order = create_paper_order(preview, instrument=instrument)

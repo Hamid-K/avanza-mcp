@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from textual import events
 from textual.geometry import Size
-from textual.widgets import DataTable
+from textual.widgets import Checkbox, DataTable
 
 from avanza.constants import OrderType, StopLossPriceType
 from rich.text import Text
@@ -109,11 +109,9 @@ def test_tui_mounts_headless():
             assert app.query_one("#active-trades-table") is not None
             assert app.query_one("#side-pane-resizer") is not None
             assert app.query_one("#order-modal").display is False
-            assert app.query_one("#paper-mode-enabled") is not None
-            assert app.query_one("#mcp-controls") is not None
-            assert app.query_one("#mcp-write-controls") is not None
-            assert app.query_one("#mcp-enabled") is not None
-            assert app.query_one("#mcp-write-enabled") is not None
+            assert isinstance(app.query_one("#paper-mode-enabled"), Checkbox)
+            assert isinstance(app.query_one("#mcp-enabled"), Checkbox)
+            assert isinstance(app.query_one("#mcp-write-enabled"), Checkbox)
             assert app.query_one("#mcp-log") is not None
             resizer = app.query_one("#pane-resizer")
             assert app.query_one("#stoploss-table") is not None
@@ -210,6 +208,24 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
         def get_orders(self):
             return []
 
+        def search_for_stock(self, query, limit):
+            return {
+                "hits": [
+                    {
+                        "instrumentType": "STOCK",
+                        "topHits": [
+                            {
+                                "name": "NewCo AB",
+                                "tickerSymbol": "NEW",
+                                "id": "ob-2",
+                                "isin": "SE0000000002",
+                                "currency": "SEK",
+                            }
+                        ],
+                    }
+                ]
+            }
+
         def delete_stop_loss_order(self, account_id, stop_loss_id):
             return {"deleted": True, "account_id": account_id, "stop_loss_id": stop_loss_id}
 
@@ -292,9 +308,12 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             app.query_one("#regular-order-valid-until").value = "2026-05-28"
             app.query_one("#regular-order-price").value = "100"
             app.query_one("#regular-order-volume").value = "3"
+            app.query_one("#order-search").value = "new"
+            app.handle_order_search()
+            assert app.query_one("#order-instrument-select").value == "ob-2"
             app.handle_order_place_live()
             paper_after_order = app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})["orders"]
-            assert any(order["kind"] == "Order" for order in paper_after_order)
+            assert any(order["kind"] == "Order" and order["instrument"] == "NewCo AB" for order in paper_after_order)
             paper_regular = app.execute_mcp_tool(
                 "avanza_paper_order_set",
                 {
