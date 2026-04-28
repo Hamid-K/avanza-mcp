@@ -898,10 +898,19 @@ def cancel_badge() -> Text:
 def trade_action_badge(side: str) -> Text:
     normalized = side.lower()
     if normalized == "buy":
-        return Text(" BUY ", style=BUY_SIDE_STYLE)
+        return Text(" B ", style=BUY_SIDE_STYLE)
     if normalized == "sell":
-        return Text(" SELL ", style=SELL_SIDE_STYLE)
+        return Text(" S ", style=SELL_SIDE_STYLE)
     return Text(str(side or "-"), style="dim")
+
+
+def trade_action_from_cell(value: Any) -> str:
+    text = plain_cell_value(value).strip().lower()
+    if text in {"buy", "b"}:
+        return "buy"
+    if text in {"sell", "s"}:
+        return "sell"
+    return ""
 
 
 def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
@@ -2523,8 +2532,8 @@ class AvanzaTradingTui(App):
         portfolio_table = self.query_one("#portfolio-table", DataTable)
         portfolio_table.add_columns(
             "Stock",
-            "Buy",
-            "Sell",
+            "B",
+            "S",
             "Order Book ID",
             "Volume",
             "Value",
@@ -2668,7 +2677,7 @@ class AvanzaTradingTui(App):
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
         if event.data_table.id == "portfolio-table":
-            action = plain_cell_value(event.value).strip().lower()
+            action = trade_action_from_cell(event.value)
             if action not in {"buy", "sell"}:
                 return
             row_key = str(getattr(event.cell_key.row_key, "value", ""))

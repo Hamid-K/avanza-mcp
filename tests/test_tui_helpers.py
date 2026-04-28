@@ -45,6 +45,7 @@ from avanza_cli import (
     stop_loss_activity_row,
     stop_loss_row,
     ticket_pane_width_after_drag,
+    trade_action_from_cell,
     trade_action_badge,
     write_mcp_message,
 )
@@ -286,6 +287,10 @@ def test_position_trade_action_row_adds_buy_sell_actions():
     row = position_trade_action_row(item)
 
     assert row[:4] == ("Example AB", trade_action_badge("buy"), trade_action_badge("sell"), "ob-1")
+    assert trade_action_badge("buy").plain == " B "
+    assert trade_action_badge("sell").plain == " S "
+    assert trade_action_from_cell(trade_action_badge("buy")) == "buy"
+    assert trade_action_from_cell(trade_action_badge("sell")) == "sell"
     assert position_trade_target(item) == {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10.0"}
 
 

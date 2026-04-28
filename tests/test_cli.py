@@ -109,6 +109,12 @@ def test_tui_mounts_headless():
             assert app.query_one("#portfolio-table") is not None
             assert isinstance(app.query_one("#buy-selected-stock"), Button)
             assert isinstance(app.query_one("#sell-selected-stock"), Button)
+            portfolio_table = app.query_one("#portfolio-table", DataTable)
+            portfolio_labels = [
+                getattr(column.label, "plain", str(column.label))
+                for column in portfolio_table.columns.values()
+            ]
+            assert portfolio_labels[:4] == ["Stock", "B", "S", "Order Book ID"]
             assert app.query_one("#active-trades-table") is not None
             assert app.query_one("#side-pane-resizer") is not None
             assert app.query_one("#order-modal").display is False
