@@ -7,4 +7,5 @@
 - Added TUI account enumeration and account switching.
 - Added masked password and TOTP entry.
 - Replaced raw console/TUI API payload output with human-readable tables and summaries.
+- Improved console help with examples, safety notes, and detailed stop-loss option guidance.
 - Added project documentation, packaging metadata, and tests.

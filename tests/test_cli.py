@@ -30,6 +30,27 @@ def test_parser_includes_portfolio_commands():
     assert args.username == "alice"
 
 
+def test_help_includes_examples_and_safety_notes(capsys):
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    main_help = capsys.readouterr().out
+
+    assert "Common examples:" in main_help
+    assert "python avanza_cli.py tui" in main_help
+    assert "Mutating commands dry-run unless you pass --confirm." in main_help
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["stoploss", "set", "--help"])
+    stoploss_help = capsys.readouterr().out
+
+    assert "Trigger types:" in stoploss_help
+    assert "follow-upwards" in stoploss_help
+    assert "Gliding sell stop-loss dry-run:" in stoploss_help
+    assert "--trigger-value-type {monetary,percentage}" in stoploss_help
+
+
 def test_prompt_credentials_uses_totp_token(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt: "alice")
     prompts = iter(["secret-password", "123456"])

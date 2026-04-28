@@ -2,6 +2,7 @@
 import argparse
 import getpass
 import sys
+import textwrap
 from datetime import date
 from typing import Any
 
@@ -17,6 +18,16 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, S
 
 
 console = Console()
+HELP_FORMATTER = argparse.RawDescriptionHelpFormatter
+
+TRIGGER_TYPE_CHOICES = [
+    "less-or-equal",
+    "more-or-equal",
+    "follow-upwards",
+    "follow-downwards",
+]
+PRICE_TYPE_CHOICES = ["monetary", "percentage"]
+ORDER_TYPE_CHOICES = ["buy", "sell"]
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -884,70 +895,212 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
 
 
 def add_common_auth(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--username", help="Avanza username. If omitted, prompts interactively.")
+    parser.add_argument(
+        "--username",
+        metavar="USER",
+        help="Avanza username. If omitted, you are prompted interactively.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="CLI for viewing Avanza portfolio data and managing stop-loss orders."
+        prog="avanza_cli.py",
+        formatter_class=HELP_FORMATTER,
+        description="Human-readable Avanza account, portfolio, search, and stop-loss tools.",
+        epilog=textwrap.dedent(
+            """\
+            Common examples:
+              python avanza_cli.py tui
+              python avanza_cli.py accounts
+              python avanza_cli.py portfolio summary
+              python avanza_cli.py portfolio positions
+              python avanza_cli.py search-stock "VOLV B"
+              python avanza_cli.py stoploss list
+
+            Credentials:
+              Password and current TOTP code are prompted interactively and masked.
+
+            Safety:
+              Mutating commands dry-run unless you pass --confirm.
+            """
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    tui = subparsers.add_parser("tui", help="Launch the interactive Textual terminal UI.")
+    tui = subparsers.add_parser(
+        "tui",
+        formatter_class=HELP_FORMATTER,
+        help="Launch the interactive Textual terminal UI.",
+        description="Launch the interactive terminal UI for account switching, portfolio viewing, and stop-loss management.",
+    )
     tui.set_defaults(func=cmd_tui)
 
-    accounts = subparsers.add_parser("accounts", help="Show account overview.")
+    accounts = subparsers.add_parser(
+        "accounts",
+        formatter_class=HELP_FORMATTER,
+        help="Show all accounts with balances and buying power.",
+        description="Show all Avanza accounts in a readable table.",
+        epilog="Example:\n  python avanza_cli.py accounts",
+    )
     add_common_auth(accounts)
     accounts.set_defaults(func=cmd_accounts)
 
-    portfolio = subparsers.add_parser("portfolio", help="View portfolio details.")
+    portfolio = subparsers.add_parser(
+        "portfolio",
+        formatter_class=HELP_FORMATTER,
+        help="View portfolio summaries and positions.",
+        description="View portfolio data across accounts in readable terminal tables.",
+        epilog=textwrap.dedent(
+            """\
+            Examples:
+              python avanza_cli.py portfolio summary
+              python avanza_cli.py portfolio positions
+            """
+        ),
+    )
     portfolio_subparsers = portfolio.add_subparsers(dest="portfolio_command", required=True)
 
-    portfolio_summary = portfolio_subparsers.add_parser("summary", help="Show portfolio counts and cash positions.")
+    portfolio_summary = portfolio_subparsers.add_parser(
+        "summary",
+        formatter_class=HELP_FORMATTER,
+        help="Show position counts and cash balances.",
+        description="Show portfolio position counts and cash positions.",
+        epilog="Example:\n  python avanza_cli.py portfolio summary",
+    )
     add_common_auth(portfolio_summary)
     portfolio_summary.set_defaults(func=cmd_portfolio_summary)
 
-    portfolio_positions = portfolio_subparsers.add_parser("positions", help="Show all portfolio positions.")
+    portfolio_positions = portfolio_subparsers.add_parser(
+        "positions",
+        formatter_class=HELP_FORMATTER,
+        help="Show instrument and cash positions.",
+        description="Show all portfolio instrument positions and cash balances in tables.",
+        epilog="Example:\n  python avanza_cli.py portfolio positions",
+    )
     add_common_auth(portfolio_positions)
     portfolio_positions.set_defaults(func=cmd_portfolio_positions)
 
-    search = subparsers.add_parser("search-stock", help="Search stocks by name, ticker, or ISIN.")
+    search = subparsers.add_parser(
+        "search-stock",
+        formatter_class=HELP_FORMATTER,
+        help="Search stocks by name, ticker, or ISIN.",
+        description="Search Avanza stocks and show matching order book ids.",
+        epilog='Example:\n  python avanza_cli.py search-stock "VOLV B" --limit 5',
+    )
     add_common_auth(search)
-    search.add_argument("query")
-    search.add_argument("--limit", type=int, default=10)
+    search.add_argument("query", help="Name, ticker, or ISIN to search for.")
+    search.add_argument(
+        "--limit",
+        metavar="N",
+        type=int,
+        default=10,
+        help="Maximum number of search results to request. Default: 10.",
+    )
     search.set_defaults(func=cmd_search)
 
-    stoploss = subparsers.add_parser("stoploss", help="Manage stop-loss orders.")
+    stoploss = subparsers.add_parser(
+        "stoploss",
+        formatter_class=HELP_FORMATTER,
+        help="List, create, and delete stop-loss orders.",
+        description="Manage Avanza stop-loss orders. Placement and deletion dry-run unless --confirm is passed.",
+        epilog=textwrap.dedent(
+            """\
+            Examples:
+              python avanza_cli.py stoploss list
+              python avanza_cli.py stoploss set --help
+              python avanza_cli.py stoploss delete --help
+            """
+        ),
+    )
     stoploss_subparsers = stoploss.add_subparsers(dest="stoploss_command", required=True)
 
-    stoploss_list = stoploss_subparsers.add_parser("list", help="List open stop-loss orders.")
+    stoploss_list = stoploss_subparsers.add_parser(
+        "list",
+        formatter_class=HELP_FORMATTER,
+        help="List open stop-loss orders.",
+        description="List open stop-loss orders in a readable table.",
+        epilog="Example:\n  python avanza_cli.py stoploss list",
+    )
     add_common_auth(stoploss_list)
     stoploss_list.set_defaults(func=cmd_stoploss_list)
 
-    stoploss_delete = stoploss_subparsers.add_parser("delete", help="Delete a stop-loss order.")
+    stoploss_delete = stoploss_subparsers.add_parser(
+        "delete",
+        formatter_class=HELP_FORMATTER,
+        help="Delete a stop-loss order.",
+        description="Delete a stop-loss order. Without --confirm this only prints the intended deletion.",
+        epilog=textwrap.dedent(
+            """\
+            Dry-run:
+              python avanza_cli.py stoploss delete --account-id ACCOUNT_ID --stop-loss-id STOP_LOSS_ID
+
+            Live deletion:
+              python avanza_cli.py stoploss delete --account-id ACCOUNT_ID --stop-loss-id STOP_LOSS_ID --confirm
+            """
+        ),
+    )
     add_common_auth(stoploss_delete)
-    stoploss_delete.add_argument("--account-id", required=True)
-    stoploss_delete.add_argument("--stop-loss-id", required=True)
-    stoploss_delete.add_argument("--confirm", action="store_true")
+    stoploss_delete.add_argument("--account-id", metavar="ID", required=True, help="Avanza account id that owns the stop-loss.")
+    stoploss_delete.add_argument("--stop-loss-id", metavar="ID", required=True, help="Stop-loss id to delete.")
+    stoploss_delete.add_argument("--confirm", action="store_true", help="Actually delete the stop-loss. Omit for dry-run.")
     stoploss_delete.set_defaults(func=cmd_stoploss_delete)
 
-    stoploss_set = stoploss_subparsers.add_parser("set", help="Set a stop-loss order.")
+    stoploss_set = stoploss_subparsers.add_parser(
+        "set",
+        formatter_class=HELP_FORMATTER,
+        help="Create a fixed or gliding stop-loss order.",
+        description=textwrap.dedent(
+            """\
+            Create a stop-loss order.
+
+            Without --confirm, this command prints a readable dry-run summary and does not log in.
+
+            Trigger types:
+              less-or-equal   fixed trigger at or below a price
+              more-or-equal   fixed trigger at or above a price
+              follow-upwards  gliding/trailing trigger for long positions
+              follow-downwards gliding/trailing trigger for short/downward logic
+
+            Price/value types:
+              monetary        explicit currency value
+              percentage      percentage offset/value, interpreted by Avanza
+            """
+        ),
+        epilog=textwrap.dedent(
+            """\
+            Gliding sell stop-loss dry-run:
+              python avanza_cli.py stoploss set \\
+                --account-id ACCOUNT_ID \\
+                --order-book-id ORDER_BOOK_ID \\
+                --trigger-type follow-upwards \\
+                --trigger-value 5 \\
+                --trigger-value-type percentage \\
+                --valid-until 2026-05-28 \\
+                --order-type sell \\
+                --order-price 1 \\
+                --order-price-type percentage \\
+                --volume 10
+
+            Add --confirm only after reviewing the dry-run summary.
+            """
+        ),
+    )
     add_common_auth(stoploss_set)
-    stoploss_set.add_argument("--account-id", required=True)
-    stoploss_set.add_argument("--order-book-id", required=True)
-    stoploss_set.add_argument("--parent-stop-loss-id", default="0")
-    stoploss_set.add_argument("--trigger-type", required=True, help="less-or-equal, more-or-equal, follow-upwards, follow-downwards")
-    stoploss_set.add_argument("--trigger-value", required=True, type=float)
-    stoploss_set.add_argument("--trigger-value-type", default="monetary", help="monetary or percentage")
-    stoploss_set.add_argument("--valid-until", required=True, type=parse_date)
-    stoploss_set.add_argument("--trigger-on-market-maker-quote", action="store_true")
-    stoploss_set.add_argument("--order-type", default="sell", help="buy or sell")
-    stoploss_set.add_argument("--order-price", required=True, type=float)
-    stoploss_set.add_argument("--order-price-type", default="monetary", help="monetary or percentage")
-    stoploss_set.add_argument("--volume", required=True, type=float)
-    stoploss_set.add_argument("--order-valid-days", default=1, type=int)
-    stoploss_set.add_argument("--short-selling-allowed", action="store_true")
-    stoploss_set.add_argument("--confirm", action="store_true")
+    stoploss_set.add_argument("--account-id", metavar="ID", required=True, help="Avanza account id to place the stop-loss on.")
+    stoploss_set.add_argument("--order-book-id", metavar="ID", required=True, help="Avanza order book id for the instrument.")
+    stoploss_set.add_argument("--parent-stop-loss-id", metavar="ID", default="0", help="Parent stop-loss id. Default: 0.")
+    stoploss_set.add_argument("--trigger-type", choices=TRIGGER_TYPE_CHOICES, required=True, help="Stop-loss trigger behavior.")
+    stoploss_set.add_argument("--trigger-value", metavar="VALUE", required=True, type=float, help="Trigger value, interpreted with --trigger-value-type.")
+    stoploss_set.add_argument("--trigger-value-type", choices=PRICE_TYPE_CHOICES, default="monetary", help="How to interpret --trigger-value. Default: monetary.")
+    stoploss_set.add_argument("--valid-until", metavar="YYYY-MM-DD", required=True, type=parse_date, help="Last date the trigger remains valid.")
+    stoploss_set.add_argument("--trigger-on-market-maker-quote", action="store_true", help="Allow market-maker quote to trigger the stop-loss.")
+    stoploss_set.add_argument("--order-type", choices=ORDER_TYPE_CHOICES, default="sell", help="Order side after trigger. Default: sell.")
+    stoploss_set.add_argument("--order-price", metavar="VALUE", required=True, type=float, help="Order price or offset, interpreted with --order-price-type.")
+    stoploss_set.add_argument("--order-price-type", choices=PRICE_TYPE_CHOICES, default="monetary", help="How to interpret --order-price. Default: monetary.")
+    stoploss_set.add_argument("--volume", metavar="QTY", required=True, type=float, help="Number of shares/contracts to include in the triggered order.")
+    stoploss_set.add_argument("--order-valid-days", metavar="DAYS", default=1, type=int, help="Triggered order validity in days. Default: 1.")
+    stoploss_set.add_argument("--short-selling-allowed", action="store_true", help="Allow short selling for the triggered order.")
+    stoploss_set.add_argument("--confirm", action="store_true", help="Actually place the stop-loss. Omit for dry-run.")
     stoploss_set.set_defaults(func=cmd_stoploss_set)
 
     return parser
