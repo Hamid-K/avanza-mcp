@@ -489,10 +489,10 @@ class AvanzaTradingTui(App):
     }
 
     #login-card {
-        width: 54;
+        width: 50;
         height: auto;
         border: tall $primary;
-        padding: 2 3;
+        padding: 1 3;
         background: $panel;
     }
 
@@ -512,7 +512,7 @@ class AvanzaTradingTui(App):
     }
 
     #topbar {
-        height: 3;
+        height: 2;
         padding: 0 1;
         background: $panel;
         border-bottom: solid $primary;
@@ -576,7 +576,7 @@ class AvanzaTradingTui(App):
     #stoploss-modal {
         display: none;
         dock: right;
-        width: 64;
+        width: 58;
         height: 100%;
         margin: 1;
         padding: 1 2;
@@ -595,7 +595,47 @@ class AvanzaTradingTui(App):
     }
 
     Button {
-        margin-right: 1;
+        min-width: 8;
+        height: 1;
+        margin: 0 1 0 0;
+        padding: 0 1;
+        text-style: none;
+        border: none;
+        background: $boost;
+        color: $text;
+    }
+
+    Button:hover {
+        background: $accent;
+        color: $text;
+    }
+
+    Button.-primary {
+        background: $primary-darken-3;
+        color: $primary-lighten-3;
+        border: none;
+    }
+
+    Button.-warning {
+        background: $warning-darken-3;
+        color: $warning-lighten-2;
+        border: none;
+    }
+
+    Button.-error {
+        background: $error-darken-3;
+        color: $error-lighten-2;
+        border: none;
+        text-style: bold;
+    }
+
+    #login {
+        width: 100%;
+        margin-top: 1;
+    }
+
+    #place-live {
+        min-width: 11;
     }
 
     Input {

@@ -10,4 +10,5 @@
 - Improved console help with examples, safety notes, and detailed stop-loss option guidance.
 - Fixed TUI startup by avoiding a Textual logger name collision and added a headless TUI smoke test.
 - Redesigned the TUI around a temporary login screen, top-bar account switching, live selected-account refresh, position state table, combined stop-loss/open-order table, and a cleaner stop-loss entry panel with selects and switches.
+- Tightened TUI button styling to use compact one-line controls instead of Textual's default bulky beveled buttons.
 - Added project documentation, packaging metadata, and tests.
