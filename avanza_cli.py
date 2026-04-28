@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 import argparse
 import getpass
+import json
+import os
 import re
+import secrets
 import sys
+import threading
 import textwrap
 from datetime import date, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from avanza import Avanza
 from avanza.constants import InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType
@@ -22,6 +30,8 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, S
 
 console = Console()
 HELP_FORMATTER = argparse.RawDescriptionHelpFormatter
+MCP_SESSION_FILE = Path(__file__).with_name(".avanza_mcp_session.json")
+MCP_PROTOCOL_VERSION = "2024-11-05"
 
 TRIGGER_TYPE_CHOICES = [
     "less-or-equal",
@@ -128,6 +138,12 @@ def plain_cell_value(value: Any) -> str:
 
 def sortable_cell_value(value: Any) -> tuple[int, Any]:
     text = plain_cell_value(value).strip()
+    if text == "●" and isinstance(value, Text):
+        style = str(value.style)
+        if POSITIVE_CELL_STYLE in style:
+            return (1, 1)
+        if CHANGED_CELL_STYLE in style:
+            return (1, 0)
     normalized = text.lower().lstrip("●○ ").strip()
     if normalized in {"", "-", "none", "unknown"}:
         return (0, "")
@@ -149,10 +165,26 @@ def sortable_cell_value(value: Any) -> tuple[int, Any]:
 def realtime_status_badge(status: str) -> Text:
     normalized = status.strip().lower()
     if normalized == "yes":
-        return Text("● Yes", style=POSITIVE_CELL_STYLE)
-    if normalized == "no":
-        return Text("● No", style=CHANGED_CELL_STYLE)
-    return Text("● Unknown", style=f"dim {CHANGED_CELL_STYLE}")
+        return Text("●", style=POSITIVE_CELL_STYLE)
+    return Text("●", style=CHANGED_CELL_STYLE)
+
+
+def selected_table_row_key(table: DataTable) -> Any | None:
+    if table.row_count == 0:
+        return None
+    try:
+        return table.ordered_rows[table.cursor_row].key
+    except Exception:
+        return None
+
+
+def restore_table_row_selection(table: DataTable, row_key: Any | None) -> None:
+    if row_key is None:
+        return
+    try:
+        table.move_cursor(row=table.get_row_index(row_key), animate=False, scroll=False)
+    except Exception:
+        return
 
 
 def render_table(title: str, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
@@ -164,6 +196,14 @@ def render_table(title: str, columns: list[str], rows: list[tuple[Any, ...]]) ->
         table.add_row(*(str(value) for value in row))
 
     console.print(table)
+
+
+def plain_row(row: tuple[Any, ...]) -> tuple[str, ...]:
+    return tuple(plain_cell_value(value) for value in row)
+
+
+def rows_as_dicts(columns: list[str], rows: list[tuple[Any, ...]]) -> list[dict[str, str]]:
+    return [dict(zip(columns, plain_row(row))) for row in rows]
 
 
 def render_message(title: str, lines: list[str]) -> None:
@@ -688,6 +728,51 @@ def stop_loss_request_log_lines(preview: dict[str, Any]) -> list[str]:
     return [line.replace("[", "\\[").replace("]", "\\]") for line in format_stop_loss_request(preview)]
 
 
+def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
+    valid_until = args.get("valid_until")
+    if isinstance(valid_until, str):
+        valid_until = date.fromisoformat(valid_until)
+    if not isinstance(valid_until, date):
+        raise ValueError("valid_until must be an ISO date string.")
+
+    trigger = StopLossTrigger(
+        type=enum_value(StopLossTriggerType, str(args.get("trigger_type", "follow-upwards"))),
+        value=float(args["trigger_value"]),
+        valid_until=valid_until,
+        value_type=enum_value(StopLossPriceType, parse_price_type(str(args.get("trigger_value_type", "SEK")))),
+        trigger_on_market_maker_quote=bool(args.get("trigger_on_market_maker_quote", False)),
+    )
+    order_event = StopLossOrderEvent(
+        type=enum_value(OrderType, str(args.get("order_type", "sell"))),
+        price=float(args["order_price"]),
+        volume=float(args["volume"]),
+        valid_days=int(args.get("order_valid_days", 1)),
+        price_type=enum_value(StopLossPriceType, parse_price_type(str(args.get("order_price_type", "SEK")))),
+        short_selling_allowed=bool(args.get("short_selling_allowed", False)),
+    )
+    preview = {
+        "parent_stop_loss_id": str(args.get("parent_stop_loss_id", "0")),
+        "account_id": str(args["account_id"]),
+        "order_book_id": str(args["order_book_id"]),
+        "stop_loss_trigger": {
+            "type": trigger.type.value,
+            "value": trigger.value,
+            "valid_until": trigger.valid_until.isoformat(),
+            "value_type": trigger.value_type.value,
+            "trigger_on_market_maker_quote": trigger.trigger_on_market_maker_quote,
+        },
+        "stop_loss_order_event": {
+            "type": order_event.type.value,
+            "price": order_event.price,
+            "volume": order_event.volume,
+            "valid_days": order_event.valid_days,
+            "price_type": order_event.price_type.value,
+            "short_selling_allowed": order_event.short_selling_allowed,
+        },
+    }
+    return trigger, order_event, preview
+
+
 def render_accounts_overview(overview: dict[str, Any]) -> None:
     accounts = account_rows_from_overview(overview)
     if not accounts:
@@ -882,6 +967,187 @@ class PaneResizer(Static):
         event.stop()
 
 
+MCP_TOOLS = [
+    {
+        "name": "avanza_status",
+        "description": "Show TUI MCP bridge status, selected account, and current safety mode.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "avanza_accounts",
+        "description": "List Avanza accounts currently visible to the authenticated TUI session.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "avanza_portfolio",
+        "description": "List portfolio positions for the selected account, or a supplied account_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoplosses",
+        "description": "List stop-loss orders for the selected account, or a supplied account_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_search_stock",
+        "description": "Search Avanza stock/order book data by name, ticker, or ISIN.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoploss_set",
+        "description": "Dry-run or place a stop-loss order. Live placement requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_book_id": {"type": "string"},
+                "trigger_type": {"type": "string"},
+                "trigger_value": {"type": "number"},
+                "trigger_value_type": {"type": "string", "default": "%"},
+                "valid_until": {"type": "string"},
+                "order_type": {"type": "string", "default": "sell"},
+                "order_price": {"type": "number"},
+                "order_price_type": {"type": "string", "default": "%"},
+                "volume": {"type": "number"},
+                "order_valid_days": {"type": "integer", "default": 1},
+                "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
+                "short_selling_allowed": {"type": "boolean", "default": False},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": [
+                "account_id",
+                "order_book_id",
+                "trigger_value",
+                "valid_until",
+                "order_price",
+                "volume",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoploss_delete",
+        "description": "Dry-run or delete a stop-loss order. Live deletion requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "stop_loss_id": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "stop_loss_id"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+class AvanzaMcpHttpServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, server_address: tuple[str, int], handler_class: type[BaseHTTPRequestHandler], app: "AvanzaTradingTui", token: str) -> None:
+        super().__init__(server_address, handler_class)
+        self.app = app
+        self.token = token
+
+
+class AvanzaMcpRequestHandler(BaseHTTPRequestHandler):
+    server: AvanzaMcpHttpServer
+
+    def log_message(self, _format: str, *_args: Any) -> None:
+        return
+
+    def send_json(self, status_code: int, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def authorized(self) -> bool:
+        expected = self.server.token
+        auth = self.headers.get("Authorization", "")
+        header_token = self.headers.get("X-Avanza-MCP-Token", "")
+        return auth == f"Bearer {expected}" or header_token == expected
+
+    def read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b"{}"
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Expected JSON object.")
+        return data
+
+    def do_GET(self) -> None:
+        if self.path != "/status":
+            self.send_json(404, {"error": "not found"})
+            return
+        if not self.authorized():
+            self.send_json(401, {"error": "unauthorized"})
+            return
+        payload = self.server.app.call_from_thread(self.server.app.mcp_status_payload)
+        self.send_json(200, payload)
+
+    def do_POST(self) -> None:
+        if self.path != "/call":
+            self.send_json(404, {"error": "not found"})
+            return
+        if not self.authorized():
+            self.send_json(401, {"error": "unauthorized"})
+            return
+        try:
+            request = self.read_json_body()
+            tool = str(request.get("tool", ""))
+            arguments = request.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                raise ValueError("arguments must be an object.")
+            payload = self.server.app.call_from_thread(self.server.app.handle_mcp_tool_call, tool, arguments)
+            self.send_json(200, payload)
+        except Exception as exc:
+            self.send_json(500, {"ok": False, "error": str(exc)})
+
+
+def mcp_session_payload(host: str, port: int, token: str, read_write: bool) -> dict[str, Any]:
+    return {
+        "url": f"http://{host}:{port}",
+        "token": token,
+        "read_write": read_write,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "proxy_command": f"python {Path(__file__).name} mcp",
+    }
+
+
+def write_mcp_session_file(path: Path, payload: dict[str, Any]) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def remove_mcp_session_file(path: Path | None = None) -> None:
+    path = path or MCP_SESSION_FILE
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 class AvanzaTradingTui(App):
     CSS = """
     Screen {
@@ -943,6 +1209,17 @@ class AvanzaTradingTui(App):
     #live-status {
         width: 10;
         color: $success;
+    }
+
+    #mcp-label,
+    #mcp-write-label {
+        width: 4;
+        color: $text-muted;
+    }
+
+    #mcp-enabled,
+    #mcp-write-enabled {
+        width: 8;
     }
 
     #main {
@@ -1011,9 +1288,18 @@ class AvanzaTradingTui(App):
         margin-bottom: 1;
     }
 
-    #log {
+    #console-row {
         height: 6;
+    }
+
+    #log {
+        width: 1fr;
         border: solid $primary;
+    }
+
+    #mcp-log {
+        width: 1fr;
+        border: solid $warning;
     }
 
     Button {
@@ -1083,6 +1369,10 @@ class AvanzaTradingTui(App):
         self.table_sort_state: dict[str, tuple[Any, bool]] = {}
         self.realtime_status_by_order_book: dict[str, str] = {}
         self.realtime_status_checked_at: dict[str, datetime] = {}
+        self.mcp_server: AvanzaMcpHttpServer | None = None
+        self.mcp_thread: threading.Thread | None = None
+        self.mcp_token: str | None = None
+        self.mcp_write_enabled = False
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.is_resizing_panes = False
@@ -1115,6 +1405,10 @@ class AvanzaTradingTui(App):
                 yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
                 yield Button("Refresh", id="refresh-all", variant="primary")
                 yield Button("Add Stop-Loss", id="open-stoploss-modal", variant="warning")
+                yield Static("MCP", id="mcp-label")
+                yield Switch(value=False, id="mcp-enabled")
+                yield Static("R/W", id="mcp-write-label")
+                yield Switch(value=False, id="mcp-write-enabled")
             with Vertical(id="main"):
                 with Vertical(id="positions-panel"):
                     yield Static("Selected Account Positions", classes="panel")
@@ -1126,7 +1420,9 @@ class AvanzaTradingTui(App):
                     with Horizontal():
                         yield Button("Refresh Account", id="refresh-account", variant="primary")
                         yield Button("Clear Log", id="clear-log")
-                    yield RichLog(id="log", highlight=True, markup=True)
+                    with Horizontal(id="console-row"):
+                        yield RichLog(id="log", highlight=True, markup=True)
+                        yield RichLog(id="mcp-log", highlight=True, markup=True)
             with Vertical(id="stoploss-modal"):
                 yield Static("New Stop-Loss", classes="panel")
                 yield Static("Uses the selected account.", id="stoploss-account-note")
@@ -1203,6 +1499,7 @@ class AvanzaTradingTui(App):
         portfolio_table.cursor_type = "row"
         portfolio_table.zebra_stripes = True
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
+        self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
 
     def on_resize(self, event: events.Resize) -> None:
         self.last_resize = (event.size.width, event.size.height)
@@ -1285,6 +1582,12 @@ class AvanzaTradingTui(App):
     def write_log(self, message: str) -> None:
         self.query_one("#log", RichLog).write(message)
 
+    def write_mcp_log(self, message: str) -> None:
+        try:
+            self.query_one("#mcp-log", RichLog).write(message)
+        except Exception:
+            self.write_log(message)
+
     def require_connection(self) -> Avanza:
         if self.avanza is None:
             raise RuntimeError("Log in first.")
@@ -1303,6 +1606,172 @@ class AvanzaTradingTui(App):
             )
         else:
             self.query_one("#selected-account", Static).update("Selected account: none")
+
+    def mcp_status_payload(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "enabled": self.mcp_server is not None,
+            "read_write": self.mcp_write_enabled,
+            "selected_account_id": self.selected_account_id,
+            "accounts_loaded": len(self.accounts),
+        }
+
+    def update_mcp_session_file(self) -> None:
+        if self.mcp_server is None or self.mcp_token is None:
+            return
+        host, port = self.mcp_server.server_address
+        write_mcp_session_file(
+            MCP_SESSION_FILE,
+            mcp_session_payload(str(host), int(port), self.mcp_token, self.mcp_write_enabled),
+        )
+
+    def start_mcp_bridge(self) -> None:
+        self.require_connection()
+        if self.mcp_server is not None:
+            return
+        self.mcp_token = secrets.token_urlsafe(24)
+        server = AvanzaMcpHttpServer(("127.0.0.1", 0), AvanzaMcpRequestHandler, self, self.mcp_token)
+        self.mcp_server = server
+        self.mcp_thread = threading.Thread(target=server.serve_forever, name="avanza-mcp-bridge", daemon=True)
+        self.mcp_thread.start()
+        self.update_mcp_session_file()
+        host, port = server.server_address
+        self.write_mcp_log(f"[green]MCP enabled[/green] at http://{host}:{port}.")
+        self.write_mcp_log(f"Proxy command: python {Path(__file__).name} mcp")
+
+    def stop_mcp_bridge(self) -> None:
+        if self.mcp_server is None:
+            remove_mcp_session_file()
+            return
+        server = self.mcp_server
+        self.mcp_server = None
+        self.mcp_token = None
+        server.shutdown()
+        server.server_close()
+        remove_mcp_session_file()
+        self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
+
+    def on_unmount(self) -> None:
+        self.stop_mcp_bridge()
+
+    def require_mcp_write(self, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        if not self.mcp_write_enabled:
+            raise PermissionError("TUI MCP mode is read-only. Enable R/W in the TUI for live mutations.")
+
+    def handle_mcp_tool_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.write_mcp_log(f"← {tool}")
+        try:
+            result = self.execute_mcp_tool(tool, arguments)
+            self.write_mcp_log(f"[green]✓[/green] {tool}")
+            return {
+                "ok": True,
+                "tool": tool,
+                "read_write": self.mcp_write_enabled,
+                "result": result,
+            }
+        except Exception as exc:
+            self.write_mcp_log(f"[red]✗ {tool}:[/red] {exc}")
+            return {
+                "ok": False,
+                "tool": tool,
+                "read_write": self.mcp_write_enabled,
+                "error": str(exc),
+            }
+
+    def execute_mcp_tool(self, tool: str, arguments: dict[str, Any]) -> Any:
+        avanza = self.require_connection()
+        account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+
+        if tool == "avanza_status":
+            return self.mcp_status_payload()
+
+        if tool == "avanza_accounts":
+            overview = avanza.get_overview()
+            accounts = account_rows_from_overview(overview) if isinstance(overview, dict) else []
+            return rows_as_dicts(["ID", "Name", "Type", "Total Value", "Buying Power", "Status"], [account_row(account) for account in accounts])
+
+        if tool == "avanza_portfolio":
+            data = avanza.get_accounts_positions()
+            if not isinstance(data, dict):
+                raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
+            rows = []
+            for section in ("withOrderbook", "withoutOrderbook"):
+                for item in data.get(section, []):
+                    if isinstance(item, dict) and matches_account(item, account_id or None):
+                        status = self.realtime_status_for_position(item)
+                        row = list(position_state_row(item, status))
+                        row[-1] = status
+                        rows.append(tuple(row))
+            return {
+                "account_id": account_id or None,
+                "positions": rows_as_dicts(
+                    ["Instrument", "Order Book ID", "Volume", "Value", "Avg Price", "Day %", "Day SEK", "Profit %", "Profit", "Real-time"],
+                    rows,
+                ),
+            }
+
+        if tool == "avanza_stoplosses":
+            data = avanza.get_all_stop_losses()
+            if not isinstance(data, list):
+                raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
+            rows = [stop_loss_row(item) for item in data if isinstance(item, dict) and matches_account(item, account_id or None)]
+            return {
+                "account_id": account_id or None,
+                "stoplosses": rows_as_dicts(
+                    ["ID", "Status", "Account", "Account ID", "Instrument", "Order Book ID", "Trigger", "Order", "Valid Until"],
+                    rows,
+                ),
+            }
+
+        if tool == "avanza_search_stock":
+            query = str(arguments["query"])
+            limit = int(arguments.get("limit", 10))
+            hits = flattened_search_hits(avanza.search_for_stock(query, limit))
+            return [
+                {
+                    "name": hit.get("name", ""),
+                    "ticker": hit.get("tickerSymbol", ""),
+                    "instrument_type": hit.get("instrumentType", ""),
+                    "order_book_id": hit.get("id", "") or hit.get("orderbookId", ""),
+                    "isin": hit.get("isin", ""),
+                    "currency": hit.get("currency", ""),
+                }
+                for hit in hits
+            ]
+
+        if tool == "avanza_stoploss_set":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            trigger, order_event, preview = build_stop_loss_preview(arguments)
+            if not confirmed:
+                return {"dry_run": True, "summary": format_stop_loss_request(preview), "request": preview}
+            result = avanza.place_stop_loss_order(
+                parent_stop_loss_id=preview["parent_stop_loss_id"],
+                account_id=preview["account_id"],
+                order_book_id=preview["order_book_id"],
+                stop_loss_trigger=trigger,
+                stop_loss_order_event=order_event,
+            )
+            return {"dry_run": False, "request": preview, "result": result}
+
+        if tool == "avanza_stoploss_delete":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            request = {
+                "account_id": str(arguments["account_id"]),
+                "stop_loss_id": str(arguments["stop_loss_id"]),
+            }
+            if not confirmed:
+                return {"dry_run": True, "request": request}
+            return {
+                "dry_run": False,
+                "request": request,
+                "result": avanza.delete_stop_loss_order(request["account_id"], request["stop_loss_id"]),
+            }
+
+        raise ValueError(f"Unknown MCP tool: {tool}")
 
     def realtime_status_for_position(self, item: dict[str, Any]) -> str:
         direct_status = realtime_status(item)
@@ -1386,6 +1855,7 @@ class AvanzaTradingTui(App):
     def refresh_stoplosses(self) -> None:
         avanza = self.require_connection()
         table = self.query_one("#stoploss-table", DataTable)
+        selected_row_key = selected_table_row_key(table)
         table.clear()
 
         visible_count = 0
@@ -1422,6 +1892,7 @@ class AvanzaTradingTui(App):
                 order_count += 1
 
         self.reapply_table_sort(table)
+        restore_table_row_selection(table, selected_row_key)
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
 
@@ -1453,6 +1924,7 @@ class AvanzaTradingTui(App):
     def refresh_portfolio(self) -> None:
         avanza = self.require_connection()
         table = self.query_one("#portfolio-table", DataTable)
+        selected_row_key = selected_table_row_key(table)
         table.clear()
 
         data = avanza.get_accounts_positions()
@@ -1491,6 +1963,7 @@ class AvanzaTradingTui(App):
 
         self.position_row_cache = next_cache
         self.reapply_table_sort(table)
+        restore_table_row_selection(table, selected_row_key)
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
 
@@ -1549,6 +2022,23 @@ class AvanzaTradingTui(App):
             volume_input = self.query_one("#volume", Input)
             if not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        try:
+            if event.switch.id == "mcp-enabled":
+                if event.value:
+                    self.start_mcp_bridge()
+                else:
+                    self.stop_mcp_bridge()
+            elif event.switch.id == "mcp-write-enabled":
+                self.mcp_write_enabled = bool(event.value)
+                self.update_mcp_session_file()
+                mode = "read/write" if self.mcp_write_enabled else "read-only"
+                self.write_mcp_log(f"MCP mode: {mode}.")
+        except Exception as exc:
+            self.write_mcp_log(f"[red]MCP switch failed:[/red] {exc}")
+            if event.switch.id == "mcp-enabled":
+                event.switch.value = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -1627,8 +2117,138 @@ class AvanzaTradingTui(App):
         self.refresh_stoplosses()
 
 
+def load_mcp_session(path: Path | None = None) -> dict[str, Any]:
+    path = path or MCP_SESSION_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"MCP session file not found: {path}. Enable MCP mode in the TUI first.") from exc
+    if not isinstance(data, dict) or not data.get("url") or not data.get("token"):
+        raise RuntimeError(f"Invalid MCP session file: {path}")
+    return data
+
+
+def call_mcp_bridge(session: dict[str, Any], tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    url = str(session["url"]).rstrip("/") + "/call"
+    body = json.dumps({"tool": tool, "arguments": arguments}).encode("utf-8")
+    request = Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {session['token']}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        payload = json.loads(exc.read().decode("utf-8") or "{}")
+        payload.setdefault("ok", False)
+        payload.setdefault("error", f"HTTP {exc.code}")
+    except URLError as exc:
+        raise RuntimeError(f"Could not reach TUI MCP bridge at {url}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("MCP bridge returned a non-object response.")
+    return payload
+
+
+def mcp_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+            }
+        ],
+        "isError": not bool(payload.get("ok", True)),
+    }
+
+
+def read_mcp_message(stream: Any) -> dict[str, Any] | None:
+    headers: dict[str, str] = {}
+    while True:
+        line = stream.readline()
+        if line == b"":
+            return None
+        if line in (b"\r\n", b"\n"):
+            break
+        key, _, value = line.decode("utf-8").partition(":")
+        headers[key.lower()] = value.strip()
+    length = int(headers.get("content-length", "0"))
+    if length <= 0:
+        return None
+    return json.loads(stream.read(length).decode("utf-8"))
+
+
+def write_mcp_message(stream: Any, payload: dict[str, Any]) -> None:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+    stream.flush()
+
+
+def mcp_success(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": message_id, "result": result}
+
+
+def mcp_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
+
+
+def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
+    session = load_mcp_session(session_file)
+    input_stream = sys.stdin.buffer
+    output_stream = sys.stdout.buffer
+
+    while True:
+        message = read_mcp_message(input_stream)
+        if message is None:
+            return
+        method = message.get("method")
+        message_id = message.get("id")
+        params = message.get("params") or {}
+        if message_id is None and str(method).startswith("notifications/"):
+            continue
+
+        try:
+            if method == "initialize":
+                write_mcp_message(
+                    output_stream,
+                    mcp_success(
+                        message_id,
+                        {
+                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "avanza_cli", "version": "0.1.0"},
+                        },
+                    ),
+                )
+            elif method == "notifications/initialized":
+                continue
+            elif method == "ping":
+                write_mcp_message(output_stream, mcp_success(message_id, {}))
+            elif method == "tools/list":
+                write_mcp_message(output_stream, mcp_success(message_id, {"tools": MCP_TOOLS}))
+            elif method == "tools/call":
+                tool_name = str(params.get("name", ""))
+                arguments = params.get("arguments") or {}
+                if not isinstance(arguments, dict):
+                    raise ValueError("arguments must be an object.")
+                payload = call_mcp_bridge(session, tool_name, arguments)
+                write_mcp_message(output_stream, mcp_success(message_id, mcp_tool_response(payload)))
+            else:
+                write_mcp_message(output_stream, mcp_error(message_id, -32601, f"Unknown method: {method}"))
+        except Exception as exc:
+            write_mcp_message(output_stream, mcp_error(message_id, -32000, str(exc)))
+
+
 def cmd_tui(_args: argparse.Namespace) -> None:
     AvanzaTradingTui().run()
+
+
+def cmd_mcp(args: argparse.Namespace) -> None:
+    run_mcp_stdio_proxy(Path(args.session_file))
 
 
 def cmd_accounts(args: argparse.Namespace) -> None:
@@ -1774,6 +2394,32 @@ def build_parser() -> argparse.ArgumentParser:
         description="Launch the interactive terminal UI for account switching, portfolio viewing, and stop-loss management.",
     )
     tui.set_defaults(func=cmd_tui)
+
+    mcp = subparsers.add_parser(
+        "mcp",
+        formatter_class=HELP_FORMATTER,
+        help="Run the stdio MCP proxy for a TUI-managed authenticated session.",
+        description=textwrap.dedent(
+            """\
+            Run a stdio MCP server proxy that forwards tool calls to the currently
+            authenticated TUI MCP bridge. Start `python avanza_cli.py tui`, log in,
+            enable MCP mode in the TUI, then configure Codex/desktop clients to run
+            this command.
+            """
+        ),
+        epilog=textwrap.dedent(
+            """\
+            Example MCP server command:
+              python avanza_cli.py mcp
+            """
+        ),
+    )
+    mcp.add_argument(
+        "--session-file",
+        default=str(MCP_SESSION_FILE),
+        help="Path to the TUI-written MCP session file. Default: .avanza_mcp_session.json next to avanza_cli.py.",
+    )
+    mcp.set_defaults(func=cmd_mcp)
 
     accounts = subparsers.add_parser(
         "accounts",

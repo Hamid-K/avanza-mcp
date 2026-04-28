@@ -92,6 +92,14 @@ The TUI masks password and TOTP inputs, clears those fields after a successful l
 
 After login, the largest account by total value is selected by default. Use the wider account selector in the top bar to switch accounts; the right side shows total value, buying power, status, and the current portfolio profit summary. The main table shows the selected account's stock/share positions with day movement, profit state, and a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. When that flag is missing from the portfolio response, the TUI checks Avanza market/orderbook/instrument details and caches the result per order book. The lower table shows stop-losses and open orders for the selected account, with trigger and price values labeled as `SEK` or `%`. Click any table column header to sort by that column; click the same header again to reverse the order. Drag the divider between the two tables to resize the panes. Position and order state refreshes live every 5 seconds.
 
+The TUI also has an MCP mode. Log in through the TUI, enable the `MCP` switch, then configure Codex or another MCP client to run:
+
+```bash
+python avanza_cli.py mcp
+```
+
+The MCP proxy forwards tool calls to the authenticated TUI session through a localhost bridge. MCP mode starts read-only. The `R/W` switch enables live mutations, and live stop-loss placement/deletion still requires the MCP tool call to include `confirm: true`. MCP activity is shown in the lower-right log console.
+
 ## Safety
 
 This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of `%` and gliding stop-loss fields with very small size before trusting it for meaningful orders.

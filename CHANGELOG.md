@@ -23,4 +23,6 @@
 - Added clickable TUI table-header sorting with repeated clicks toggling ascending/descending order.
 - Resolved missing real-time quote statuses from Avanza market/orderbook/instrument detail endpoints with a short cache.
 - Rendered real-time status as green/yellow dot indicators and fixed TUI pane drag resizing.
+- Added TUI-managed MCP mode with a stdio proxy command, read-only default, optional R/W toggle, and a dedicated MCP activity log.
+- Preserved selected table rows across live refreshes when the selected row still exists.
 - Added project documentation, packaging metadata, and tests.

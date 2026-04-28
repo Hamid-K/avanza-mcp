@@ -9,7 +9,17 @@ from textual.widgets import DataTable
 from avanza.constants import OrderType, StopLossPriceType
 from rich.text import Text
 
-from avanza_cli import build_parser, enum_value, parse_date, parse_price_type, prompt_credentials
+from avanza_cli import (
+    build_parser,
+    call_mcp_bridge,
+    enum_value,
+    load_mcp_session,
+    parse_date,
+    parse_price_type,
+    prompt_credentials,
+    restore_table_row_selection,
+    selected_table_row_key,
+)
 
 
 def test_parse_date_accepts_iso_date():
@@ -38,6 +48,9 @@ def test_parser_includes_portfolio_commands():
     assert args.command == "portfolio"
     assert args.portfolio_command == "positions"
     assert args.username == "alice"
+
+    mcp_args = parser.parse_args(["mcp"])
+    assert mcp_args.command == "mcp"
 
 
 def test_help_includes_examples_and_safety_notes(capsys):
@@ -72,6 +85,9 @@ def test_tui_mounts_headless():
             assert app.query_one("#workspace").display is False
             assert app.query_one("#account-select") is not None
             assert app.query_one("#portfolio-table") is not None
+            assert app.query_one("#mcp-enabled") is not None
+            assert app.query_one("#mcp-write-enabled") is not None
+            assert app.query_one("#mcp-log") is not None
             resizer = app.query_one("#pane-resizer")
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
@@ -97,8 +113,10 @@ def test_tui_mounts_headless():
     asyncio.run(run_app())
 
 
-def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
+def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
+
+    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
 
     class FakeAvanza:
         def __init__(self, credentials):
@@ -156,6 +174,9 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
         def get_orders(self):
             return []
 
+        def delete_stop_loss_order(self, account_id, stop_loss_id):
+            return {"deleted": True, "account_id": account_id, "stop_loss_id": stop_loss_id}
+
     monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
 
     async def run_app() -> None:
@@ -181,6 +202,43 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
             assert app.query_one("#instrument-select").value == "ob-1"
             assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}
             assert app.live_refresh_timer is not None
+            assert app.execute_mcp_tool("avanza_status", {})["read_write"] is False
+            accounts = app.execute_mcp_tool("avanza_accounts", {})
+            assert accounts[1]["Name"] == "Trading"
+            portfolio = app.execute_mcp_tool("avanza_portfolio", {})
+            assert portfolio["positions"][0]["Real-time"] == "Unknown"
+            dry_run = app.execute_mcp_tool(
+                "avanza_stoploss_set",
+                {
+                    "account_id": "acc-2",
+                    "order_book_id": "ob-1",
+                    "trigger_value": 5,
+                    "trigger_value_type": "%",
+                    "valid_until": "2026-05-28",
+                    "order_price": 1,
+                    "order_price_type": "%",
+                    "volume": 10,
+                },
+            )
+            assert dry_run["dry_run"] is True
+            with pytest.raises(PermissionError):
+                app.execute_mcp_tool(
+                    "avanza_stoploss_delete",
+                    {"account_id": "acc-2", "stop_loss_id": "sl-1", "confirm": True},
+                )
+            app.mcp_write_enabled = True
+            deletion = app.execute_mcp_tool(
+                "avanza_stoploss_delete",
+                {"account_id": "acc-2", "stop_loss_id": "sl-1", "confirm": True},
+            )
+            assert deletion["dry_run"] is False
+            assert deletion["result"]["deleted"] is True
+            app.start_mcp_bridge()
+            session = load_mcp_session(tmp_path / "mcp-session.json")
+            bridge_status = await asyncio.to_thread(call_mcp_bridge, session, "avanza_status", {})
+            assert bridge_status["ok"] is True
+            assert bridge_status["result"]["enabled"] is True
+            app.stop_mcp_bridge()
 
     asyncio.run(run_app())
 
@@ -197,6 +255,11 @@ def test_tui_tracks_terminal_resize():
             assert app.last_resize == (120, 40)
 
     asyncio.run(run_app())
+
+
+def test_load_mcp_session_requires_existing_session_file(tmp_path):
+    with pytest.raises(RuntimeError):
+        load_mcp_session(tmp_path / "missing-session.json")
 
 
 def test_tui_sorts_table_when_header_is_clicked():
@@ -218,6 +281,30 @@ def test_tui_sorts_table_when_header_is_clicked():
             app.on_data_table_header_selected(DataTable.HeaderSelected(table, value_column, 3, label))
             await pilot.pause()
             assert table.get_row_at(0)[0] == "Beta"
+
+    asyncio.run(run_app())
+
+
+def test_table_selection_can_be_restored_after_rebuild():
+    from avanza_cli import AvanzaTradingTui
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            table = app.query_one("#portfolio-table", DataTable)
+            table.add_row("Alpha", key="row-a")
+            table.add_row("Beta", key="row-b")
+            table.move_cursor(row=1, animate=False, scroll=False)
+            row_key = selected_table_row_key(table)
+            assert table.get_row_at(table.cursor_row)[0] == "Beta"
+
+            table.clear()
+            table.add_row("Beta", key="row-b")
+            table.add_row("Alpha", key="row-a")
+            restore_table_row_selection(table, row_key)
+            await pilot.pause()
+
+            assert table.get_row_at(table.cursor_row)[0] == "Beta"
 
     asyncio.run(run_app())
 

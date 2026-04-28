@@ -1,3 +1,5 @@
+import io
+
 from avanza_cli import (
     account_display_name,
     account_row,
@@ -16,6 +18,10 @@ from avanza_cli import (
     position_holding_label,
     position_row,
     lookup_realtime_status,
+    mcp_error,
+    mcp_success,
+    mcp_tool_response,
+    read_mcp_message,
     realtime_status,
     realtime_status_badge,
     sortable_cell_value,
@@ -23,6 +29,7 @@ from avanza_cli import (
     stoploss_volume_by_order_book,
     stop_loss_activity_row,
     stop_loss_row,
+    write_mcp_message,
 )
 
 
@@ -193,14 +200,14 @@ def test_position_state_row_includes_day_and_profit_state():
         "+22.22%",
         "+200.00 SEK",
     )
-    assert row[9].plain == "● Yes"
+    assert row[9].plain == "●"
     assert str(row[9].style) == "#7fbf8f"
 
 
 def test_realtime_status_badge_uses_green_or_yellow_dot():
-    assert realtime_status_badge("Yes").plain == "● Yes"
+    assert realtime_status_badge("Yes").plain == "●"
     assert str(realtime_status_badge("Yes").style) == "#7fbf8f"
-    assert realtime_status_badge("No").plain == "● No"
+    assert realtime_status_badge("No").plain == "●"
     assert str(realtime_status_badge("No").style) == "#d7ba7d"
 
 
@@ -231,6 +238,28 @@ def test_lookup_realtime_status_uses_instrument_details_when_portfolio_is_unknow
     item = {"instrument": {"orderbook": {"id": "ob-1"}}}
 
     assert lookup_realtime_status(FakeAvanza(), item) == "No"
+
+
+def test_mcp_tool_response_marks_errors():
+    assert mcp_tool_response({"ok": True})["isError"] is False
+    assert mcp_tool_response({"ok": False, "error": "nope"})["isError"] is True
+
+
+def test_mcp_message_framing_round_trip():
+    stream = io.BytesIO()
+    payload = mcp_success(1, {"tools": []})
+    write_mcp_message(stream, payload)
+    stream.seek(0)
+
+    assert read_mcp_message(stream) == payload
+
+
+def test_mcp_error_shape():
+    assert mcp_error(9, -32601, "missing") == {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "error": {"code": -32601, "message": "missing"},
+    }
 
 
 def test_changed_position_row_styles_only_changed_numeric_cells():
