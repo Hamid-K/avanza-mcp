@@ -96,10 +96,20 @@ def test_tui_mounts_headless():
             assert app.query_one("#login-screen").display is True
             assert app.query_one("#workspace").display is False
             assert app.query_one("#account-row") is not None
-            assert app.query_one("#action-row") is not None
+            assert app.query_one("#metric-grid") is not None
+            assert app.query_one("#clock-status") is not None
+            assert app.query_one("#button-controls") is not None
+            assert app.query_one("#toggle-controls") is not None
             assert app.query_one("#account-select") is not None
+            assert app.query_one("#metric-total") is not None
+            assert app.query_one("#metric-buying") is not None
+            assert app.query_one("#metric-profit") is not None
+            assert app.query_one("#metric-status") is not None
             assert app.query_one("#portfolio-table") is not None
             assert app.query_one("#active-trades-table") is not None
+            assert app.query_one("#side-pane-resizer") is not None
+            assert app.query_one("#order-modal").display is False
+            assert app.query_one("#paper-mode-enabled") is not None
             assert app.query_one("#mcp-controls") is not None
             assert app.query_one("#mcp-write-controls") is not None
             assert app.query_one("#mcp-enabled") is not None
@@ -113,9 +123,11 @@ def test_tui_mounts_headless():
             assert app.activity_pane_weight == 2
 
             class FakeMouse:
-                def __init__(self, screen_y):
+                def __init__(self, screen_y=0, screen_x=0):
                     self.screen_y = screen_y
+                    self.screen_x = screen_x
                     self.y = screen_y
+                    self.x = screen_x
 
                 def stop(self):
                     pass
@@ -126,6 +138,13 @@ def test_tui_mounts_headless():
             assert app.activity_pane_weight == 1
             resizer.on_mouse_up(FakeMouse(12))
             assert app.is_resizing_panes is False
+
+            side_resizer = app.query_one("#side-pane-resizer")
+            side_resizer.on_mouse_down(FakeMouse(screen_x=100))
+            side_resizer.on_mouse_move(FakeMouse(screen_x=95))
+            assert app.active_trades_width == 47
+            side_resizer.on_mouse_up(FakeMouse(screen_x=95))
+            assert app.is_resizing_side_pane is False
 
     asyncio.run(run_app())
 
@@ -211,14 +230,15 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert app.query_one("#password").value == ""
             assert app.query_one("#totp").value == ""
             assert app.selected_account_id == "acc-2"
-            summary = str(app.query_one("#selected-account").render())
-            assert "Trading" not in summary
-            assert "5,000" in summary or "5000" in summary
-            assert "Profit" in summary
+            total_metric = str(app.query_one("#metric-total").render())
+            profit_metric = str(app.query_one("#metric-profit").render())
+            assert "5,000" in total_metric or "5000" in total_metric
+            assert "Profit" in profit_metric
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
             assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}
             assert app.live_refresh_timer is not None
+            assert app.paper_mode_enabled is True
             assert app.execute_mcp_tool("avanza_status", {})["read_write"] is False
             accounts = app.execute_mcp_tool("avanza_accounts", {})
             assert accounts[1]["Name"] == "Trading"
@@ -240,7 +260,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert dry_run["dry_run"] is True
             snapshot = app.execute_mcp_tool("avanza_live_snapshot", {})
             assert snapshot["poll_interval_seconds"] == 5.0
-            assert snapshot["portfolio"]["positions"][0]["Instrument"] == "Example AB"
+            assert snapshot["portfolio"]["positions"][0]["Stock"] == "Example AB"
             paper_order = app.execute_mcp_tool(
                 "avanza_paper_stoploss_set",
                 {
@@ -263,6 +283,32 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert len(paper_orders["orders"]) == 1
             cancelled = app.execute_mcp_tool("avanza_paper_cancel", {"paper_order_id": paper_order["order"]["id"]})
             assert cancelled["order"]["status"] == "CANCELLED"
+            app.query_one("#valid-until").value = "2026-05-28"
+            app.query_one("#trigger-value").value = "5"
+            app.query_one("#order-price").value = "1"
+            app.query_one("#volume").value = "10"
+            app.handle_place_live()
+            assert len(app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})["orders"]) == 1
+            app.query_one("#regular-order-valid-until").value = "2026-05-28"
+            app.query_one("#regular-order-price").value = "100"
+            app.query_one("#regular-order-volume").value = "3"
+            app.handle_order_place_live()
+            paper_after_order = app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})["orders"]
+            assert any(order["kind"] == "Order" for order in paper_after_order)
+            paper_regular = app.execute_mcp_tool(
+                "avanza_paper_order_set",
+                {
+                    "account_id": "acc-2",
+                    "order_book_id": "ob-1",
+                    "instrument": "Example AB",
+                    "order_type": "buy",
+                    "price": 99,
+                    "valid_until": "2026-05-28",
+                    "volume": 2,
+                    "condition": "normal",
+                },
+            )
+            assert paper_regular["order"]["kind"] == "Order"
             with pytest.raises(PermissionError):
                 app.execute_mcp_tool(
                     "avanza_stoploss_delete",
@@ -339,6 +385,8 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     assert any(tool["name"] == "avanza_status" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_paper_stoploss_set" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_paper_order_set" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_order_set" for tool in tools["result"]["tools"])
 
 
 def test_tui_sorts_table_when_header_is_clicked():

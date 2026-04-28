@@ -16,7 +16,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from avanza import Avanza
-from avanza.constants import InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType
+from avanza.constants import Condition, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
 from rich.panel import Panel
@@ -51,6 +51,7 @@ PRICE_TYPE_ALIASES = {
 }
 PRICE_TYPE_SELECT_OPTIONS = [("SEK", "monetary"), ("%", "percentage")]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
+ORDER_CONDITION_CHOICES = ["normal", "fill-or-kill", "fill-and-kill"]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 CHANGED_CELL_STYLE = "#d7ba7d"
@@ -59,6 +60,8 @@ NEGATIVE_CELL_STYLE = "#d98f8f"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 MIN_PANE_WEIGHT = 1
 MAX_PANE_WEIGHT = 8
+MIN_ACTIVE_TRADES_WIDTH = 30
+MAX_ACTIVE_TRADES_WIDTH = 110
 REALTIME_KEYS = {
     "isRealTime",
     "isRealtime",
@@ -145,6 +148,34 @@ def summarize_mcp_result(result: Any) -> dict[str, Any]:
     return {"value": result}
 
 
+def next_weekday_start(day: date) -> datetime:
+    current = day
+    while current.weekday() >= 5:
+        current = current + timedelta(days=1)
+    return datetime.combine(current, datetime.min.time()).replace(hour=9)
+
+
+def market_clock_text(now: datetime | None = None) -> str:
+    now = now or datetime.now()
+    open_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    close_time = now.replace(hour=17, minute=30, second=0, microsecond=0)
+
+    if now.weekday() < 5 and open_time <= now < close_time:
+        target = close_time
+        label = "OMXS closes"
+    else:
+        if now.weekday() < 5 and now < open_time:
+            target = open_time
+        else:
+            target = next_weekday_start(now.date() + timedelta(days=1))
+        label = "OMXS opens"
+
+    remaining = max(int((target - now).total_seconds()), 0)
+    hours, remainder = divmod(remaining, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{now:%H:%M:%S}  {label} in {hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def pane_weights_after_drag(
     start_positions_weight: int,
     start_activity_weight: int,
@@ -153,6 +184,10 @@ def pane_weights_after_drag(
     positions_weight = clamp(start_positions_weight + delta_rows, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
     activity_weight = clamp(start_activity_weight - delta_rows, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
     return positions_weight, activity_weight
+
+
+def side_panel_width_after_drag(start_width: int, delta_columns: int) -> int:
+    return clamp(start_width - delta_columns, MIN_ACTIVE_TRADES_WIDTH, MAX_ACTIVE_TRADES_WIDTH)
 
 
 def price_type_label(value: Any) -> str:
@@ -266,8 +301,24 @@ def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
     ]
 
 
+def format_order_request(preview: dict[str, Any]) -> list[str]:
+    return [
+        f"Account: {preview['account_id']}",
+        f"Order book: {preview['order_book_id']}",
+        f"Side: {preview['order_type']}",
+        f"Volume: {preview['volume']}",
+        f"Price: {preview['price']} SEK",
+        f"Condition: {preview['condition']}",
+        f"Valid until: {preview['valid_until']}",
+    ]
+
+
 def render_stop_loss_request(title: str, preview: dict[str, Any]) -> None:
     render_message(title, format_stop_loss_request(preview))
+
+
+def render_order_request(title: str, preview: dict[str, Any]) -> None:
+    render_message(title, format_order_request(preview))
 
 
 def render_result(title: str, result: Any) -> None:
@@ -612,6 +663,46 @@ def account_stats_text(
     return text
 
 
+def account_metric_text(label: str, value: str, style: str = "bold") -> Text:
+    text = Text()
+    text.append(label, style="dim")
+    text.append("\n")
+    text.append(value or "-", style=style)
+    return text
+
+
+def account_metric_values(
+    account: dict[str, Any] | None,
+    portfolio_data: dict[str, Any] | None = None,
+    account_id: str | None = None,
+) -> dict[str, Text]:
+    if not account:
+        return {
+            "total": account_metric_text("Total", "-"),
+            "buying": account_metric_text("Buying", "-"),
+            "profit": account_metric_text("Profit", "-"),
+            "status": account_metric_text("Status", "-"),
+        }
+    total = amount(account, "totalValue") or "-"
+    buying_power = amount(account, "buyingPower") or "-"
+    status = str(account.get("status", "")) or "-"
+    profit = "-"
+    profit_style = "dim"
+    if portfolio_data is not None:
+        profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
+        if profit_amount is not None:
+            profit = money_text(profit_amount, value_unit)
+            if profit_percent is not None:
+                profit = f"{profit} ({percent_text(profit_percent)})"
+            profit_style = metric_style(profit_amount)
+    return {
+        "total": account_metric_text("Total", total, "bold"),
+        "buying": account_metric_text("Buying", buying_power, "bold"),
+        "profit": account_metric_text("Profit", profit, profit_style),
+        "status": account_metric_text("Status", status, "bold"),
+    }
+
+
 def position_state_row(item: dict[str, Any], realtime_override: str | None = None) -> tuple[str, ...]:
     instrument = item.get("instrument") or {}
     orderbook = instrument.get("orderbook") or {}
@@ -778,10 +869,13 @@ def active_stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
     return (
         "Live",
         "Stop-loss",
+        str(item.get("id", "")),
         str(orderbook.get("name", "")),
+        str(orderbook.get("id", "")),
         str(order.get("type", "")),
         str(order.get("volume", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        str(trigger.get("validUntil", "")),
         str(item.get("status", "")),
     )
 
@@ -793,31 +887,54 @@ def active_open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
     return (
         "Live",
         "Order",
+        str(item.get("id", "") or item.get("orderId", "")),
         str(orderbook.get("name", "")),
+        str(orderbook.get("id", "") or item.get("orderbookId", "")),
         str(item.get("type", "") or item.get("orderType", "")),
         str(item.get("volume", "")),
         formatted_typed_value(price, price_type) if price_type else str(price),
+        str(item.get("validUntil", "")),
         str(item.get("status", "")),
     )
 
 
 def active_paper_order_row(item: dict[str, Any]) -> tuple[str, ...]:
     request = item.get("request") or {}
+    if item.get("kind") == "Order":
+        return (
+            "Paper",
+            "Order",
+            str(item.get("id", "")),
+            str(item.get("instrument", "") or request.get("order_book_id", "")),
+            str(request.get("order_book_id", "")),
+            str(request.get("order_type", "")),
+            str(request.get("volume", "")),
+            f"{request.get('price', '')} SEK {request.get('condition', '')}".strip(),
+            str(request.get("valid_until", "") or item.get("created_at", "")),
+            str(item.get("status", "")),
+        )
     trigger = request.get("stop_loss_trigger") or {}
     order = request.get("stop_loss_order_event") or {}
     return (
         "Paper",
         str(item.get("kind", "Stop-loss")),
+        str(item.get("id", "")),
         str(item.get("instrument", "") or request.get("order_book_id", "")),
+        str(request.get("order_book_id", "")),
         str(order.get("type", "")),
         str(order.get("volume", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('value_type', ''))}",
+        str(trigger.get("valid_until", "") or item.get("created_at", "")),
         str(item.get("status", "")),
     )
 
 
 def stop_loss_request_log_lines(preview: dict[str, Any]) -> list[str]:
     return [line.replace("[", "\\[").replace("]", "\\]") for line in format_stop_loss_request(preview)]
+
+
+def order_request_log_lines(preview: dict[str, Any]) -> list[str]:
+    return [line.replace("[", "\\[").replace("]", "\\]") for line in format_order_request(preview)]
 
 
 def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
@@ -865,6 +982,27 @@ def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, Stop
     return trigger, order_event, preview
 
 
+def build_order_preview(args: dict[str, Any]) -> tuple[OrderType, Condition, dict[str, Any]]:
+    valid_until = args.get("valid_until")
+    if isinstance(valid_until, str):
+        valid_until = date.fromisoformat(valid_until)
+    if not isinstance(valid_until, date):
+        raise ValueError("valid_until must be an ISO date string.")
+
+    order_type = enum_value(OrderType, str(args.get("order_type", "buy")))
+    condition = enum_value(Condition, str(args.get("condition", "normal")))
+    preview = {
+        "account_id": str(args["account_id"]),
+        "order_book_id": str(args["order_book_id"]),
+        "order_type": order_type.value,
+        "price": float(args["price"]),
+        "valid_until": valid_until.isoformat(),
+        "volume": int(args["volume"]),
+        "condition": condition.value,
+    }
+    return order_type, condition, preview
+
+
 def render_accounts_overview(overview: dict[str, Any]) -> None:
     accounts = account_rows_from_overview(overview)
     if not accounts:
@@ -897,7 +1035,7 @@ def render_portfolio_positions(positions: dict[str, Any]) -> None:
             [
                 "Account",
                 "Account ID",
-                "Instrument",
+                "Stock",
                 "Order Book ID",
                 "ISIN",
                 "Volume",
@@ -909,7 +1047,7 @@ def render_portfolio_positions(positions: dict[str, Any]) -> None:
             position_rows,
         )
     else:
-        render_message("Portfolio Positions", ["No instrument positions found."])
+        render_message("Portfolio Positions", ["No stock positions found."])
 
     if cash_rows:
         render_table(
@@ -1024,12 +1162,30 @@ def render_stoplosses(stoplosses: Any) -> None:
             "Status",
             "Account",
             "Account ID",
-            "Instrument",
+            "Stock",
             "Order Book ID",
             "Trigger",
             "Order",
             "Valid Until",
         ],
+        rows,
+    )
+
+
+def render_orders(orders: Any) -> None:
+    if isinstance(orders, dict):
+        items = orders.get("orders") or orders.get("items") or []
+    elif isinstance(orders, list):
+        items = orders
+    else:
+        items = []
+    rows = [open_order_row(item) for item in items if isinstance(item, dict)]
+    if not rows:
+        render_message("Open Orders", ["No open orders found."])
+        return
+    render_table(
+        "Open Orders",
+        ["Kind", "ID", "Status", "Stock", "Order Book ID", "Side", "Volume", "Price", "Valid Until"],
         rows,
     )
 
@@ -1112,6 +1268,20 @@ def create_paper_stop_loss_order(args: dict[str, Any], instrument: str = "") -> 
     }
 
 
+def create_paper_order(args: dict[str, Any], instrument: str = "") -> dict[str, Any]:
+    _, _, preview = build_order_preview(args)
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    return {
+        "id": f"paper-order-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        "kind": "Order",
+        "status": "ACTIVE",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "instrument": instrument,
+        "request": preview,
+    }
+
+
 def cancel_paper_order(session: dict[str, Any], paper_order_id: str) -> dict[str, Any]:
     for item in session.get("orders", []):
         if isinstance(item, dict) and str(item.get("id", "")) == paper_order_id:
@@ -1144,6 +1314,31 @@ class PaneResizer(Static):
         self.release_mouse()
         self.remove_class("dragging")
         self.app.finish_pane_resize()
+        event.stop()
+
+
+class SidePaneResizer(Static):
+    def __init__(self) -> None:
+        super().__init__("│", id="side-pane-resizer")
+
+    @staticmethod
+    def event_x(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
+        return int(event.screen_x if event.screen_x is not None else event.x)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.capture_mouse(True)
+        self.add_class("dragging")
+        self.app.start_side_pane_resize(self.event_x(event))
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self.app.update_side_pane_resize(self.event_x(event))
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        self.remove_class("dragging")
+        self.app.finish_side_pane_resize()
         event.stop()
 
 
@@ -1243,6 +1438,25 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_paper_order_set",
+        "description": "Create a local paper buy/sell order. This never places an Avanza order and is allowed in MCP read-only mode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_book_id": {"type": "string"},
+                "instrument": {"type": "string"},
+                "order_type": {"type": "string", "default": "buy"},
+                "price": {"type": "number"},
+                "valid_until": {"type": "string"},
+                "volume": {"type": "integer"},
+                "condition": {"type": "string", "default": "normal"},
+            },
+            "required": ["account_id", "order_book_id", "price", "valid_until", "volume"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_paper_cancel",
         "description": "Cancel a local paper order. This never changes Avanza and is allowed in MCP read-only mode.",
         "inputSchema": {
@@ -1281,6 +1495,39 @@ MCP_TOOLS = [
                 "order_price",
                 "volume",
             ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_order_set",
+        "description": "Dry-run or place a regular buy/sell order. Live placement requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_book_id": {"type": "string"},
+                "order_type": {"type": "string", "default": "buy"},
+                "price": {"type": "number"},
+                "valid_until": {"type": "string"},
+                "volume": {"type": "integer"},
+                "condition": {"type": "string", "default": "normal"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "order_book_id", "price", "valid_until", "volume"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_order_delete",
+        "description": "Dry-run or delete a regular open order. Live deletion requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_id": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "order_id"],
             "additionalProperties": False,
         },
     },
@@ -1428,15 +1675,28 @@ class AvanzaTradingTui(App):
     }
 
     #topbar {
-        height: 7;
+        height: 9;
         padding: 0 1;
         background: $panel;
         border-bottom: solid $primary;
     }
 
-    #account-row,
-    #action-row {
-        height: 3;
+    #topbar-grid {
+        height: 8;
+    }
+
+    #left-info {
+        width: 1fr;
+        height: 8;
+    }
+
+    #right-controls {
+        width: 65;
+        height: 8;
+    }
+
+    #account-row {
+        height: 4;
         align: left middle;
     }
 
@@ -1450,36 +1710,79 @@ class AvanzaTradingTui(App):
         margin-right: 1;
     }
 
-    #selected-account {
+    #metric-grid {
+        height: 4;
+    }
+
+    .metric-card {
         width: 1fr;
+        height: 3;
+        margin: 0 1 0 0;
+        padding: 0 1;
+        background: $boost;
+        border-left: solid $primary;
+    }
+
+    #metric-total {
+        border-left: solid $accent;
+    }
+
+    #metric-buying {
+        border-left: solid $warning;
+    }
+
+    #metric-profit {
+        border-left: solid $success;
+    }
+
+    #metric-status {
+        border-left: solid $secondary;
+    }
+
+    #clock-status {
+        height: 2;
+        content-align: right middle;
+        color: $accent;
+        text-style: bold;
+    }
+
+    #button-controls {
+        height: 2;
+        align: right middle;
+    }
+
+    #toggle-controls {
+        height: 4;
+        align: right middle;
+    }
+
+    .toggle-control {
+        width: 12;
+        height: 4;
+        align: center middle;
+        margin-left: 1;
+    }
+
+    .toggle-label {
+        height: 1;
         content-align: left middle;
-    }
-
-    #topbar-spacer {
-        width: 1fr;
-    }
-
-    #live-status {
-        width: 10;
-        color: $success;
-    }
-
-    #mcp-label,
-    #mcp-write-label {
-        width: 4;
         color: $text-muted;
     }
 
-    #mcp-enabled,
-    #mcp-write-enabled {
-        width: 8;
+    .toggle-control .toggle-label {
+        content-align: center middle;
     }
 
-    #mcp-controls,
-    #mcp-write-controls {
-        width: 12;
-        height: 3;
-        align: left middle;
+    #live-status {
+        width: 9;
+        color: $success;
+    }
+
+    #paper-mode-enabled,
+    #mcp-enabled,
+    #mcp-write-enabled {
+        width: 6;
+        height: 1;
     }
 
     #main {
@@ -1496,6 +1799,24 @@ class AvanzaTradingTui(App):
         width: 42;
         height: 1fr;
         padding: 1 1 1 0;
+    }
+
+    #side-pane-resizer {
+        width: 1;
+        height: 1fr;
+        content-align: center middle;
+        color: $text-muted;
+        background: $boost;
+    }
+
+    #side-pane-resizer:hover {
+        color: $text;
+        background: $primary-darken-3;
+    }
+
+    #side-pane-resizer.dragging {
+        color: $text;
+        background: $accent;
     }
 
     #active-trades-table {
@@ -1547,7 +1868,8 @@ class AvanzaTradingTui(App):
         height: 1fr;
     }
 
-    #stoploss-modal {
+    #stoploss-modal,
+    #order-modal {
         display: none;
         dock: right;
         width: 58;
@@ -1559,7 +1881,9 @@ class AvanzaTradingTui(App):
     }
 
     #stoploss-modal Select,
-    #stoploss-modal Input {
+    #stoploss-modal Input,
+    #order-modal Select,
+    #order-modal Input {
         margin-bottom: 1;
     }
 
@@ -1638,9 +1962,11 @@ class AvanzaTradingTui(App):
         self.accounts: list[dict[str, Any]] = []
         self.selected_account_id: str | None = None
         self.live_refresh_timer = None
+        self.clock_timer = None
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
+        self.holding_labels_by_order_book: dict[str, str] = {}
         self.table_sort_state: dict[str, tuple[Any, bool]] = {}
         self.realtime_status_by_order_book: dict[str, str] = {}
         self.realtime_status_checked_at: dict[str, datetime] = {}
@@ -1648,6 +1974,7 @@ class AvanzaTradingTui(App):
         self.mcp_thread: threading.Thread | None = None
         self.mcp_token: str | None = None
         self.mcp_write_enabled = False
+        self.paper_mode_enabled = True
         self.paper_session_path = PAPER_SESSION_FILE
         self.paper_session = load_paper_session(self.paper_session_path)
         self.session_log_path = create_session_log_path("tui")
@@ -1655,10 +1982,14 @@ class AvanzaTradingTui(App):
         self.latest_open_order_items: list[dict[str, Any]] = []
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
+        self.active_trades_width = 42
         self.is_resizing_panes = False
+        self.is_resizing_side_pane = False
         self.resize_start_y = 0
+        self.resize_start_x = 0
         self.resize_start_positions_weight = self.positions_pane_weight
         self.resize_start_activity_weight = self.activity_pane_weight
+        self.resize_start_active_trades_width = self.active_trades_width
         self.record_event(
             "app",
             "tui_start",
@@ -1686,26 +2017,37 @@ class AvanzaTradingTui(App):
                 yield Button("Login", id="login", variant="primary")
 
         with Vertical(id="workspace"):
-            with Vertical(id="topbar"):
-                with Horizontal(id="account-row"):
-                    yield Static("Avanza", id="app-title")
-                    yield Select([], prompt="Select account", allow_blank=True, id="account-select")
-                    yield Static("No account selected", id="selected-account")
-                with Horizontal(id="action-row"):
-                    yield Static("", id="topbar-spacer")
-                    yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
-                    yield Button("Refresh", id="refresh-all", variant="primary")
-                    yield Button("Add Stop-Loss", id="open-stoploss-modal", variant="warning")
-                    with Horizontal(id="mcp-controls"):
-                        yield Static("MCP", id="mcp-label")
-                        yield Switch(value=False, id="mcp-enabled")
-                    with Horizontal(id="mcp-write-controls"):
-                        yield Static("R/W", id="mcp-write-label")
-                        yield Switch(value=False, id="mcp-write-enabled")
+            with Horizontal(id="topbar"):
+                with Vertical(id="left-info"):
+                    with Horizontal(id="account-row"):
+                        yield Static("Avanza", id="app-title")
+                        yield Select([], prompt="Select account", allow_blank=True, id="account-select")
+                    with Horizontal(id="metric-grid"):
+                        yield Static("Total\n-", id="metric-total", classes="metric-card")
+                        yield Static("Buying\n-", id="metric-buying", classes="metric-card")
+                        yield Static("Profit\n-", id="metric-profit", classes="metric-card")
+                        yield Static("Status\n-", id="metric-status", classes="metric-card")
+                with Vertical(id="right-controls"):
+                    yield Static(market_clock_text(), id="clock-status")
+                    with Horizontal(id="button-controls"):
+                        yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
+                        yield Button("Refresh", id="refresh-all", variant="primary")
+                        yield Button("Order", id="open-order-modal", variant="primary")
+                        yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
+                    with Horizontal(id="toggle-controls"):
+                        with Vertical(id="paper-controls", classes="toggle-control"):
+                            yield Static("Paper", id="paper-label", classes="toggle-label")
+                            yield Switch(value=True, id="paper-mode-enabled")
+                        with Vertical(id="mcp-controls", classes="toggle-control"):
+                            yield Static("MCP", id="mcp-label", classes="toggle-label")
+                            yield Switch(value=False, id="mcp-enabled")
+                        with Vertical(id="mcp-write-controls", classes="toggle-control"):
+                            yield Static("R/W", id="mcp-write-label", classes="toggle-label")
+                            yield Switch(value=False, id="mcp-write-enabled")
             with Horizontal(id="body"):
                 with Vertical(id="main"):
                     with Vertical(id="positions-panel"):
-                        yield Static("Selected Account Positions", classes="panel")
+                        yield Static("Selected Account Stocks", classes="panel")
                         yield DataTable(id="portfolio-table")
                     yield PaneResizer()
                     with Vertical(id="activity-panel"):
@@ -1717,6 +2059,7 @@ class AvanzaTradingTui(App):
                         with Horizontal(id="console-row"):
                             yield RichLog(id="log", highlight=True, markup=True)
                             yield RichLog(id="mcp-log", highlight=True, markup=True)
+                yield SidePaneResizer()
                 with Vertical(id="active-trades-panel"):
                     yield Static("Active Trades", classes="panel")
                     yield DataTable(id="active-trades-table")
@@ -1760,8 +2103,32 @@ class AvanzaTradingTui(App):
                 yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
                 with Horizontal():
                     yield Button("Dry Run", id="dry-run", variant="default")
-                    yield Button("Place Live", id="place-live", variant="error")
+                    yield Button("Place Paper", id="place-live", variant="warning")
                     yield Button("Close", id="close-stoploss-modal")
+            with Vertical(id="order-modal"):
+                yield Static("New Buy/Sell Order", classes="panel")
+                yield Static("Uses the selected account.", id="order-account-note")
+                yield Select([], prompt="Select portfolio holding", allow_blank=True, id="order-instrument-select")
+                yield Select(
+                    [(label, label) for label in ORDER_TYPE_CHOICES],
+                    value="buy",
+                    allow_blank=False,
+                    id="regular-order-type",
+                )
+                yield Input(placeholder="Volume", id="regular-order-volume", type="integer")
+                yield Input(placeholder="Limit price (SEK)", id="regular-order-price", type="number")
+                yield Select(
+                    [(label, label) for label in ORDER_CONDITION_CHOICES],
+                    value="normal",
+                    allow_blank=False,
+                    id="regular-order-condition",
+                )
+                yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="regular-order-valid-until")
+                yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
+                with Horizontal():
+                    yield Button("Dry Run", id="order-dry-run", variant="default")
+                    yield Button("Place Paper", id="order-place-live", variant="warning")
+                    yield Button("Close", id="close-order-modal")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1770,7 +2137,7 @@ class AvanzaTradingTui(App):
             "Kind",
             "ID",
             "Status",
-            "Instrument",
+            "Stock",
             "Order Book ID",
             "Trigger/Side",
             "Volume",
@@ -1782,7 +2149,7 @@ class AvanzaTradingTui(App):
 
         portfolio_table = self.query_one("#portfolio-table", DataTable)
         portfolio_table.add_columns(
-            "Instrument",
+            "Stock",
             "Order Book ID",
             "Volume",
             "Value",
@@ -1797,12 +2164,25 @@ class AvanzaTradingTui(App):
         portfolio_table.zebra_stripes = True
 
         active_table = self.query_one("#active-trades-table", DataTable)
-        active_table.add_columns("Mode", "Kind", "Instrument", "Side", "Volume", "Trigger/Price", "Status")
+        active_table.add_columns(
+            "Mode",
+            "Kind",
+            "ID",
+            "Stock",
+            "Order Book ID",
+            "Side",
+            "Volume",
+            "Trigger/Price",
+            "Valid/Created",
+            "Status",
+        )
         active_table.cursor_type = "row"
         active_table.zebra_stripes = True
 
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
+        self.update_clock_status()
+        self.start_clock()
 
     def on_resize(self, event: events.Resize) -> None:
         self.last_resize = (event.size.width, event.size.height)
@@ -1821,6 +2201,11 @@ class AvanzaTradingTui(App):
         self.query_one("#positions-panel").styles.height = f"{positions_weight}fr"
         self.query_one("#activity-panel").styles.height = f"{activity_weight}fr"
         self.query_one("#main").refresh(layout=True)
+
+    def apply_active_trades_width(self, width: int) -> None:
+        self.active_trades_width = width
+        self.query_one("#active-trades-panel").styles.width = width
+        self.query_one("#body").refresh(layout=True)
 
     def start_pane_resize(self, screen_y: int) -> None:
         self.is_resizing_panes = True
@@ -1841,6 +2226,22 @@ class AvanzaTradingTui(App):
 
     def finish_pane_resize(self) -> None:
         self.is_resizing_panes = False
+
+    def start_side_pane_resize(self, screen_x: int) -> None:
+        self.is_resizing_side_pane = True
+        self.resize_start_x = screen_x
+        self.resize_start_active_trades_width = self.active_trades_width
+
+    def update_side_pane_resize(self, screen_x: int) -> None:
+        if not self.is_resizing_side_pane:
+            return
+        delta_columns = screen_x - self.resize_start_x
+        self.apply_active_trades_width(
+            side_panel_width_after_drag(self.resize_start_active_trades_width, delta_columns)
+        )
+
+    def finish_side_pane_resize(self) -> None:
+        self.is_resizing_side_pane = False
 
     def sort_table(self, table: DataTable, column_key: Any, reverse: bool) -> None:
         table.sort(column_key, key=sortable_cell_value, reverse=reverse)
@@ -1919,12 +2320,18 @@ class AvanzaTradingTui(App):
 
     def update_selected_account_summary(self, portfolio_data: dict[str, Any] | None = None) -> None:
         account = self.account_by_id(self.selected_account_id) if self.selected_account_id else None
-        if account:
-            self.query_one("#selected-account", Static).update(
-                account_stats_text(account, portfolio_data, self.selected_account_id, include_label=False)
-            )
-        else:
-            self.query_one("#selected-account", Static).update("No account selected")
+        metrics = account_metric_values(account, portfolio_data, self.selected_account_id)
+        self.query_one("#metric-total", Static).update(metrics["total"])
+        self.query_one("#metric-buying", Static).update(metrics["buying"])
+        self.query_one("#metric-profit", Static).update(metrics["profit"])
+        self.query_one("#metric-status", Static).update(metrics["status"])
+
+    def update_clock_status(self) -> None:
+        self.query_one("#clock-status", Static).update(market_clock_text())
+
+    def start_clock(self) -> None:
+        if self.clock_timer is None:
+            self.clock_timer = self.set_interval(1.0, self.update_clock_status, pause=False)
 
     def mcp_status_payload(self) -> dict[str, Any]:
         return {
@@ -1941,6 +2348,16 @@ class AvanzaTradingTui(App):
     def save_paper_state(self) -> None:
         save_paper_session(self.paper_session, self.paper_session_path)
         self.update_active_trades_table()
+
+    def update_paper_mode_ui(self) -> None:
+        for selector in ("#place-live", "#order-place-live"):
+            button = self.query_one(selector, Button)
+            if self.paper_mode_enabled:
+                button.label = "Place Paper"
+                button.variant = "warning"
+            else:
+                button.label = "Place Live"
+                button.variant = "error"
 
     def active_trade_rows(self) -> list[tuple[str, ...]]:
         rows: list[tuple[str, ...]] = []
@@ -1975,7 +2392,7 @@ class AvanzaTradingTui(App):
         return {
             "account_id": account_id or None,
             "positions": rows_as_dicts(
-                ["Instrument", "Order Book ID", "Volume", "Value", "Avg Price", "Day %", "Day SEK", "Profit %", "Profit", "Real-time"],
+                ["Stock", "Order Book ID", "Volume", "Value", "Avg Price", "Day %", "Day SEK", "Profit %", "Profit", "Real-time"],
                 rows,
             ),
         }
@@ -1988,7 +2405,7 @@ class AvanzaTradingTui(App):
         return {
             "account_id": account_id or None,
             "stoplosses": rows_as_dicts(
-                ["ID", "Status", "Account", "Account ID", "Instrument", "Order Book ID", "Trigger", "Order", "Valid Until"],
+                ["ID", "Status", "Account", "Account ID", "Stock", "Order Book ID", "Trigger", "Order", "Valid Until"],
                 rows,
             ),
         }
@@ -2008,7 +2425,7 @@ class AvanzaTradingTui(App):
         return {
             "account_id": account_id or None,
             "orders": rows_as_dicts(
-                ["Kind", "ID", "Status", "Instrument", "Order Book ID", "Side", "Volume", "Price", "Valid Until"],
+                ["Kind", "ID", "Status", "Stock", "Order Book ID", "Side", "Volume", "Price", "Valid Until"],
                 rows,
             ),
         }
@@ -2148,12 +2565,38 @@ class AvanzaTradingTui(App):
             self.record_event("trading", "live_stoploss_set", {"request": preview, "result": result})
             return {"dry_run": False, "request": preview, "result": result}
 
+        if tool == "avanza_order_set":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            order_type, condition, preview = build_order_preview(arguments)
+            if not confirmed:
+                return {"dry_run": True, "summary": format_order_request(preview), "request": preview}
+            result = avanza.place_order(
+                account_id=preview["account_id"],
+                order_book_id=preview["order_book_id"],
+                order_type=order_type,
+                price=preview["price"],
+                valid_until=date.fromisoformat(preview["valid_until"]),
+                volume=preview["volume"],
+                condition=condition,
+            )
+            self.record_event("trading", "live_order_set", {"request": preview, "result": result})
+            return {"dry_run": False, "request": preview, "result": result}
+
         if tool == "avanza_paper_stoploss_set":
             paper_order = create_paper_stop_loss_order(arguments, instrument=str(arguments.get("instrument", "")))
             self.paper_session.setdefault("orders", []).append(paper_order)
             append_paper_event(self.paper_session, "paper_stoploss_set", {"id": paper_order["id"], "request": paper_order["request"]})
             self.save_paper_state()
             self.record_event("trading", "paper_stoploss_set", {"order": paper_order})
+            return {"paper": True, "order": paper_order}
+
+        if tool == "avanza_paper_order_set":
+            paper_order = create_paper_order(arguments, instrument=str(arguments.get("instrument", "")))
+            self.paper_session.setdefault("orders", []).append(paper_order)
+            append_paper_event(self.paper_session, "paper_order_set", {"id": paper_order["id"], "request": paper_order["request"]})
+            self.save_paper_state()
+            self.record_event("trading", "paper_order_set", {"order": paper_order})
             return {"paper": True, "order": paper_order}
 
         if tool == "avanza_paper_orders":
@@ -2171,6 +2614,19 @@ class AvanzaTradingTui(App):
             self.save_paper_state()
             self.record_event("trading", "paper_order_cancel", {"order": paper_order})
             return {"paper": True, "order": paper_order}
+
+        if tool == "avanza_order_delete":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            request = {
+                "account_id": str(arguments["account_id"]),
+                "order_id": str(arguments["order_id"]),
+            }
+            if not confirmed:
+                return {"dry_run": True, "request": request}
+            result = avanza.delete_order(request["account_id"], request["order_id"])
+            self.record_event("trading", "live_order_delete", {"request": request, "result": result})
+            return {"dry_run": False, "request": request, "result": result}
 
         if tool == "avanza_stoploss_delete":
             confirmed = bool(arguments.get("confirm", False))
@@ -2270,6 +2726,23 @@ class AvanzaTradingTui(App):
         }
         return trigger, order_event, preview
 
+    def build_regular_order_request(self) -> tuple[OrderType, Condition, dict[str, Any]]:
+        selected_account_id = self.require_selected_account_id()
+        order_book_id = self.input_value("order-instrument-select")
+        if not order_book_id:
+            raise ValueError("Select a portfolio holding first.")
+        return build_order_preview(
+            {
+                "account_id": selected_account_id,
+                "order_book_id": order_book_id,
+                "order_type": self.input_value("regular-order-type"),
+                "price": float(self.input_value("regular-order-price")),
+                "valid_until": date.fromisoformat(self.input_value("regular-order-valid-until")),
+                "volume": int(self.input_value("regular-order-volume")),
+                "condition": self.input_value("regular-order-condition"),
+            }
+        )
+
     def refresh_stoplosses(self) -> None:
         avanza = self.require_connection()
         table = self.query_one("#stoploss-table", DataTable)
@@ -2358,13 +2831,24 @@ class AvanzaTradingTui(App):
 
         holding_options = stoploss_holding_options(data, self.selected_account_id)
         holding_select = self.query_one("#instrument-select", Select)
+        order_holding_select = self.query_one("#order-instrument-select", Select)
         previous_holding = self.input_value("instrument-select")
+        previous_order_holding = self.input_value("order-instrument-select")
         holding_select.set_options(holding_options)
+        order_holding_select.set_options(holding_options)
         if previous_holding and previous_holding in {value for _, value in holding_options}:
             holding_select.value = previous_holding
         elif holding_options:
             holding_select.value = holding_options[0][1]
+        if previous_order_holding and previous_order_holding in {value for _, value in holding_options}:
+            order_holding_select.value = previous_order_holding
+        elif holding_options:
+            order_holding_select.value = holding_options[0][1]
         self.holding_volumes_by_order_book = stoploss_volume_by_order_book(data, self.selected_account_id)
+        self.holding_labels_by_order_book = {
+            value: label.split(" - owned", 1)[0]
+            for label, value in holding_options
+        }
         selected_holding = self.input_value("instrument-select")
         volume_input = self.query_one("#volume", Input)
         if selected_holding and not volume_input.value.strip():
@@ -2445,10 +2929,20 @@ class AvanzaTradingTui(App):
             volume_input = self.query_one("#volume", Input)
             if not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
+        elif event.select.id == "order-instrument-select" and event.value and event.value != Select.BLANK:
+            volume_input = self.query_one("#regular-order-volume", Input)
+            if not volume_input.value.strip():
+                volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
         try:
-            if event.switch.id == "mcp-enabled":
+            if event.switch.id == "paper-mode-enabled":
+                self.paper_mode_enabled = bool(event.value)
+                self.update_paper_mode_ui()
+                mode = "paper" if self.paper_mode_enabled else "live"
+                self.write_log(f"Stop-loss placement mode: {mode}.")
+                self.record_event("trading", "paper_mode_changed", {"enabled": self.paper_mode_enabled})
+            elif event.switch.id == "mcp-enabled":
                 if event.value:
                     self.start_mcp_bridge()
                 else:
@@ -2477,14 +2971,22 @@ class AvanzaTradingTui(App):
                 self.refresh_stoplosses()
             elif button_id == "open-stoploss-modal":
                 self.query_one("#stoploss-modal").display = True
+            elif button_id == "open-order-modal":
+                self.query_one("#order-modal").display = True
             elif button_id == "close-stoploss-modal":
                 self.query_one("#stoploss-modal").display = False
+            elif button_id == "close-order-modal":
+                self.query_one("#order-modal").display = False
             elif button_id == "clear-log":
                 self.query_one("#log", RichLog).clear()
             elif button_id == "dry-run":
                 self.handle_dry_run()
             elif button_id == "place-live":
                 self.handle_place_live()
+            elif button_id == "order-dry-run":
+                self.handle_order_dry_run()
+            elif button_id == "order-place-live":
+                self.handle_order_place_live()
         except Exception as exc:
             self.write_log(f"[red]Error:[/red] {exc}")
 
@@ -2512,7 +3014,44 @@ class AvanzaTradingTui(App):
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
 
+    def handle_order_dry_run(self) -> None:
+        _, _, preview = self.build_regular_order_request()
+        self.write_log("[yellow]Dry-run buy/sell order request:[/yellow]")
+        for line in order_request_log_lines(preview):
+            self.write_log(line)
+
     def handle_place_live(self) -> None:
+        if self.paper_mode_enabled:
+            _, _, preview = self.build_stop_loss_request()
+            order_book_id = self.input_value("instrument-select")
+            instrument = self.holding_labels_by_order_book.get(order_book_id, order_book_id)
+            paper_order = create_paper_stop_loss_order(
+                {
+                    **preview,
+                    "account_id": preview["account_id"],
+                    "order_book_id": preview["order_book_id"],
+                    "trigger_type": preview["stop_loss_trigger"]["type"],
+                    "trigger_value": preview["stop_loss_trigger"]["value"],
+                    "trigger_value_type": preview["stop_loss_trigger"]["value_type"],
+                    "valid_until": preview["stop_loss_trigger"]["valid_until"],
+                    "order_type": preview["stop_loss_order_event"]["type"],
+                    "order_price": preview["stop_loss_order_event"]["price"],
+                    "order_price_type": preview["stop_loss_order_event"]["price_type"],
+                    "volume": preview["stop_loss_order_event"]["volume"],
+                    "order_valid_days": preview["stop_loss_order_event"]["valid_days"],
+                    "trigger_on_market_maker_quote": preview["stop_loss_trigger"]["trigger_on_market_maker_quote"],
+                    "short_selling_allowed": preview["stop_loss_order_event"]["short_selling_allowed"],
+                },
+                instrument=str(instrument),
+            )
+            self.paper_session.setdefault("orders", []).append(paper_order)
+            append_paper_event(self.paper_session, "paper_stoploss_set_from_tui", {"id": paper_order["id"], "request": paper_order["request"]})
+            self.save_paper_state()
+            self.record_event("trading", "paper_stoploss_set_from_tui", {"order": paper_order})
+            self.write_log(f"[green]Paper stop-loss created:[/green] {paper_order['id']}")
+            self.query_one("#stoploss-modal").display = False
+            return
+
         if self.input_value("place-confirm") != "PLACE":
             raise ValueError('Type "PLACE" in the confirmation field before live placement.')
 
@@ -2538,6 +3077,49 @@ class AvanzaTradingTui(App):
         else:
             self.write_log("[green]Avanza accepted the request.[/green]")
         self.query_one("#stoploss-modal").display = False
+        self.refresh_stoplosses()
+
+    def handle_order_place_live(self) -> None:
+        order_type, condition, preview = self.build_regular_order_request()
+        order_book_id = self.input_value("order-instrument-select")
+        instrument = self.holding_labels_by_order_book.get(order_book_id, order_book_id)
+
+        if self.paper_mode_enabled:
+            paper_order = create_paper_order(preview, instrument=instrument)
+            self.paper_session.setdefault("orders", []).append(paper_order)
+            append_paper_event(self.paper_session, "paper_order_set_from_tui", {"id": paper_order["id"], "request": paper_order["request"]})
+            self.save_paper_state()
+            self.record_event("trading", "paper_order_set_from_tui", {"order": paper_order})
+            self.write_log(f"[green]Paper order created:[/green] {paper_order['id']}")
+            self.query_one("#order-modal").display = False
+            return
+
+        if self.input_value("regular-order-confirm") != "PLACE":
+            raise ValueError('Type "PLACE" in the confirmation field before live placement.')
+
+        avanza = self.require_connection()
+        self.write_log("[red]Placing live buy/sell order request:[/red]")
+        for line in order_request_log_lines(preview):
+            self.write_log(line)
+
+        result = avanza.place_order(
+            account_id=preview["account_id"],
+            order_book_id=preview["order_book_id"],
+            order_type=order_type,
+            price=preview["price"],
+            valid_until=date.fromisoformat(preview["valid_until"]),
+            volume=preview["volume"],
+            condition=condition,
+        )
+        self.record_event("trading", "live_order_set_from_tui", {"request": preview, "result": result})
+        if isinstance(result, dict):
+            status = result.get("orderRequestStatus") or result.get("status") or "response received"
+            identifier = result.get("orderId") or ""
+            suffix = f" ({identifier})" if identifier else ""
+            self.write_log(f"[green]Avanza status:[/green] {status}{suffix}")
+        else:
+            self.write_log("[green]Avanza accepted the order request.[/green]")
+        self.query_one("#order-modal").display = False
         self.refresh_stoplosses()
 
 
@@ -2778,6 +3360,61 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
     render_result("Place Stop-Loss Result", result)
 
 
+def cmd_orders_list(args: argparse.Namespace) -> None:
+    avanza = connect(args)
+    render_orders(avanza.get_orders())
+
+
+def cmd_order_delete(args: argparse.Namespace) -> None:
+    if not args.confirm:
+        render_message(
+            "Dry Run",
+            [
+                "Add --confirm to delete this regular order.",
+                f"Account: {args.account_id}",
+                f"Order ID: {args.order_id}",
+            ],
+        )
+        return
+
+    avanza = connect(args)
+    result = avanza.delete_order(args.account_id, args.order_id)
+    render_result("Delete Order Result", {"deleted": True, "result": result})
+
+
+def cmd_order_set(args: argparse.Namespace) -> None:
+    order_type, condition, preview = build_order_preview(
+        {
+            "account_id": args.account_id,
+            "order_book_id": args.order_book_id,
+            "order_type": args.order_type,
+            "price": args.price,
+            "valid_until": args.valid_until,
+            "volume": args.volume,
+            "condition": args.condition,
+        }
+    )
+
+    if not args.confirm:
+        render_order_request(
+            "Dry Run: add --confirm to place this buy/sell order.",
+            preview,
+        )
+        return
+
+    avanza = connect(args)
+    result = avanza.place_order(
+        account_id=args.account_id,
+        order_book_id=args.order_book_id,
+        order_type=order_type,
+        price=args.price,
+        valid_until=args.valid_until,
+        volume=args.volume,
+        condition=condition,
+    )
+    render_result("Place Order Result", result)
+
+
 def add_common_auth(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--username",
@@ -2790,7 +3427,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="avanza_cli.py",
         formatter_class=HELP_FORMATTER,
-        description="Human-readable Avanza account, portfolio, search, and stop-loss tools.",
+        description="Human-readable Avanza account, portfolio, search, order, and stop-loss tools.",
         epilog=textwrap.dedent(
             """\
             Common examples:
@@ -2799,6 +3436,7 @@ def build_parser() -> argparse.ArgumentParser:
               python avanza_cli.py portfolio summary
               python avanza_cli.py portfolio positions
               python avanza_cli.py search-stock "VOLV B"
+              python avanza_cli.py orders list
               python avanza_cli.py stoploss list
 
             Credentials:
@@ -2884,7 +3522,7 @@ def build_parser() -> argparse.ArgumentParser:
         "positions",
         formatter_class=HELP_FORMATTER,
         help="Show instrument and cash positions.",
-        description="Show all portfolio instrument positions and cash balances in tables.",
+        description="Show all portfolio stock positions and cash balances in tables.",
         epilog="Example:\n  python avanza_cli.py portfolio positions",
     )
     add_common_auth(portfolio_positions)
@@ -2907,6 +3545,96 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of search results to request. Default: 10.",
     )
     search.set_defaults(func=cmd_search)
+
+    orders = subparsers.add_parser(
+        "orders",
+        formatter_class=HELP_FORMATTER,
+        help="List, create, and delete regular buy/sell orders.",
+        description="Manage regular Avanza buy/sell orders. Placement and deletion dry-run unless --confirm is passed.",
+        epilog=textwrap.dedent(
+            """\
+            Examples:
+              python avanza_cli.py orders list
+              python avanza_cli.py orders set --help
+              python avanza_cli.py orders delete --help
+            """
+        ),
+    )
+    orders_subparsers = orders.add_subparsers(dest="orders_command", required=True)
+
+    orders_list = orders_subparsers.add_parser(
+        "list",
+        formatter_class=HELP_FORMATTER,
+        help="List open regular orders.",
+        description="List open regular buy/sell orders in a readable table.",
+        epilog="Example:\n  python avanza_cli.py orders list",
+    )
+    add_common_auth(orders_list)
+    orders_list.set_defaults(func=cmd_orders_list)
+
+    orders_delete = orders_subparsers.add_parser(
+        "delete",
+        formatter_class=HELP_FORMATTER,
+        help="Delete a regular order.",
+        description="Delete a regular order. Without --confirm this only prints the intended deletion.",
+        epilog=textwrap.dedent(
+            """\
+            Dry-run:
+              python avanza_cli.py orders delete --account-id ACCOUNT_ID --order-id ORDER_ID
+
+            Live deletion:
+              python avanza_cli.py orders delete --account-id ACCOUNT_ID --order-id ORDER_ID --confirm
+            """
+        ),
+    )
+    add_common_auth(orders_delete)
+    orders_delete.add_argument("--account-id", metavar="ID", required=True, help="Avanza account id that owns the order.")
+    orders_delete.add_argument("--order-id", metavar="ID", required=True, help="Order id to delete.")
+    orders_delete.add_argument("--confirm", action="store_true", help="Actually delete the order. Omit for dry-run.")
+    orders_delete.set_defaults(func=cmd_order_delete)
+
+    orders_set = orders_subparsers.add_parser(
+        "set",
+        formatter_class=HELP_FORMATTER,
+        help="Create a regular buy/sell order.",
+        description=textwrap.dedent(
+            """\
+            Create a regular buy/sell order.
+
+            Without --confirm, this command prints a readable dry-run summary and does not log in.
+
+            Conditions:
+              normal         normal limit order
+              fill-or-kill   fill entire order immediately or cancel
+              fill-and-kill  fill available volume immediately and cancel remainder
+            """
+        ),
+        epilog=textwrap.dedent(
+            """\
+            Buy order dry-run:
+              python avanza_cli.py orders set \\
+                --account-id ACCOUNT_ID \\
+                --order-book-id ORDER_BOOK_ID \\
+                --order-type buy \\
+                --price 100 \\
+                --valid-until 2026-05-28 \\
+                --volume 10 \\
+                --condition normal
+
+            Add --confirm only after reviewing the dry-run summary.
+            """
+        ),
+    )
+    add_common_auth(orders_set)
+    orders_set.add_argument("--account-id", metavar="ID", required=True, help="Avanza account id to place the order on.")
+    orders_set.add_argument("--order-book-id", metavar="ID", required=True, help="Avanza order book id for the instrument.")
+    orders_set.add_argument("--order-type", choices=ORDER_TYPE_CHOICES, default="buy", help="Order side. Default: buy.")
+    orders_set.add_argument("--price", metavar="SEK", required=True, type=float, help="Limit price in SEK.")
+    orders_set.add_argument("--valid-until", metavar="YYYY-MM-DD", required=True, type=parse_date, help="Last date the order remains valid.")
+    orders_set.add_argument("--volume", metavar="QTY", required=True, type=int, help="Number of shares/contracts to order.")
+    orders_set.add_argument("--condition", choices=ORDER_CONDITION_CHOICES, default="normal", help="Order condition. Default: normal.")
+    orders_set.add_argument("--confirm", action="store_true", help="Actually place the order. Omit for dry-run.")
+    orders_set.set_defaults(func=cmd_order_set)
 
     stoploss = subparsers.add_parser(
         "stoploss",

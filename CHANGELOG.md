@@ -32,4 +32,8 @@
 - Added read-only-safe paper stop-loss tools with persisted local paper session state.
 - Added a right-side TUI Active Trades panel for live and paper orders.
 - Added timestamped JSONL session, app, MCP, and trading logs under `avanza-cli/logs/`.
+- Added regular buy/sell order support across CLI, TUI, MCP, and paper trading.
+- Made Active Trades resizable and expanded its columns for order ids, order-book ids, and validity timestamps.
+- Reworked the TUI top panel into colored account metric cards, grouped action controls, compact labeled toggles, and a live clock/market countdown.
+- Renamed stock-position table headers from `Instrument` to `Stock`.
 - Added project documentation, packaging metadata, and tests.

@@ -9,10 +9,12 @@ from avanza_cli import (
     cash_row,
     changed_position_row,
     change_style,
+    create_paper_order,
     create_paper_stop_loss_order,
     default_account,
     formatted_typed_value,
     load_paper_session,
+    market_clock_text,
     matches_account,
     pane_weights_after_drag,
     paper_orders,
@@ -29,6 +31,7 @@ from avanza_cli import (
     realtime_status_badge,
     sortable_cell_value,
     save_paper_session,
+    side_panel_width_after_drag,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
     active_paper_order_row,
@@ -58,6 +61,16 @@ def test_sortable_cell_value_normalizes_human_table_values():
 def test_pane_weights_after_drag_changes_relative_sizes():
     assert pane_weights_after_drag(2, 1, 1) == (3, 1)
     assert pane_weights_after_drag(2, 3, -1) == (1, 4)
+
+
+def test_side_panel_width_after_drag_changes_width():
+    assert side_panel_width_after_drag(42, -5) == 47
+    assert side_panel_width_after_drag(42, 20) == 30
+
+
+def test_market_clock_text_counts_to_open_and_close():
+    assert "OMXS closes in 07:30:00" in market_clock_text(__import__("datetime").datetime(2026, 4, 28, 10, 0, 0))
+    assert "OMXS opens in 01:00:00" in market_clock_text(__import__("datetime").datetime(2026, 4, 28, 8, 0, 0))
 
 
 def test_account_display_name_prefers_user_defined_name():
@@ -428,9 +441,40 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
     assert active_paper_order_row(order) == (
         "Paper",
         "Stop-loss",
+        order["id"],
         "Example AB",
+        "ob-1",
         "SELL",
         "10.0",
         "FOLLOW_UPWARDS 5.0%",
+        "2026-05-28",
+        "ACTIVE",
+    )
+
+
+def test_paper_regular_order_active_row():
+    order = create_paper_order(
+        {
+            "account_id": "acc-1",
+            "order_book_id": "ob-1",
+            "order_type": "buy",
+            "price": 100,
+            "valid_until": "2026-05-28",
+            "volume": 10,
+            "condition": "fill-and-kill",
+        },
+        instrument="Example AB",
+    )
+
+    assert active_paper_order_row(order) == (
+        "Paper",
+        "Order",
+        order["id"],
+        "Example AB",
+        "ob-1",
+        "BUY",
+        "10",
+        "100.0 SEK FILL_AND_KILL",
+        "2026-05-28",
         "ACTIVE",
     )
