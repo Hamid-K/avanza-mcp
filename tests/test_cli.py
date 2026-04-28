@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from avanza_cli import (
     connect,
     enum_value,
     load_mcp_session,
+    max_valid_until_date,
     onepassword_credentials,
     parse_date,
     parse_price_type,
@@ -45,6 +47,12 @@ def test_parse_date_accepts_iso_date():
 def test_parse_date_rejects_non_iso_date():
     with pytest.raises(argparse.ArgumentTypeError):
         parse_date("28-05-2026")
+
+
+def test_parse_date_rejects_too_far_future_date():
+    far_future = (date.today() + timedelta(days=365)).isoformat()
+    with pytest.raises(argparse.ArgumentTypeError, match="exceeds Avanza limit"):
+        parse_date(far_future)
 
 
 def test_enum_value_accepts_hyphenated_names():
@@ -153,8 +161,9 @@ def test_tui_mounts_headless():
             assert resizer.renderable == "─"
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
-            assert app.query_one("#valid-until", Input).value == "9999-12-31"
-            assert app.query_one("#regular-order-valid-until", Input).value == "9999-12-31"
+            expected_valid_until = max_valid_until_date().isoformat()
+            assert app.query_one("#valid-until", Input).value == expected_valid_until
+            assert app.query_one("#regular-order-valid-until", Input).value == expected_valid_until
             app.apply_pane_weights(3, 2)
             assert app.positions_pane_weight == 3
             assert app.activity_pane_weight == 2

@@ -35,8 +35,7 @@ MCP_SESSION_FILE = Path(__file__).with_name(".avanza_mcp_session.json")
 PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
-MAX_VALID_UNTIL_DATE = date.max
-MAX_VALID_UNTIL_TEXT = MAX_VALID_UNTIL_DATE.isoformat()
+VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
 
 TRIGGER_TYPE_CHOICES = [
     "less-or-equal",
@@ -97,6 +96,23 @@ LOG_CATEGORY_FILES = {
     "mcp": "mcp.jsonl",
     "trading": "trading.jsonl",
 }
+
+
+def max_valid_until_date(reference: date | None = None) -> date:
+    base = reference or date.today()
+    return base + timedelta(days=max(1, VALID_UNTIL_MAX_DAYS))
+
+
+def validate_valid_until(value: date, label: str = "Valid until", reference: date | None = None) -> date:
+    today = reference or date.today()
+    max_date = max_valid_until_date(today)
+    if value < today:
+        raise ValueError(f"{label} cannot be before {today.isoformat()}.")
+    if value > max_date:
+        raise ValueError(
+            f"{label} exceeds Avanza limit ({VALID_UNTIL_MAX_DAYS} days). Max: {max_date.isoformat()}."
+        )
+    return value
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -445,9 +461,13 @@ def render_result(title: str, result: Any) -> None:
 
 def parse_date(value: str) -> date:
     try:
-        return date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("Use YYYY-MM-DD format.") from exc
+    try:
+        return validate_valid_until(parsed)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def parse_price_type(value: str) -> str:
@@ -1268,6 +1288,7 @@ def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, Stop
         valid_until = date.fromisoformat(valid_until)
     if not isinstance(valid_until, date):
         raise ValueError("valid_until must be an ISO date string.")
+    valid_until = validate_valid_until(valid_until, "valid_until")
 
     trigger = StopLossTrigger(
         type=enum_value(StopLossTriggerType, str(args.get("trigger_type", "follow-upwards"))),
@@ -1313,6 +1334,7 @@ def build_order_preview(args: dict[str, Any]) -> tuple[OrderType, Condition, dic
         valid_until = date.fromisoformat(valid_until)
     if not isinstance(valid_until, date):
         raise ValueError("valid_until must be an ISO date string.")
+    valid_until = validate_valid_until(valid_until, "valid_until")
 
     order_type = enum_value(OrderType, str(args.get("order_type", "buy")))
     condition = enum_value(Condition, str(args.get("condition", "normal")))
@@ -2526,6 +2548,7 @@ class AvanzaTradingTui(App):
         )
 
     def compose(self) -> ComposeResult:
+        default_valid_until = max_valid_until_date().isoformat()
         yield Header()
         with Vertical(id="login-screen"):
             with Vertical(id="login-card"):
@@ -2618,8 +2641,8 @@ class AvanzaTradingTui(App):
                         id="trigger-value-type",
                     )
                     yield Input(
-                        value=MAX_VALID_UNTIL_TEXT,
-                        placeholder=f"Valid until ({MAX_VALID_UNTIL_TEXT})",
+                        value=default_valid_until,
+                        placeholder=f"Valid until ({default_valid_until})",
                         id="valid-until",
                     )
                     yield Select(
@@ -2672,8 +2695,8 @@ class AvanzaTradingTui(App):
                         id="regular-order-condition",
                     )
                     yield Input(
-                        value=MAX_VALID_UNTIL_TEXT,
-                        placeholder=f"Valid until ({MAX_VALID_UNTIL_TEXT})",
+                        value=default_valid_until,
+                        placeholder=f"Valid until ({default_valid_until})",
                         id="regular-order-valid-until",
                     )
                     yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
@@ -2955,9 +2978,10 @@ class AvanzaTradingTui(App):
     def input_date_value(self, widget_id: str, label: str) -> date:
         value = self.required_input_value(widget_id, label)
         try:
-            return date.fromisoformat(value)
+            parsed = date.fromisoformat(value)
         except ValueError as exc:
             raise ValueError(f"{label} must be an ISO date, for example {date.today().isoformat()}.") from exc
+        return validate_valid_until(parsed, label)
 
     def switch_value(self, widget_id: str) -> bool:
         return bool(self.query_one(f"#{widget_id}", Switch).value)
