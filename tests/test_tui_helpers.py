@@ -23,6 +23,7 @@ from avanza_cli import (
     paper_orders,
     portfolio_day_summary,
     portfolio_profit_summary,
+    quantity_text,
     position_state_row,
     position_holding_label,
     position_row,
@@ -292,7 +293,13 @@ def test_position_trade_action_row_adds_buy_sell_actions():
     assert trade_action_badge("sell").plain == " S "
     assert trade_action_from_cell(trade_action_badge("buy")) == "buy"
     assert trade_action_from_cell(trade_action_badge("sell")) == "sell"
-    assert position_trade_target(item) == {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10.0"}
+    assert position_trade_target(item) == {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10"}
+
+
+def test_quantity_text_drops_float_suffix_for_whole_share_counts():
+    assert quantity_text({"value": 20.0, "unit": "st"}) == "20"
+    assert quantity_text(20.5) == "20.5"
+    assert quantity_text("") == ""
 
 
 def test_realtime_status_badge_uses_green_or_yellow_dot():
@@ -424,7 +431,7 @@ def test_stoploss_holding_options_show_owned_volume():
     assert stoploss_holding_options(positions, "acc-1") == [
         ("Example AB - owned 25 st (ob-1)", "ob-1")
     ]
-    assert stoploss_volume_by_order_book(positions, "acc-1") == {"ob-1": "25.0"}
+    assert stoploss_volume_by_order_book(positions, "acc-1") == {"ob-1": "25"}
 
 
 def test_holding_search_options_finds_owned_stock_case_insensitively():

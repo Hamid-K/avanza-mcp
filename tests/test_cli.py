@@ -286,7 +286,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert "Position P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
-            assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}
+            assert app.holding_volumes_by_order_book == {"ob-1": "25"}
             assert app.live_refresh_timer is not None
             assert app.paper_mode_enabled is True
             assert app.execute_mcp_tool("avanza_status", {})["read_write"] is False
@@ -535,6 +535,9 @@ def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
             assert app.query_one("#order-instrument-select", Select).value == "ob-1"
             assert app.query_one("#regular-order-type", Select).value == "sell"
             assert app.query_one("#regular-order-volume", Input).value == "10"
+            app.query_one("#regular-order-price").value = "100"
+            await pilot.pause()
+            assert "1,000.00 SEK" in str(app.query_one("#regular-order-value").render())
 
             app.open_order_modal_for_portfolio_action(
                 "buy",
@@ -544,6 +547,7 @@ def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
 
             assert app.query_one("#regular-order-type", Select).value == "buy"
             assert app.query_one("#regular-order-volume", Input).value == ""
+            assert str(app.query_one("#regular-order-value").render()) == "Order value: -"
 
     asyncio.run(run_app())
 

@@ -476,6 +476,22 @@ def amount(data: dict[str, Any], *path: str) -> str:
     return str(value)
 
 
+def quantity_text(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("value")
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return str(int(number)) if number.is_integer() else f"{number:g}"
+    text = str(value).strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
 def account_display_name(account: dict[str, Any]) -> str:
     name = account.get("name", "")
     if isinstance(name, dict):
@@ -911,7 +927,7 @@ def position_trade_target(item: dict[str, Any]) -> dict[str, str]:
     return {
         "stock": str(nested_value(item, "instrument", "name")),
         "order_book_id": position_order_book_id(item),
-        "volume": str(value_number(item, "volume") or ""),
+        "volume": quantity_text(nested_value(item, "volume")),
     }
 
 
@@ -949,7 +965,7 @@ def stoploss_volume_by_order_book(positions: dict[str, Any], account_id: str | N
                 continue
             order_book_id = position_order_book_id(item)
             if order_book_id:
-                volumes[order_book_id] = str(value_number(item, "volume") or "")
+                volumes[order_book_id] = quantity_text(nested_value(item, "volume"))
     return volumes
 
 
@@ -2563,6 +2579,7 @@ class AvanzaTradingTui(App):
                     )
                     yield Input(placeholder="Volume", id="regular-order-volume", type="integer")
                     yield Input(placeholder="Limit price (SEK)", id="regular-order-price", type="number")
+                    yield Static("Order value: -", id="regular-order-value")
                     yield Select(
                         [(label, label) for label in ORDER_CONDITION_CHOICES],
                         value="normal",
@@ -2786,6 +2803,7 @@ class AvanzaTradingTui(App):
             self.restore_order_holding_options()
 
         select = self.query_one("#order-instrument-select", Select)
+        self.query_one("#regular-order-type", Select).value = side
         if order_book_id not in self.holding_labels_by_order_book:
             stock = target.get("stock") or order_book_id
             volume = target.get("volume", "")
@@ -2795,12 +2813,25 @@ class AvanzaTradingTui(App):
             self.holding_volumes_by_order_book[order_book_id] = volume
 
         select.value = order_book_id
-        self.query_one("#regular-order-type", Select).value = side
         volume_input = self.query_one("#regular-order-volume", Input)
         volume_input.value = target.get("volume", "") if side == "sell" else ""
+        self.update_regular_order_value()
         stock_name = target.get("stock") or order_book_id
         self.query_one("#order-search-status", Static).update(f"{side.upper()} ticket opened for {stock_name}.")
         self.query_one("#order-modal").display = True
+
+    def update_regular_order_value(self) -> None:
+        try:
+            volume_text = self.input_value("regular-order-volume")
+            price_text = self.input_value("regular-order-price")
+            if not volume_text or not price_text:
+                self.query_one("#regular-order-value", Static).update("Order value: -")
+                return
+            volume = int(volume_text)
+            price = float(price_text)
+            self.query_one("#regular-order-value", Static).update(f"Order value: {money_text(volume * price, 'SEK')}")
+        except Exception:
+            self.query_one("#regular-order-value", Static).update("Order value: -")
 
     def input_value(self, widget_id: str) -> str:
         widget = self.query_one(f"#{widget_id}")
@@ -3593,10 +3624,21 @@ class AvanzaTradingTui(App):
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
         elif event.select.id == "order-instrument-select" and event.value and event.value != Select.BLANK:
             volume_input = self.query_one("#regular-order-volume", Input)
-            if not volume_input.value.strip():
+            if self.input_value("regular-order-type") == "sell" and not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
+            self.update_regular_order_value()
+        elif event.select.id == "regular-order-type":
+            if str(event.value) == "sell":
+                order_book_id = self.input_value("order-instrument-select")
+                volume_input = self.query_one("#regular-order-volume", Input)
+                if order_book_id and not volume_input.value.strip():
+                    volume_input.value = self.holding_volumes_by_order_book.get(order_book_id, "")
+            self.update_regular_order_value()
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id in {"regular-order-volume", "regular-order-price"}:
+            self.update_regular_order_value()
+            return
         if event.input.id != "order-search":
             return
         query = event.value.strip()
