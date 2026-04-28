@@ -239,6 +239,44 @@ def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def position_order_book_id(item: dict[str, Any]) -> str:
+    return str(nested_value(item, "instrument", "orderbook", "id"))
+
+
+def position_holding_label(item: dict[str, Any]) -> str:
+    instrument_name = str(nested_value(item, "instrument", "name"))
+    order_book_id = position_order_book_id(item)
+    owned_volume = amount(item, "volume")
+    return f"{instrument_name} - owned {owned_volume} ({order_book_id})"
+
+
+def stoploss_holding_options(positions: dict[str, Any], account_id: str | None) -> list[tuple[str, str]]:
+    options: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for section in ("withOrderbook", "withoutOrderbook"):
+        for item in positions.get(section, []):
+            if not isinstance(item, dict) or not matches_account(item, account_id):
+                continue
+            order_book_id = position_order_book_id(item)
+            if not order_book_id or order_book_id in seen:
+                continue
+            seen.add(order_book_id)
+            options.append((position_holding_label(item), order_book_id))
+    return options
+
+
+def stoploss_volume_by_order_book(positions: dict[str, Any], account_id: str | None) -> dict[str, str]:
+    volumes: dict[str, str] = {}
+    for section in ("withOrderbook", "withoutOrderbook"):
+        for item in positions.get(section, []):
+            if not isinstance(item, dict) or not matches_account(item, account_id):
+                continue
+            order_book_id = position_order_book_id(item)
+            if order_book_id:
+                volumes[order_book_id] = str(value_number(item, "volume") or "")
+    return volumes
+
+
 def changed_position_row(
     current: tuple[str, ...],
     previous: tuple[str, ...] | None,
@@ -677,6 +715,7 @@ class AvanzaTradingTui(App):
         self.live_refresh_timer = None
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
+        self.holding_volumes_by_order_book: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -717,7 +756,7 @@ class AvanzaTradingTui(App):
             with Vertical(id="stoploss-modal"):
                 yield Static("New Stop-Loss", classes="panel")
                 yield Static("Uses the selected account.", id="stoploss-account-note")
-                yield Input(placeholder="Order book ID", id="order-book-id")
+                yield Select([], prompt="Select portfolio holding", allow_blank=True, id="instrument-select")
                 yield Input(placeholder="Volume", id="volume", type="number")
                 yield Select(
                     [(label, label) for label in TRIGGER_TYPE_CHOICES],
@@ -806,6 +845,8 @@ class AvanzaTradingTui(App):
         if isinstance(widget, Input):
             return widget.value.strip()
         if isinstance(widget, Select):
+            if widget.value == Select.BLANK:
+                return ""
             return str(widget.value)
         raise TypeError(f"Unsupported input widget: {widget_id}")
 
@@ -844,6 +885,9 @@ class AvanzaTradingTui(App):
 
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
         selected_account_id = self.require_selected_account_id()
+        order_book_id = self.input_value("instrument-select")
+        if not order_book_id:
+            raise ValueError("Select a portfolio holding first.")
         valid_until = date.fromisoformat(self.input_value("valid-until"))
         trigger = StopLossTrigger(
             type=enum_value(StopLossTriggerType, self.input_value("trigger-type")),
@@ -862,7 +906,7 @@ class AvanzaTradingTui(App):
         )
         preview = {
             "account_id": selected_account_id,
-            "order_book_id": self.input_value("order-book-id"),
+            "order_book_id": order_book_id,
             "parent_stop_loss_id": "0",
             "stop_loss_trigger": {
                 "type": trigger.type.value,
@@ -953,6 +997,20 @@ class AvanzaTradingTui(App):
             self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
 
+        holding_options = stoploss_holding_options(data, self.selected_account_id)
+        holding_select = self.query_one("#instrument-select", Select)
+        previous_holding = self.input_value("instrument-select")
+        holding_select.set_options(holding_options)
+        if previous_holding and previous_holding in {value for _, value in holding_options}:
+            holding_select.value = previous_holding
+        elif holding_options:
+            holding_select.value = holding_options[0][1]
+        self.holding_volumes_by_order_book = stoploss_volume_by_order_book(data, self.selected_account_id)
+        selected_holding = self.input_value("instrument-select")
+        volume_input = self.query_one("#volume", Input)
+        if selected_holding and not volume_input.value.strip():
+            volume_input.value = self.holding_volumes_by_order_book.get(selected_holding, "")
+
         count = 0
         next_cache: dict[str, tuple[str, ...]] = {}
         for section in ("withOrderbook", "withoutOrderbook"):
@@ -1022,6 +1080,10 @@ class AvanzaTradingTui(App):
                 self.select_account(str(event.value))
             except Exception as exc:
                 self.write_log(f"[red]Account switch failed:[/red] {exc}")
+        elif event.select.id == "instrument-select" and event.value and event.value != Select.BLANK:
+            volume_input = self.query_one("#volume", Input)
+            if not volume_input.value.strip():
+                volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -1085,7 +1147,7 @@ class AvanzaTradingTui(App):
         result = avanza.place_stop_loss_order(
             parent_stop_loss_id="0",
             account_id=self.require_selected_account_id(),
-            order_book_id=self.input_value("order-book-id"),
+            order_book_id=self.input_value("instrument-select"),
             stop_loss_trigger=trigger,
             stop_loss_order_event=order_event,
         )

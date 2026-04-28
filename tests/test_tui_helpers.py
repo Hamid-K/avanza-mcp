@@ -7,7 +7,10 @@ from avanza_cli import (
     changed_position_row,
     matches_account,
     position_state_row,
+    position_holding_label,
     position_row,
+    stoploss_holding_options,
+    stoploss_volume_by_order_book,
     stop_loss_row,
 )
 
@@ -162,6 +165,36 @@ def test_changed_position_row_styles_only_changed_numeric_cells():
     assert row[5].style
     assert str(row[8]) == "+200.00 SEK"
     assert row[8].style
+
+
+def test_stoploss_holding_options_show_owned_volume():
+    positions = {
+        "withOrderbook": [
+            {
+                "account": {"id": "acc-1"},
+                "instrument": {
+                    "name": "Example AB",
+                    "orderbook": {"id": "ob-1"},
+                },
+                "volume": {"value": 25, "unit": "st"},
+            },
+            {
+                "account": {"id": "acc-2"},
+                "instrument": {
+                    "name": "Other AB",
+                    "orderbook": {"id": "ob-2"},
+                },
+                "volume": {"value": 10, "unit": "st"},
+            },
+        ],
+        "withoutOrderbook": [],
+    }
+
+    assert position_holding_label(positions["withOrderbook"][0]) == "Example AB - owned 25 st (ob-1)"
+    assert stoploss_holding_options(positions, "acc-1") == [
+        ("Example AB - owned 25 st (ob-1)", "ob-1")
+    ]
+    assert stoploss_volume_by_order_book(positions, "acc-1") == {"ob-1": "25.0"}
 
 
 def test_cash_row_formats_cash_position():

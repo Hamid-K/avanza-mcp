@@ -13,4 +13,5 @@
 - Tightened TUI button styling to use compact one-line controls instead of Textual's default bulky beveled buttons.
 - Added TUI resize handling so layout and selected-account data refresh after terminal size changes.
 - Added gentle per-cell highlighting for changed live position metrics instead of highlighting entire rows.
+- Added a searchable stop-loss holding selector populated from the selected account portfolio, with owned share counts and automatic volume prefill.
 - Added project documentation, packaging metadata, and tests.

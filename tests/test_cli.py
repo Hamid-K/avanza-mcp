@@ -93,7 +93,28 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
             }
 
         def get_accounts_positions(self):
-            return {"withOrderbook": [], "withoutOrderbook": [], "cashPositions": []}
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "pos-1",
+                        "account": {"id": "acc-1"},
+                        "instrument": {
+                            "name": "Example AB",
+                            "orderbook": {"id": "ob-1"},
+                        },
+                        "volume": {"value": 25, "unit": "st"},
+                        "value": {"value": 1000, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 40, "unit": "SEK"},
+                        "acquiredValue": {"value": 900, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 1, "unit": "%"},
+                            "absolute": {"value": 10, "unit": "SEK"},
+                        },
+                    }
+                ],
+                "withoutOrderbook": [],
+                "cashPositions": [],
+            }
 
         def get_all_stop_losses(self):
             return []
@@ -120,6 +141,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
             assert app.selected_account_id == "acc-1"
             assert "Trading" in str(app.query_one("#selected-account").render())
             assert app.query_one("#account-select").value == "acc-1"
+            assert app.query_one("#instrument-select").value == "ob-1"
+            assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}
             assert app.live_refresh_timer is not None
 
     asyncio.run(run_app())
