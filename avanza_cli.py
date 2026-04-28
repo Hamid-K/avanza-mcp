@@ -534,17 +534,21 @@ def account_stats_text(
     account: dict[str, Any],
     portfolio_data: dict[str, Any] | None = None,
     account_id: str | None = None,
+    include_label: bool = True,
 ) -> Text:
     text = Text()
     name = account_display_name(account)
     account_type = str(account.get("type", ""))
     account_status = str(account.get("status", ""))
     label = f"{name} ({account_type})" if account_type else name
-    text.append(label or "Selected account", style="bold")
+    if include_label:
+        text.append(label or "Selected account", style="bold")
 
     total = amount(account, "totalValue") or "-"
     buying_power = amount(account, "buyingPower") or "-"
-    text.append("  Total ", style="dim")
+    if include_label:
+        text.append("  ", style="dim")
+    text.append("Total ", style="dim")
     text.append(total, style="bold")
     text.append("  Buying ", style="dim")
     text.append(buying_power)
@@ -1185,24 +1189,34 @@ class AvanzaTradingTui(App):
     }
 
     #topbar {
-        height: 3;
+        height: 7;
         padding: 0 1;
         background: $panel;
         border-bottom: solid $primary;
+    }
+
+    #account-row,
+    #action-row {
+        height: 3;
         align: left middle;
     }
 
     #app-title {
-        width: 10;
+        width: 9;
         text-style: bold;
     }
 
     #account-select {
-        width: 56;
+        width: 48;
         margin-right: 1;
     }
 
     #selected-account {
+        width: 1fr;
+        content-align: left middle;
+    }
+
+    #topbar-spacer {
         width: 1fr;
     }
 
@@ -1220,6 +1234,13 @@ class AvanzaTradingTui(App):
     #mcp-enabled,
     #mcp-write-enabled {
         width: 8;
+    }
+
+    #mcp-controls,
+    #mcp-write-controls {
+        width: 12;
+        height: 3;
+        align: left middle;
     }
 
     #main {
@@ -1398,17 +1419,22 @@ class AvanzaTradingTui(App):
                 yield Button("Login", id="login", variant="primary")
 
         with Vertical(id="workspace"):
-            with Horizontal(id="topbar"):
-                yield Static("Avanza", id="app-title")
-                yield Select([], prompt="Select account", allow_blank=True, id="account-select")
-                yield Static("Selected account: none", id="selected-account")
-                yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
-                yield Button("Refresh", id="refresh-all", variant="primary")
-                yield Button("Add Stop-Loss", id="open-stoploss-modal", variant="warning")
-                yield Static("MCP", id="mcp-label")
-                yield Switch(value=False, id="mcp-enabled")
-                yield Static("R/W", id="mcp-write-label")
-                yield Switch(value=False, id="mcp-write-enabled")
+            with Vertical(id="topbar"):
+                with Horizontal(id="account-row"):
+                    yield Static("Avanza", id="app-title")
+                    yield Select([], prompt="Select account", allow_blank=True, id="account-select")
+                    yield Static("No account selected", id="selected-account")
+                with Horizontal(id="action-row"):
+                    yield Static("", id="topbar-spacer")
+                    yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
+                    yield Button("Refresh", id="refresh-all", variant="primary")
+                    yield Button("Add Stop-Loss", id="open-stoploss-modal", variant="warning")
+                    with Horizontal(id="mcp-controls"):
+                        yield Static("MCP", id="mcp-label")
+                        yield Switch(value=False, id="mcp-enabled")
+                    with Horizontal(id="mcp-write-controls"):
+                        yield Static("R/W", id="mcp-write-label")
+                        yield Switch(value=False, id="mcp-write-enabled")
             with Vertical(id="main"):
                 with Vertical(id="positions-panel"):
                     yield Static("Selected Account Positions", classes="panel")
@@ -1602,10 +1628,10 @@ class AvanzaTradingTui(App):
         account = self.account_by_id(self.selected_account_id) if self.selected_account_id else None
         if account:
             self.query_one("#selected-account", Static).update(
-                account_stats_text(account, portfolio_data, self.selected_account_id)
+                account_stats_text(account, portfolio_data, self.selected_account_id, include_label=False)
             )
         else:
-            self.query_one("#selected-account", Static).update("Selected account: none")
+            self.query_one("#selected-account", Static).update("No account selected")
 
     def mcp_status_payload(self) -> dict[str, Any]:
         return {
@@ -2197,7 +2223,6 @@ def mcp_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
-    session = load_mcp_session(session_file)
     input_stream = sys.stdin.buffer
     output_stream = sys.stdout.buffer
 
@@ -2235,6 +2260,7 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
                 arguments = params.get("arguments") or {}
                 if not isinstance(arguments, dict):
                     raise ValueError("arguments must be an object.")
+                session = load_mcp_session(session_file)
                 payload = call_mcp_bridge(session, tool_name, arguments)
                 write_mcp_message(output_stream, mcp_success(message_id, mcp_tool_response(payload)))
             else:

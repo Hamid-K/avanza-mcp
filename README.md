@@ -100,6 +100,8 @@ python avanza_cli.py mcp
 
 The MCP proxy forwards tool calls to the authenticated TUI session through a localhost bridge. MCP mode starts read-only. The `R/W` switch enables live mutations, and live stop-loss placement/deletion still requires the MCP tool call to include `confirm: true`. MCP activity is shown in the lower-right log console.
 
+Codex and Codex CLI can use the local stdio command above. ChatGPT developer mode currently expects remote MCP apps/connectors over SSE or streaming HTTP, so it cannot directly register this local stdio proxy.
+
 ## Safety
 
 This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of `%` and gliding stop-loss fields with very small size before trusting it for meaningful orders.

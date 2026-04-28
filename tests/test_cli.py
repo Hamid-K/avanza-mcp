@@ -1,5 +1,9 @@
 import argparse
 import asyncio
+import io
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from textual import events
@@ -17,8 +21,10 @@ from avanza_cli import (
     parse_date,
     parse_price_type,
     prompt_credentials,
+    read_mcp_message,
     restore_table_row_selection,
     selected_table_row_key,
+    write_mcp_message,
 )
 
 
@@ -83,8 +89,12 @@ def test_tui_mounts_headless():
             await pilot.pause()
             assert app.query_one("#login-screen").display is True
             assert app.query_one("#workspace").display is False
+            assert app.query_one("#account-row") is not None
+            assert app.query_one("#action-row") is not None
             assert app.query_one("#account-select") is not None
             assert app.query_one("#portfolio-table") is not None
+            assert app.query_one("#mcp-controls") is not None
+            assert app.query_one("#mcp-write-controls") is not None
             assert app.query_one("#mcp-enabled") is not None
             assert app.query_one("#mcp-write-enabled") is not None
             assert app.query_one("#mcp-log") is not None
@@ -195,7 +205,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert app.query_one("#totp").value == ""
             assert app.selected_account_id == "acc-2"
             summary = str(app.query_one("#selected-account").render())
-            assert "Trading" in summary
+            assert "Trading" not in summary
             assert "5,000" in summary or "5000" in summary
             assert "Profit" in summary
             assert app.query_one("#account-select").value == "acc-2"
@@ -260,6 +270,41 @@ def test_tui_tracks_terminal_resize():
 def test_load_mcp_session_requires_existing_session_file(tmp_path):
     with pytest.raises(RuntimeError):
         load_mcp_session(tmp_path / "missing-session.json")
+
+
+def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
+    request_stream = io.BytesIO()
+    write_mcp_message(
+        request_stream,
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    )
+    write_mcp_message(
+        request_stream,
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "avanza_cli.py",
+            "mcp",
+            "--session-file",
+            str(tmp_path / "missing-session.json"),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    output, error = process.communicate(request_stream.getvalue(), timeout=5)
+
+    assert process.returncode == 0, error.decode()
+    response_stream = io.BytesIO(output)
+    initialize = read_mcp_message(response_stream)
+    tools = read_mcp_message(response_stream)
+
+    assert initialize["result"]["serverInfo"]["name"] == "avanza_cli"
+    assert any(tool["name"] == "avanza_status" for tool in tools["result"]["tools"])
 
 
 def test_tui_sorts_table_when_header_is_clicked():

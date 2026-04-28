@@ -72,3 +72,5 @@ python avanza_cli.py mcp
 ```
 
 The MCP proxy exposes account, portfolio, stop-loss, and stock-search tools. MCP starts read-only. To allow live stop-loss placement or deletion, enable the TUI `R/W` switch and require the MCP tool call to include `confirm: true`. Dry-run stop-loss previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
+
+Codex and Codex CLI can run this local stdio MCP command from `~/.codex/config.toml`. ChatGPT developer mode supports remote MCP apps/connectors over SSE or streaming HTTP; it does not currently connect directly to local stdio MCP servers. To use this from ChatGPT, expose a remote streaming HTTP/SSE MCP server with appropriate authentication instead of the local `python avanza_cli.py mcp` proxy.

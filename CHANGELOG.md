@@ -25,4 +25,7 @@
 - Rendered real-time status as green/yellow dot indicators and fixed TUI pane drag resizing.
 - Added TUI-managed MCP mode with a stdio proxy command, read-only default, optional R/W toggle, and a dedicated MCP activity log.
 - Preserved selected table rows across live refreshes when the selected row still exists.
+- Registered `avanza_cli` with Codex MCP config while preserving existing MCP servers, and documented ChatGPT's remote-MCP limitation.
+- Split the TUI top bar into separate account and action rows so account stats, buttons, and MCP switches do not crowd or clip each other.
+- Hardened MCP stdio startup so Codex can initialize and list tools even before the authenticated TUI session file exists.
 - Added project documentation, packaging metadata, and tests.
