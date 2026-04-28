@@ -2241,6 +2241,27 @@ class AvanzaTradingTui(App):
         text-style: bold;
     }
 
+    .panel-row {
+        height: auto;
+        align: left middle;
+    }
+
+    .panel-title {
+        width: 1fr;
+    }
+
+    .buy-action {
+        background: #1f6f43;
+        color: white;
+        min-width: 13;
+    }
+
+    .sell-action {
+        background: #8f2438;
+        color: white;
+        min-width: 13;
+    }
+
     #login {
         width: 100%;
         margin-top: 1;
@@ -2267,6 +2288,8 @@ class AvanzaTradingTui(App):
         ("q", "quit", "Quit"),
         ("r", "refresh_stoplosses", "Refresh Stop-Losses"),
         ("p", "refresh_portfolio", "Refresh Portfolio"),
+        ("b", "buy_selected_stock", "Buy Selected"),
+        ("s", "sell_selected_stock", "Sell Selected"),
     ]
 
     def __init__(self) -> None:
@@ -2372,7 +2395,10 @@ class AvanzaTradingTui(App):
             with Horizontal(id="body"):
                 with Vertical(id="main"):
                     with Vertical(id="positions-panel"):
-                        yield Static("Selected Account Stocks", classes="panel")
+                        with Horizontal(classes="panel panel-row"):
+                            yield Static("Selected Account Stocks", classes="panel-title")
+                            yield Button("Buy Selected", id="buy-selected-stock", classes="buy-action")
+                            yield Button("Sell Selected", id="sell-selected-stock", classes="sell-action")
                         yield DataTable(id="portfolio-table")
                     yield PaneResizer()
                     with Vertical(id="activity-panel"):
@@ -2665,6 +2691,18 @@ class AvanzaTradingTui(App):
             return
         self.open_cancel_modal(target)
         event.stop()
+
+    def selected_portfolio_trade_target(self) -> dict[str, str]:
+        table = self.query_one("#portfolio-table", DataTable)
+        row_key = selected_table_row_key(table)
+        key = str(getattr(row_key, "value", row_key or ""))
+        target = self.portfolio_trade_targets_by_row_key.get(key)
+        if not target:
+            raise ValueError("Select a stock row first.")
+        return target
+
+    def open_order_modal_for_selected_portfolio_row(self, side: str) -> None:
+        self.open_order_modal_for_portfolio_action(side, self.selected_portfolio_trade_target())
 
     def open_order_modal_for_portfolio_action(self, side: str, target: dict[str, str]) -> None:
         order_book_id = target.get("order_book_id", "")
@@ -3400,6 +3438,18 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
+    def action_buy_selected_stock(self) -> None:
+        try:
+            self.open_order_modal_for_selected_portfolio_row("buy")
+        except Exception as exc:
+            self.write_log(f"[red]Buy selected failed:[/red] {exc}")
+
+    def action_sell_selected_stock(self) -> None:
+        try:
+            self.open_order_modal_for_selected_portfolio_row("sell")
+        except Exception as exc:
+            self.write_log(f"[red]Sell selected failed:[/red] {exc}")
+
     def refresh_selected_account_live(self) -> None:
         if not self.avanza or not self.selected_account_id:
             return
@@ -3505,6 +3555,10 @@ class AvanzaTradingTui(App):
                 self.query_one("#stoploss-modal").display = True
             elif button_id == "open-order-modal":
                 self.query_one("#order-modal").display = True
+            elif button_id == "buy-selected-stock":
+                self.open_order_modal_for_selected_portfolio_row("buy")
+            elif button_id == "sell-selected-stock":
+                self.open_order_modal_for_selected_portfolio_row("sell")
             elif button_id == "close-stoploss-modal":
                 self.query_one("#stoploss-modal").display = False
             elif button_id == "close-order-modal":
