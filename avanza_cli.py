@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import getpass
+import re
 import sys
 import textwrap
 from datetime import date
@@ -116,6 +117,32 @@ def formatted_typed_value(value: Any, value_type: Any) -> str:
     if label == "SEK":
         return f"{value} SEK"
     return f"{value} {label}".strip()
+
+
+def plain_cell_value(value: Any) -> str:
+    if isinstance(value, Text):
+        return value.plain
+    return str(value)
+
+
+def sortable_cell_value(value: Any) -> tuple[int, Any]:
+    text = plain_cell_value(value).strip()
+    normalized = text.lower()
+    if normalized in {"", "-", "none", "unknown"}:
+        return (0, "")
+    if normalized in {"no", "false"}:
+        return (1, 0)
+    if normalized in {"yes", "true"}:
+        return (1, 1)
+
+    if re.match(r"^[+-]?\d", text):
+        number_text = re.sub(r"[^0-9,+.\\-]", "", text).replace(",", "")
+        try:
+            return (2, float(number_text))
+        except ValueError:
+            pass
+
+    return (3, normalized)
 
 
 def render_table(title: str, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
@@ -915,6 +942,7 @@ class AvanzaTradingTui(App):
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
+        self.table_sort_state: dict[str, tuple[Any, bool]] = {}
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.is_resizing_panes = False
@@ -1084,6 +1112,29 @@ class AvanzaTradingTui(App):
         self.capture_mouse(None)
         event.stop()
 
+    def sort_table(self, table: DataTable, column_key: Any, reverse: bool) -> None:
+        table.sort(column_key, key=sortable_cell_value, reverse=reverse)
+        if table.id:
+            self.table_sort_state[table.id] = (column_key, reverse)
+
+    def reapply_table_sort(self, table: DataTable) -> None:
+        if not table.id:
+            return
+        state = self.table_sort_state.get(table.id)
+        if not state:
+            return
+        column_key, reverse = state
+        self.sort_table(table, column_key, reverse)
+
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        table = event.data_table
+        previous_column, previous_reverse = self.table_sort_state.get(table.id or "", (None, False))
+        reverse = not previous_reverse if previous_column == event.column_key else False
+        self.sort_table(table, event.column_key, reverse)
+        direction = "descending" if reverse else "ascending"
+        self.write_log(f"Sorted {table.id or 'table'} by {event.label.plain} ({direction}).")
+        event.stop()
+
     def input_value(self, widget_id: str) -> str:
         widget = self.query_one(f"#{widget_id}")
         if isinstance(widget, Input):
@@ -1216,6 +1267,7 @@ class AvanzaTradingTui(App):
                 table.add_row(*open_order_row(item), key=f"order-{item.get('id', order_count)}")
                 order_count += 1
 
+        self.reapply_table_sort(table)
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
 
@@ -1284,6 +1336,7 @@ class AvanzaTradingTui(App):
                     count += 1
 
         self.position_row_cache = next_cache
+        self.reapply_table_sort(table)
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
 

@@ -4,8 +4,10 @@ import asyncio
 import pytest
 from textual import events
 from textual.geometry import Size
+from textual.widgets import DataTable
 
 from avanza.constants import OrderType, StopLossPriceType
+from rich.text import Text
 
 from avanza_cli import build_parser, enum_value, parse_date, parse_price_type, prompt_credentials
 
@@ -178,6 +180,29 @@ def test_tui_tracks_terminal_resize():
             await pilot.pause()
 
             assert app.last_resize == (120, 40)
+
+    asyncio.run(run_app())
+
+
+def test_tui_sorts_table_when_header_is_clicked():
+    from avanza_cli import AvanzaTradingTui
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            table = app.query_one("#portfolio-table", DataTable)
+            table.add_row("Beta", "ob-2", "1 st", Text("2,000.00 SEK"), "", "", "", "", "", "Yes")
+            table.add_row("Alpha", "ob-1", "1 st", Text("1,000.00 SEK"), "", "", "", "", "", "No")
+            value_column = list(table.columns.keys())[3]
+            label = table.columns[value_column].label
+
+            app.on_data_table_header_selected(DataTable.HeaderSelected(table, value_column, 3, label))
+            await pilot.pause()
+            assert table.get_row_at(0)[0] == "Alpha"
+
+            app.on_data_table_header_selected(DataTable.HeaderSelected(table, value_column, 3, label))
+            await pilot.pause()
+            assert table.get_row_at(0)[0] == "Beta"
 
     asyncio.run(run_app())
 

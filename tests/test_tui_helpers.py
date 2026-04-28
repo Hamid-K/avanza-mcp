@@ -16,6 +16,7 @@ from avanza_cli import (
     position_holding_label,
     position_row,
     realtime_status,
+    sortable_cell_value,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
     stop_loss_activity_row,
@@ -30,6 +31,13 @@ def test_amount_formats_value_objects():
 def test_formatted_typed_value_uses_percent_symbol():
     assert formatted_typed_value(5, "PERCENTAGE") == "5%"
     assert formatted_typed_value(95.5, "MONETARY") == "95.5 SEK"
+
+
+def test_sortable_cell_value_normalizes_human_table_values():
+    assert sortable_cell_value("+1.25%") == (2, 1.25)
+    assert sortable_cell_value("1,100.00 SEK") == (2, 1100.0)
+    assert sortable_cell_value("Yes") > sortable_cell_value("No")
+    assert sortable_cell_value("Unknown") < sortable_cell_value("No")
 
 
 def test_pane_weights_after_drag_changes_relative_sizes():
