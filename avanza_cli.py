@@ -554,7 +554,7 @@ class AvanzaTradingTui(App):
         )
         portfolio_table.cursor_type = "row"
         portfolio_table.zebra_stripes = True
-        self.log("Ready. Log in, then refresh portfolio or stop-losses.")
+        self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
 
     def input_value(self, widget_id: str) -> str:
         return self.query_one(f"#{widget_id}", Input).value.strip()
@@ -563,7 +563,7 @@ class AvanzaTradingTui(App):
         self.query_one("#password", Input).value = ""
         self.query_one("#totp", Input).value = ""
 
-    def log(self, message: str) -> None:
+    def write_log(self, message: str) -> None:
         self.query_one("#log", RichLog).write(message)
 
     def require_connection(self) -> Avanza:
@@ -585,7 +585,7 @@ class AvanzaTradingTui(App):
         self.query_one("#account-id", Input).value = account_id
         label = f"Selected account: {account_display_name(account)} ({account_id})"
         self.query_one("#selected-account", Static).update(label)
-        self.log(f"Selected account {account_display_name(account)} ({account_id}).")
+        self.write_log(f"Selected account {account_display_name(account)} ({account_id}).")
 
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
         selected_account_id = self.require_selected_account_id()
@@ -632,7 +632,7 @@ class AvanzaTradingTui(App):
 
         data = avanza.get_all_stop_losses()
         if not isinstance(data, list):
-            self.log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
+            self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
             return
 
         visible_count = 0
@@ -644,7 +644,7 @@ class AvanzaTradingTui(App):
                 visible_count += 1
 
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
-        self.log(f"Loaded {visible_count} open stop-loss order(s){suffix}.")
+        self.write_log(f"Loaded {visible_count} open stop-loss order(s){suffix}.")
 
     def refresh_accounts(self) -> None:
         avanza = self.require_connection()
@@ -653,14 +653,14 @@ class AvanzaTradingTui(App):
 
         overview = avanza.get_overview()
         if not isinstance(overview, dict):
-            self.log(f"[yellow]Unexpected account overview response type:[/yellow] {type(overview).__name__}")
+            self.write_log(f"[yellow]Unexpected account overview response type:[/yellow] {type(overview).__name__}")
             return
 
         self.accounts = account_rows_from_overview(overview)
         for account in self.accounts:
             table.add_row(*account_row(account), key=str(account.get("id", "")))
 
-        self.log(f"Loaded {len(self.accounts)} account(s).")
+        self.write_log(f"Loaded {len(self.accounts)} account(s).")
         if self.accounts and not self.selected_account_id:
             self.set_selected_account(self.accounts[0])
 
@@ -671,7 +671,7 @@ class AvanzaTradingTui(App):
 
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
-            self.log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
+            self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
 
         count = 0
@@ -691,19 +691,19 @@ class AvanzaTradingTui(App):
                 count += 1
 
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
-        self.log(f"Loaded {count} portfolio row(s){suffix}.")
+        self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
 
     def action_refresh_stoplosses(self) -> None:
         try:
             self.refresh_stoplosses()
         except Exception as exc:
-            self.log(f"[red]Refresh failed:[/red] {exc}")
+            self.write_log(f"[red]Refresh failed:[/red] {exc}")
 
     def action_refresh_portfolio(self) -> None:
         try:
             self.refresh_portfolio()
         except Exception as exc:
-            self.log(f"[red]Portfolio refresh failed:[/red] {exc}")
+            self.write_log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
     def selected_account_from_table(self) -> dict[str, Any]:
         table = self.query_one("#accounts-table", DataTable)
@@ -737,7 +737,7 @@ class AvanzaTradingTui(App):
             elif button_id == "place-live":
                 self.handle_place_live()
         except Exception as exc:
-            self.log(f"[red]Error:[/red] {exc}")
+            self.write_log(f"[red]Error:[/red] {exc}")
 
     def handle_login(self) -> None:
         username = self.input_value("username")
@@ -746,19 +746,19 @@ class AvanzaTradingTui(App):
         if not username or not password or not totp:
             raise ValueError("Username, password, and TOTP are required.")
 
-        self.log("Logging in...")
+        self.write_log("Logging in...")
         self.avanza = Avanza({"username": username, "password": password, "totpToken": totp})
         self.clear_secret_inputs()
-        self.log("[green]Logged in. Secret fields cleared.[/green]")
+        self.write_log("[green]Logged in. Secret fields cleared.[/green]")
         self.refresh_accounts()
         self.refresh_portfolio()
         self.refresh_stoplosses()
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
-        self.log("[yellow]Dry-run stop-loss request:[/yellow]")
+        self.write_log("[yellow]Dry-run stop-loss request:[/yellow]")
         for line in stop_loss_request_log_lines(preview):
-            self.log(line)
+            self.write_log(line)
 
     def handle_place_live(self) -> None:
         if self.input_value("place-confirm") != "PLACE":
@@ -766,9 +766,9 @@ class AvanzaTradingTui(App):
 
         avanza = self.require_connection()
         trigger, order_event, preview = self.build_stop_loss_request()
-        self.log("[red]Placing live stop-loss request:[/red]")
+        self.write_log("[red]Placing live stop-loss request:[/red]")
         for line in stop_loss_request_log_lines(preview):
-            self.log(line)
+            self.write_log(line)
 
         result = avanza.place_stop_loss_order(
             parent_stop_loss_id="0",
@@ -781,9 +781,9 @@ class AvanzaTradingTui(App):
             status = result.get("status") or result.get("orderRequestStatus") or "response received"
             identifier = result.get("stoplossOrderId") or result.get("orderId") or ""
             suffix = f" ({identifier})" if identifier else ""
-            self.log(f"[green]Avanza status:[/green] {status}{suffix}")
+            self.write_log(f"[green]Avanza status:[/green] {status}{suffix}")
         else:
-            self.log("[green]Avanza accepted the request.[/green]")
+            self.write_log("[green]Avanza accepted the request.[/green]")
         self.refresh_stoplosses()
 
 

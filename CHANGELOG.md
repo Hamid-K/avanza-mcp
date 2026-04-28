@@ -8,4 +8,5 @@
 - Added masked password and TOTP entry.
 - Replaced raw console/TUI API payload output with human-readable tables and summaries.
 - Improved console help with examples, safety notes, and detailed stop-loss option guidance.
+- Fixed TUI startup by avoiding a Textual logger name collision and added a headless TUI smoke test.
 - Added project documentation, packaging metadata, and tests.

@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 
 import pytest
 
@@ -49,6 +50,20 @@ def test_help_includes_examples_and_safety_notes(capsys):
     assert "follow-upwards" in stoploss_help
     assert "Gliding sell stop-loss dry-run:" in stoploss_help
     assert "--trigger-value-type {monetary,percentage}" in stoploss_help
+
+
+def test_tui_mounts_headless():
+    from avanza_cli import AvanzaTradingTui
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.query_one("#accounts-table") is not None
+            assert app.query_one("#portfolio-table") is not None
+            assert app.query_one("#stoploss-table") is not None
+
+    asyncio.run(run_app())
 
 
 def test_prompt_credentials_uses_totp_token(monkeypatch):
