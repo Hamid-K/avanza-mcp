@@ -15,6 +15,7 @@ from avanza_cli import (
     position_state_row,
     position_holding_label,
     position_row,
+    realtime_status,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
     stop_loss_activity_row,
@@ -157,7 +158,7 @@ def test_position_state_row_includes_day_and_profit_state():
             "account": {"name": "ISK", "id": "acc-1"},
             "instrument": {
                 "name": "Example AB",
-                "orderbook": {"id": "ob-1"},
+                "orderbook": {"id": "ob-1", "quote": {"isRealTime": True}},
             },
             "volume": {"value": 10, "unit": "st"},
             "value": {"value": 1100, "unit": "SEK"},
@@ -180,7 +181,15 @@ def test_position_state_row_includes_day_and_profit_state():
         "+13.75 SEK",
         "+22.22%",
         "+200.00 SEK",
+        "Yes",
     )
+
+
+def test_realtime_status_reads_known_realtime_and_delayed_flags():
+    assert realtime_status({"instrument": {"orderbook": {"quote": {"isRealTime": True}}}}) == "Yes"
+    assert realtime_status({"instrument": {"orderbook": {"quote": {"isRealTime": False}}}}) == "No"
+    assert realtime_status({"instrument": {"orderbook": {"quote": {"delayed": True}}}}) == "No"
+    assert realtime_status({"instrument": {"orderbook": {"quote": {}}}}) == "Unknown"
 
 
 def test_changed_position_row_styles_only_changed_numeric_cells():
@@ -194,6 +203,7 @@ def test_changed_position_row_styles_only_changed_numeric_cells():
         "+10.00 SEK",
         "+11.11%",
         "+100.00 SEK",
+        "Unknown",
     )
     current = (
         "Example AB",
@@ -205,6 +215,7 @@ def test_changed_position_row_styles_only_changed_numeric_cells():
         "+13.75 SEK",
         "+22.22%",
         "+200.00 SEK",
+        "Unknown",
     )
 
     row = changed_position_row(current, previous)

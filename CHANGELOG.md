@@ -19,4 +19,5 @@
 - Rendered stop-loss relative values as `%` in UI, console output, docs, and help.
 - Widened the TUI account bar, defaulted account selection to the largest account, and added colored account stats.
 - Added explicit `SEK`/`%` units to stop-loss activity prices.
+- Added a portfolio stock column showing whether Avanza reports real-time quote data for the instrument.
 - Added project documentation, packaging metadata, and tests.

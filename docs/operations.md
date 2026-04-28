@@ -53,4 +53,4 @@ python avanza_cli.py stoploss set \
 
 Add `--confirm` only after reviewing the request.
 
-In the TUI, the largest account by total value is selected after login. The account bar shows total value, buying power, account status, and a colored profit summary for the selected account. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and the positions/activity divider can be dragged to resize the panes.
+In the TUI, the largest account by total value is selected after login. The account bar shows total value, buying power, account status, and a colored profit summary for the selected account. The positions table includes a real-time quote flag when Avanza exposes that status in the position payload. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and the positions/activity divider can be dragged to resize the panes.

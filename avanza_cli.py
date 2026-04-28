@@ -45,6 +45,20 @@ NEGATIVE_CELL_STYLE = "#d98f8f"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 MIN_PANE_WEIGHT = 1
 MAX_PANE_WEIGHT = 8
+REALTIME_KEYS = {
+    "isRealTime",
+    "isRealtime",
+    "realTime",
+    "realtime",
+    "realTimeQuotes",
+    "realtimeQuotes",
+}
+DELAYED_KEYS = {
+    "delayed",
+    "isDelayed",
+    "delayedQuotes",
+    "isDelayedQuote",
+}
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -233,6 +247,35 @@ def matches_account(item: dict[str, Any], account_id: str | None) -> bool:
     return not account_id or account_id_for_item(item) == account_id
 
 
+def recursive_flag(data: Any, keys: set[str]) -> bool | None:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key in keys and isinstance(value, bool):
+                return value
+        for value in data.values():
+            nested = recursive_flag(value, keys)
+            if nested is not None:
+                return nested
+    elif isinstance(data, list):
+        for value in data:
+            nested = recursive_flag(value, keys)
+            if nested is not None:
+                return nested
+    return None
+
+
+def realtime_status(item: dict[str, Any]) -> str:
+    realtime = recursive_flag(item, REALTIME_KEYS)
+    if realtime is not None:
+        return "Yes" if realtime else "No"
+
+    delayed = recursive_flag(item, DELAYED_KEYS)
+    if delayed is not None:
+        return "No" if delayed else "Yes"
+
+    return "Unknown"
+
+
 def position_row(item: dict[str, Any]) -> tuple[str, ...]:
     instrument = item.get("instrument") or {}
     orderbook = instrument.get("orderbook") or {}
@@ -370,6 +413,7 @@ def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
         money_text(value_number(performance, "absolute"), str(value_unit)),
         percent_text(profit_percent),
         money_text(profit_amount, str(value_unit)),
+        realtime_status(item),
     )
 
 
@@ -986,6 +1030,7 @@ class AvanzaTradingTui(App):
             "Day SEK",
             "Profit %",
             "Profit",
+            "Real-time",
         )
         portfolio_table.cursor_type = "row"
         portfolio_table.zebra_stripes = True
