@@ -912,6 +912,11 @@ def open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def open_order_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
+    row = open_order_row(item)
+    return (*row[:5], "", *row[5:], cancel_badge())
+
+
 def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
     account = item.get("account") or {}
     orderbook = item.get("orderbook") or {}
@@ -943,6 +948,7 @@ def stop_loss_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        side_badge(order.get("type", "")),
         str(order.get("volume", "")),
         formatted_typed_value(order.get("price", ""), order.get("priceType", "")),
         str(trigger.get("validUntil", "")),
@@ -2453,7 +2459,8 @@ class AvanzaTradingTui(App):
             "Status",
             "Stock",
             "Order Book ID",
-            "Trigger/Side",
+            "Trigger",
+            "Side",
             "Volume",
             "Price",
             "Valid Until",
@@ -3210,7 +3217,7 @@ class AvanzaTradingTui(App):
                     continue
                 self.latest_open_order_items.append(item)
                 row_key = f"order-{item.get('id', '') or item.get('orderId', '') or order_count}"
-                table.add_row(*open_order_row(item), cancel_badge(), key=row_key)
+                table.add_row(*open_order_activity_row(item), key=row_key)
                 self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Order", item)
                 order_count += 1
 

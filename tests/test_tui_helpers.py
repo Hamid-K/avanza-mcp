@@ -29,6 +29,7 @@ from avanza_cli import (
     mcp_error,
     mcp_success,
     mcp_tool_response,
+    open_order_activity_row,
     read_mcp_message,
     realtime_status,
     realtime_status_badge,
@@ -455,12 +456,34 @@ def test_stop_loss_activity_row_labels_order_price_type():
             "status": "ACTIVE",
             "orderbook": {"name": "Example AB", "id": "ob-1"},
             "trigger": {"type": "FOLLOW_UPWARDS", "value": 5, "valueType": "PERCENTAGE"},
-            "order": {"volume": 10, "price": 1, "priceType": "PERCENTAGE"},
+            "order": {"type": "SELL", "volume": 10, "price": 1, "priceType": "PERCENTAGE"},
         }
     )
 
     assert row[5] == "FOLLOW_UPWARDS 5%"
-    assert row[7] == "1%"
+    assert row[6] == side_badge("sell")
+    assert row[8] == "1%"
+
+
+def test_open_order_activity_row_aligns_with_stop_loss_table_columns():
+    row = open_order_activity_row(
+        {
+            "id": "order-1",
+            "status": "ACTIVE",
+            "orderbook": {"name": "Example AB", "id": "ob-1"},
+            "type": "BUY",
+            "volume": 5,
+            "price": 123,
+            "priceType": "MONETARY",
+            "validUntil": "2026-05-28",
+        }
+    )
+
+    assert len(row) == 11
+    assert row[5] == ""
+    assert row[6] == side_badge("buy")
+    assert row[8] == "123 SEK"
+    assert row[10] == cancel_badge()
 
 
 def test_paper_session_round_trip_and_active_row(tmp_path):
