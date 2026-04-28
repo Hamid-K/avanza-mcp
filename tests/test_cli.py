@@ -580,6 +580,41 @@ def test_tui_order_ticket_validates_required_numeric_fields():
     asyncio.run(run_app())
 
 
+def test_tui_order_search_includes_owned_holdings_when_remote_search_fails():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, query, limit):
+            raise RuntimeError("remote unavailable")
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.avanza = FakeAvanza()
+            app.selected_account_id = "acc-1"
+            app.latest_portfolio_data = {
+                "withOrderbook": [
+                    {
+                        "account": {"id": "acc-1"},
+                        "instrument": {"name": "Broadcom", "orderbook": {"id": "369636"}},
+                        "volume": {"value": 17, "unit": "st"},
+                    }
+                ],
+                "withoutOrderbook": [],
+            }
+            app.query_one("#order-search").value = "broad"
+            await pilot.pause()
+
+            app.handle_order_search()
+            await pilot.pause()
+
+            assert app.query_one("#order-instrument-select", Select).value == "369636"
+            assert app.order_search_labels_by_order_book["369636"] == "Broadcom"
+            assert "portfolio result" in str(app.query_one("#order-search-status").render())
+
+    asyncio.run(run_app())
+
+
 def test_table_selection_can_be_restored_after_rebuild():
     from avanza_cli import AvanzaTradingTui
 

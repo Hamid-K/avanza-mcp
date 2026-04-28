@@ -930,6 +930,17 @@ def stoploss_holding_options(positions: dict[str, Any], account_id: str | None) 
     return options
 
 
+def holding_search_options(positions: dict[str, Any], account_id: str | None, query: str) -> list[tuple[str, str]]:
+    normalized_query = query.casefold().strip()
+    if not normalized_query:
+        return []
+    return [
+        (label, order_book_id)
+        for label, order_book_id in stoploss_holding_options(positions, account_id)
+        if normalized_query in label.casefold() or normalized_query in order_book_id.casefold()
+    ]
+
+
 def stoploss_volume_by_order_book(positions: dict[str, Any], account_id: str | None) -> dict[str, str]:
     volumes: dict[str, str] = {}
     for section in ("withOrderbook", "withoutOrderbook"):
@@ -3799,32 +3810,48 @@ class AvanzaTradingTui(App):
             self.query_one("#order-search-status", Static).update("Type at least 2 characters to search stocks.")
             raise ValueError("Type at least 2 characters to search stocks.")
 
-        try:
-            hits = flattened_search_hits(self.require_connection().search_for_stock(query, 20))
-        except Exception as exc:
-            self.query_one("#order-search-status", Static).update(f"Search failed: {exc}")
-            raise
-
         options: list[tuple[str, str]] = []
         labels_by_order_book: dict[str, str] = {}
         seen: set[str] = set()
+
+        def add_option(label: str, order_book_id: str, stock_name: str | None = None) -> None:
+            if not order_book_id or order_book_id in seen:
+                return
+            options.append((label, order_book_id))
+            labels_by_order_book[order_book_id] = stock_name or label.split(" - owned", 1)[0]
+            seen.add(order_book_id)
+
+        if self.latest_portfolio_data is not None:
+            for label, order_book_id in holding_search_options(self.latest_portfolio_data, self.selected_account_id, query):
+                add_option(label, order_book_id)
+
+        remote_error: Exception | None = None
+        try:
+            hits = flattened_search_hits(self.require_connection().search_for_stock(query, 20))
+        except Exception as exc:
+            remote_error = exc
+            hits = []
+
         for hit in hits:
             order_book_id = search_hit_order_book_id(hit)
-            if not order_book_id or order_book_id in seen:
-                continue
-            label = search_hit_label(hit)
-            options.append((label, order_book_id))
-            labels_by_order_book[order_book_id] = str(hit.get("name") or label)
-            seen.add(order_book_id)
+            add_option(search_hit_label(hit), order_book_id, str(hit.get("name") or ""))
 
         select = self.query_one("#order-instrument-select", Select)
         select.set_options(options)
         self.order_search_labels_by_order_book = labels_by_order_book
         if options:
             select.value = options[0][1]
-            self.query_one("#order-search-status", Static).update(f"{len(options)} result(s). First result selected.")
+            if remote_error is not None:
+                self.query_one("#order-search-status", Static).update(
+                    f"{len(options)} portfolio result(s). Remote search failed: {remote_error}"
+                )
+            else:
+                self.query_one("#order-search-status", Static).update(f"{len(options)} result(s). First result selected.")
             if not automatic:
                 self.write_log(f"Found {len(options)} stock/order book result(s) for '{query}'.")
+        elif remote_error is not None:
+            self.query_one("#order-search-status", Static).update(f"Search failed: {remote_error}")
+            raise remote_error
         else:
             self.query_one("#order-search-status", Static).update(f"No stock/order book results for '{query}'.")
             if not automatic:

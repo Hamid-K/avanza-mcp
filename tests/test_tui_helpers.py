@@ -15,6 +15,7 @@ from avanza_cli import (
     default_account,
     flattened_search_hits,
     formatted_typed_value,
+    holding_search_options,
     load_paper_session,
     market_clock_text,
     matches_account,
@@ -424,6 +425,31 @@ def test_stoploss_holding_options_show_owned_volume():
         ("Example AB - owned 25 st (ob-1)", "ob-1")
     ]
     assert stoploss_volume_by_order_book(positions, "acc-1") == {"ob-1": "25.0"}
+
+
+def test_holding_search_options_finds_owned_stock_case_insensitively():
+    positions = {
+        "withOrderbook": [
+            {
+                "account": {"id": "acc-1"},
+                "instrument": {"name": "Broadcom", "orderbook": {"id": "369636"}},
+                "volume": {"value": 17, "unit": "st"},
+            },
+            {
+                "account": {"id": "acc-1"},
+                "instrument": {"name": "Apple", "orderbook": {"id": "3323"}},
+                "volume": {"value": 42, "unit": "st"},
+            },
+        ],
+        "withoutOrderbook": [],
+    }
+
+    assert holding_search_options(positions, "acc-1", "broad") == [
+        ("Broadcom - owned 17 st (369636)", "369636")
+    ]
+    assert holding_search_options(positions, "acc-1", "BROAD") == [
+        ("Broadcom - owned 17 st (369636)", "369636")
+    ]
 
 
 def test_cash_row_formats_cash_position():
