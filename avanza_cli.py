@@ -4,11 +4,11 @@ import getpass
 import re
 import sys
 import textwrap
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from avanza import Avanza
-from avanza.constants import OrderType, StopLossPriceType, StopLossTriggerType
+from avanza.constants import InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
 from rich.panel import Panel
@@ -40,6 +40,7 @@ PRICE_TYPE_ALIASES = {
 PRICE_TYPE_SELECT_OPTIONS = [("SEK", "monetary"), ("%", "percentage")]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
 LIVE_REFRESH_SECONDS = 5.0
+REALTIME_STATUS_REFRESH_SECONDS = 300.0
 CHANGED_CELL_STYLE = "#d7ba7d"
 POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
@@ -303,6 +304,104 @@ def realtime_status(item: dict[str, Any]) -> str:
     return "Unknown"
 
 
+def instrument_type_enum(value: Any) -> InstrumentType | None:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    mapping = {
+        "stock": InstrumentType.STOCK,
+        "stocks": InstrumentType.STOCK,
+        "aktie": InstrumentType.STOCK,
+        "fund": InstrumentType.FUND,
+        "certificate": InstrumentType.CERTIFICATE,
+        "warrant": InstrumentType.WARRANT,
+        "exchange_traded_fund": InstrumentType.EXCHANGE_TRADED_FUND,
+        "exchange_traded_funds": InstrumentType.EXCHANGE_TRADED_FUND,
+        "etf": InstrumentType.EXCHANGE_TRADED_FUND,
+    }
+    return mapping.get(normalized)
+
+
+def unique_values(*values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    return result
+
+
+def first_known_realtime_status(*payloads: Any) -> str:
+    for payload in payloads:
+        if isinstance(payload, dict):
+            status = realtime_status(payload)
+            if status != "Unknown":
+                return status
+    return "Unknown"
+
+
+def lookup_realtime_status(avanza: Any, item: dict[str, Any]) -> str:
+    order_book_id = position_order_book_id(item)
+    if not order_book_id:
+        return realtime_status(item)
+
+    market_data: dict[str, Any] | None = None
+    try:
+        market_data = avanza.get_market_data(order_book_id)
+    except Exception:
+        market_data = None
+
+    order_book: dict[str, Any] | None = None
+    try:
+        order_book = avanza.get_order_book(order_book_id)
+    except Exception:
+        order_book = None
+
+    status = first_known_realtime_status(item, market_data, order_book)
+    if status != "Unknown":
+        return status
+
+    instrument = item.get("instrument") or {}
+    orderbook = instrument.get("orderbook") or {}
+    instrument_ids = unique_values(
+        order_book.get("instrumentId") if isinstance(order_book, dict) else "",
+        instrument.get("instrumentId"),
+        orderbook.get("instrumentId"),
+        order_book_id,
+    )
+    mapped_type = instrument_type_enum(
+        order_book.get("instrumentType") if isinstance(order_book, dict) else ""
+    ) or instrument_type_enum(instrument.get("type")) or instrument_type_enum(orderbook.get("type"))
+    instrument_types = [mapped_type] if mapped_type else [
+        InstrumentType.STOCK,
+        InstrumentType.EXCHANGE_TRADED_FUND,
+        InstrumentType.CERTIFICATE,
+        InstrumentType.WARRANT,
+    ]
+
+    for instrument_id in instrument_ids:
+        for instrument_type in instrument_types:
+            if instrument_type is None:
+                continue
+            try:
+                details = avanza.get_instrument_details(instrument_type, instrument_id)
+            except Exception:
+                details = None
+            status = first_known_realtime_status(details)
+            if status != "Unknown":
+                return status
+
+            try:
+                summary = avanza.get_instrument(instrument_type, instrument_id)
+            except Exception:
+                summary = None
+            status = first_known_realtime_status(summary)
+            if status != "Unknown":
+                return status
+
+    return "Unknown"
+
+
 def position_row(item: dict[str, Any]) -> tuple[str, ...]:
     instrument = item.get("instrument") or {}
     orderbook = instrument.get("orderbook") or {}
@@ -417,7 +516,7 @@ def account_stats_text(
     return text
 
 
-def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
+def position_state_row(item: dict[str, Any], realtime_override: str | None = None) -> tuple[str, ...]:
     instrument = item.get("instrument") or {}
     orderbook = instrument.get("orderbook") or {}
     performance = item.get("lastTradingDayPerformance") or {}
@@ -440,7 +539,7 @@ def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
         money_text(value_number(performance, "absolute"), str(value_unit)),
         percent_text(profit_percent),
         money_text(profit_amount, str(value_unit)),
-        realtime_status(item),
+        realtime_override or realtime_status(item),
     )
 
 
@@ -943,6 +1042,8 @@ class AvanzaTradingTui(App):
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
         self.table_sort_state: dict[str, tuple[Any, bool]] = {}
+        self.realtime_status_by_order_book: dict[str, str] = {}
+        self.realtime_status_checked_at: dict[str, datetime] = {}
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.is_resizing_panes = False
@@ -1174,6 +1275,30 @@ class AvanzaTradingTui(App):
         else:
             self.query_one("#selected-account", Static).update("Selected account: none")
 
+    def realtime_status_for_position(self, item: dict[str, Any]) -> str:
+        direct_status = realtime_status(item)
+        order_book_id = position_order_book_id(item)
+        if not order_book_id:
+            return direct_status
+
+        if direct_status != "Unknown":
+            self.realtime_status_by_order_book[order_book_id] = direct_status
+            self.realtime_status_checked_at[order_book_id] = datetime.now()
+            return direct_status
+
+        checked_at = self.realtime_status_checked_at.get(order_book_id)
+        cached_status = self.realtime_status_by_order_book.get(order_book_id)
+        if cached_status and checked_at and datetime.now() - checked_at < timedelta(seconds=REALTIME_STATUS_REFRESH_SECONDS):
+            return cached_status
+
+        try:
+            status = lookup_realtime_status(self.require_connection(), item)
+        except Exception:
+            status = "Unknown"
+        self.realtime_status_by_order_book[order_book_id] = status
+        self.realtime_status_checked_at[order_book_id] = datetime.now()
+        return status
+
     def set_selected_account(self, account: dict[str, Any]) -> None:
         account_id = str(account.get("id", ""))
         if not account_id:
@@ -1329,7 +1454,7 @@ class AvanzaTradingTui(App):
                     if not matches_account(item, self.selected_account_id):
                         continue
                     row_key = str(item.get("id", f"{section}-{count}"))
-                    current_row = position_state_row(item)
+                    current_row = position_state_row(item, self.realtime_status_for_position(item))
                     previous_row = self.position_row_cache.get(row_key)
                     table.add_row(*changed_position_row(current_row, previous_row), key=row_key)
                     next_cache[row_key] = current_row

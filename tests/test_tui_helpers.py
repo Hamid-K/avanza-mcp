@@ -15,6 +15,7 @@ from avanza_cli import (
     position_state_row,
     position_holding_label,
     position_row,
+    lookup_realtime_status,
     realtime_status,
     sortable_cell_value,
     stoploss_holding_options,
@@ -198,6 +199,28 @@ def test_realtime_status_reads_known_realtime_and_delayed_flags():
     assert realtime_status({"instrument": {"orderbook": {"quote": {"isRealTime": False}}}}) == "No"
     assert realtime_status({"instrument": {"orderbook": {"quote": {"delayed": True}}}}) == "No"
     assert realtime_status({"instrument": {"orderbook": {"quote": {}}}}) == "Unknown"
+
+
+def test_lookup_realtime_status_uses_instrument_details_when_portfolio_is_unknown():
+    class FakeAvanza:
+        def get_market_data(self, order_book_id):
+            assert order_book_id == "ob-1"
+            return {"quote": {}}
+
+        def get_order_book(self, order_book_id):
+            assert order_book_id == "ob-1"
+            return {"instrumentId": "inst-1", "instrumentType": "STOCK"}
+
+        def get_instrument_details(self, instrument_type, instrument_id):
+            assert instrument_id == "inst-1"
+            return {"quote": {"isRealTime": False}}
+
+        def get_instrument(self, instrument_type, instrument_id):
+            raise AssertionError("summary lookup should not run after details resolve")
+
+    item = {"instrument": {"orderbook": {"id": "ob-1"}}}
+
+    assert lookup_realtime_status(FakeAvanza(), item) == "No"
 
 
 def test_changed_position_row_styles_only_changed_numeric_cells():
