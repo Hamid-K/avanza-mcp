@@ -107,9 +107,8 @@ def test_tui_mounts_headless():
             assert app.query_one("#metric-profit") is not None
             assert app.query_one("#metric-status") is not None
             assert app.query_one("#portfolio-table") is not None
-            assert isinstance(app.query_one("#buy-selected-stock"), Button)
-            assert isinstance(app.query_one("#sell-selected-stock"), Button)
             portfolio_table = app.query_one("#portfolio-table", DataTable)
+            assert portfolio_table.cursor_type == "cell"
             portfolio_labels = [
                 getattr(column.label, "plain", str(column.label))
                 for column in portfolio_table.columns.values()
@@ -525,42 +524,6 @@ def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
                 "buy",
                 {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10"},
             )
-            await pilot.pause()
-
-            assert app.query_one("#regular-order-type", Select).value == "buy"
-            assert app.query_one("#regular-order-volume", Input).value == ""
-
-    asyncio.run(run_app())
-
-
-def test_tui_selected_stock_buttons_open_order_ticket():
-    from avanza_cli import AvanzaTradingTui
-
-    async def run_app() -> None:
-        app = AvanzaTradingTui()
-        async with app.run_test() as pilot:
-            table = app.query_one("#portfolio-table", DataTable)
-            table.add_row(
-                "Example AB", trade_action_badge("buy"), trade_action_badge("sell"),
-                "ob-1", "10 st", "1,000 SEK", "100 SEK", "", "", "", "", "",
-                key="row-1",
-            )
-            table.move_cursor(row=0, animate=False, scroll=False)
-            app.portfolio_trade_targets_by_row_key["row-1"] = {
-                "stock": "Example AB",
-                "order_book_id": "ob-1",
-                "volume": "10",
-            }
-
-            app.open_order_modal_for_selected_portfolio_row("sell")
-            await pilot.pause()
-
-            assert app.query_one("#order-modal").display is True
-            assert app.query_one("#order-instrument-select", Select).value == "ob-1"
-            assert app.query_one("#regular-order-type", Select).value == "sell"
-            assert app.query_one("#regular-order-volume", Input).value == "10"
-
-            app.open_order_modal_for_selected_portfolio_row("buy")
             await pilot.pause()
 
             assert app.query_one("#regular-order-type", Select).value == "buy"
