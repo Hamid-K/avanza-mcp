@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import pytest
 
@@ -42,6 +43,17 @@ def test_prompt_credentials_uses_totp_token(monkeypatch):
         "password": "secret-password",
         "totpToken": "123456",
     }
+
+
+def test_dump_outputs_pretty_json(capsys):
+    from avanza_cli import dump
+
+    dump({"b": 1, "a": {"c": 2}})
+    output = capsys.readouterr().out
+
+    assert json.loads(output) == {"a": {"c": 2}, "b": 1}
+    assert output.startswith("{\n")
+    assert '  "a": {' in output
 
 
 def test_stoploss_set_dry_run_does_not_require_login(capsys):

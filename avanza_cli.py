@@ -9,9 +9,13 @@ from typing import Any
 from avanza import Avanza
 from avanza.constants import OrderType, StopLossPriceType, StopLossTriggerType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
+from rich.console import Console
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Static
+
+
+console = Console()
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -40,7 +44,9 @@ def connect(args: argparse.Namespace) -> Avanza:
 
 
 def dump(data: Any) -> None:
-    print(json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+    console.print_json(
+        json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False)
+    )
 
 
 def parse_date(value: str) -> date:
