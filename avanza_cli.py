@@ -1464,7 +1464,7 @@ class PaneResizer(Static):
 
 class SidePaneResizer(Static):
     def __init__(self) -> None:
-        super().__init__("resize", id="side-pane-resizer")
+        super().__init__("│", id="side-pane-resizer")
 
     @staticmethod
     def event_x(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
@@ -1489,7 +1489,7 @@ class SidePaneResizer(Static):
 
 class TicketPaneResizer(Static):
     def __init__(self, ticket: str) -> None:
-        super().__init__("resize", id=f"{ticket}-ticket-resizer", classes="ticket-resizer")
+        super().__init__("│", id=f"{ticket}-ticket-resizer", classes="ticket-resizer")
 
     @staticmethod
     def event_x(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
@@ -2004,10 +2004,9 @@ class AvanzaTradingTui(App):
     }
 
     #side-pane-resizer {
-        width: 3;
+        width: 1;
         height: 1fr;
         content-align: center middle;
-        text-align: center;
         color: $text-muted;
         background: $boost;
     }
@@ -2100,22 +2099,21 @@ class AvanzaTradingTui(App):
     }
 
     .ticket-resizer {
-        width: 3;
+        width: 1;
         height: 1fr;
         content-align: center middle;
-        text-align: center;
         color: $text-muted;
         background: $boost;
     }
 
     .ticket-resizer:hover {
         color: $text;
-        background: $warning-darken-3;
+        background: $primary-darken-3;
     }
 
     .ticket-resizer.dragging {
         color: $text;
-        background: $warning;
+        background: $accent;
     }
 
     .ticket-content {
