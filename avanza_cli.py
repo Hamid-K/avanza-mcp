@@ -624,6 +624,40 @@ def portfolio_profit_summary(data: dict[str, Any], account_id: str | None) -> tu
     return profit_amount, profit_percent, value_unit
 
 
+def portfolio_day_summary(
+    data: dict[str, Any],
+    account_id: str | None,
+    account: dict[str, Any] | None = None,
+) -> tuple[float | None, float | None, str]:
+    day_total = 0.0
+    position_total = 0.0
+    value_unit = "SEK"
+    found = False
+
+    for section in ("withOrderbook", "withoutOrderbook"):
+        for item in data.get(section, []):
+            if not isinstance(item, dict) or not matches_account(item, account_id):
+                continue
+            performance = item.get("lastTradingDayPerformance") or {}
+            day_value = value_number(performance, "absolute")
+            current_value = value_number(item, "value")
+            if current_value is not None:
+                position_total += current_value
+                value_unit = str(nested_value(item, "value", "unit") or value_unit)
+            if day_value is None:
+                continue
+            day_total += day_value
+            value_unit = str(nested_value(performance, "absolute", "unit") or value_unit)
+            found = True
+
+    if not found:
+        return None, None, value_unit
+
+    denominator = value_number(account or {}, "totalValue") or position_total
+    day_percent = (day_total / denominator) * 100 if denominator else None
+    return day_total, day_percent, value_unit
+
+
 def account_stats_text(
     account: dict[str, Any],
     portfolio_data: dict[str, Any] | None = None,
@@ -680,7 +714,7 @@ def account_metric_values(
         return {
             "total": account_metric_text("Total", "-"),
             "buying": account_metric_text("Buying", "-"),
-            "profit": account_metric_text("Profit", "-"),
+            "profit": account_metric_text("Day P/L", "-"),
             "status": account_metric_text("Status", "-"),
         }
     total = amount(account, "totalValue") or "-"
@@ -689,7 +723,7 @@ def account_metric_values(
     profit = "-"
     profit_style = "dim"
     if portfolio_data is not None:
-        profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
+        profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
         if profit_amount is not None:
             profit = money_text(profit_amount, value_unit)
             if profit_percent is not None:
@@ -698,7 +732,7 @@ def account_metric_values(
     return {
         "total": account_metric_text("Total", total, "bold"),
         "buying": account_metric_text("Buying", buying_power, "bold"),
-        "profit": account_metric_text("Profit", profit, profit_style),
+        "profit": account_metric_text("Day P/L", profit, profit_style),
         "status": account_metric_text("Status", status, "bold"),
     }
 

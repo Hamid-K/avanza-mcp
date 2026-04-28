@@ -233,7 +233,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             total_metric = str(app.query_one("#metric-total").render())
             profit_metric = str(app.query_one("#metric-profit").render())
             assert "5,000" in total_metric or "5000" in total_metric
-            assert "Profit" in profit_metric
+            assert "Day P/L" in profit_metric
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
             assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}

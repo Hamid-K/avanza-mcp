@@ -18,6 +18,7 @@ from avanza_cli import (
     matches_account,
     pane_weights_after_drag,
     paper_orders,
+    portfolio_day_summary,
     portfolio_profit_summary,
     position_state_row,
     position_holding_label,
@@ -144,6 +145,27 @@ def test_account_stats_text_includes_profit_summary():
     assert "Trading (ISK)" in summary
     assert "Total 1100 SEK" in summary
     assert "Profit +100.00 SEK (+10.00%)" in summary
+
+
+def test_portfolio_day_summary_uses_daily_absolute_against_account_total():
+    account = {"totalValue": {"value": 5000, "unit": "SEK"}}
+    positions = {
+        "withOrderbook": [
+            {
+                "account": {"id": "acc-1"},
+                "value": {"value": 1100, "unit": "SEK"},
+                "lastTradingDayPerformance": {"absolute": {"value": 25, "unit": "SEK"}},
+            },
+            {
+                "account": {"id": "acc-1"},
+                "value": {"value": 900, "unit": "SEK"},
+                "lastTradingDayPerformance": {"absolute": {"value": -5, "unit": "SEK"}},
+            },
+        ],
+        "withoutOrderbook": [],
+    }
+
+    assert portfolio_day_summary(positions, "acc-1", account) == (20.0, 0.4, "SEK")
 
 
 def test_matches_account_filters_by_nested_account_id():
