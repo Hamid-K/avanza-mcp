@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avanza-trading-tools"
+version = "0.1.0"
+description = "Interactive Avanza portfolio and stop-loss tools built on the unofficial avanza-api package."
+requires-python = ">=3.11"
+dependencies = [
+  "avanza-api>=16.1.0,<17",
+  "textual>=6.1,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[project.scripts]
+avanza-cli = "avanza_cli:main"
+
+[tool.setuptools]
+py-modules = ["avanza_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

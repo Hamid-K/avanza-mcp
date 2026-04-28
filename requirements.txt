@@ -1,0 +1,2 @@
+avanza-api>=16.1.0,<17
+textual>=6.1,<7
