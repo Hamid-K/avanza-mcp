@@ -2,6 +2,8 @@ import argparse
 import asyncio
 
 import pytest
+from textual import events
+from textual.geometry import Size
 
 from avanza.constants import OrderType, StopLossPriceType
 
@@ -119,6 +121,20 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
             assert "Trading" in str(app.query_one("#selected-account").render())
             assert app.query_one("#account-select").value == "acc-1"
             assert app.live_refresh_timer is not None
+
+    asyncio.run(run_app())
+
+
+def test_tui_tracks_terminal_resize():
+    from avanza_cli import AvanzaTradingTui
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.on_resize(events.Resize(Size(120, 40), Size(120, 40)))
+            await pilot.pause()
+
+            assert app.last_resize == (120, 40)
 
     asyncio.run(run_app())
 

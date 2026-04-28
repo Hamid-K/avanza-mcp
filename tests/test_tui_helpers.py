@@ -4,6 +4,7 @@ from avanza_cli import (
     account_rows_from_overview,
     amount,
     cash_row,
+    changed_position_row,
     matches_account,
     position_state_row,
     position_row,
@@ -125,6 +126,42 @@ def test_position_state_row_includes_day_and_profit_state():
         "+22.22%",
         "+200.00 SEK",
     )
+
+
+def test_changed_position_row_styles_only_changed_numeric_cells():
+    previous = (
+        "Example AB",
+        "ob-1",
+        "10 st",
+        "1000 SEK",
+        "90 SEK",
+        "+1.00%",
+        "+10.00 SEK",
+        "+11.11%",
+        "+100.00 SEK",
+    )
+    current = (
+        "Example AB",
+        "ob-1",
+        "10 st",
+        "1100 SEK",
+        "90 SEK",
+        "+1.25%",
+        "+13.75 SEK",
+        "+22.22%",
+        "+200.00 SEK",
+    )
+
+    row = changed_position_row(current, previous)
+
+    assert row[0] == "Example AB"
+    assert row[2] == "10 st"
+    assert str(row[3]) == "1100 SEK"
+    assert row[3].style
+    assert str(row[5]) == "+1.25%"
+    assert row[5].style
+    assert str(row[8]) == "+200.00 SEK"
+    assert row[8].style
 
 
 def test_cash_row_formats_cash_position():

@@ -12,6 +12,8 @@ from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
@@ -29,6 +31,8 @@ TRIGGER_TYPE_CHOICES = [
 PRICE_TYPE_CHOICES = ["monetary", "percentage"]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
 LIVE_REFRESH_SECONDS = 5.0
+CHANGED_CELL_STYLE = "#d7ba7d"
+POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -233,6 +237,22 @@ def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
         percent_text(profit_percent),
         money_text(profit_amount, str(value_unit)),
     )
+
+
+def changed_position_row(
+    current: tuple[str, ...],
+    previous: tuple[str, ...] | None,
+) -> tuple[Any, ...]:
+    if previous is None:
+        return current
+
+    cells: list[Any] = []
+    for index, value in enumerate(current):
+        if index in POSITION_CHANGE_COLUMNS and value and index < len(previous) and value != previous[index]:
+            cells.append(Text(value, style=CHANGED_CELL_STYLE))
+        else:
+            cells.append(value)
+    return tuple(cells)
 
 
 def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
@@ -655,6 +675,8 @@ class AvanzaTradingTui(App):
         self.accounts: list[dict[str, Any]] = []
         self.selected_account_id: str | None = None
         self.live_refresh_timer = None
+        self.last_resize: tuple[int, int] | None = None
+        self.position_row_cache: dict[str, tuple[str, ...]] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -767,6 +789,17 @@ class AvanzaTradingTui(App):
         portfolio_table.cursor_type = "row"
         portfolio_table.zebra_stripes = True
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.last_resize = (event.size.width, event.size.height)
+        self.refresh(layout=True)
+        for selector in ("#workspace", "#main", "#portfolio-table", "#stoploss-table"):
+            try:
+                self.query_one(selector).refresh(layout=True)
+            except Exception:
+                pass
+        if self.avanza and self.selected_account_id:
+            self.call_after_refresh(self.refresh_selected_account_live)
 
     def input_value(self, widget_id: str) -> str:
         widget = self.query_one(f"#{widget_id}")
@@ -921,14 +954,20 @@ class AvanzaTradingTui(App):
             return
 
         count = 0
+        next_cache: dict[str, tuple[str, ...]] = {}
         for section in ("withOrderbook", "withoutOrderbook"):
             for item in data.get(section, []):
                 if isinstance(item, dict):
                     if not matches_account(item, self.selected_account_id):
                         continue
-                    table.add_row(*position_state_row(item), key=str(item.get("id", f"{section}-{count}")))
+                    row_key = str(item.get("id", f"{section}-{count}"))
+                    current_row = position_state_row(item)
+                    previous_row = self.position_row_cache.get(row_key)
+                    table.add_row(*changed_position_row(current_row, previous_row), key=row_key)
+                    next_cache[row_key] = current_row
                     count += 1
 
+        self.position_row_cache = next_cache
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
 
@@ -973,6 +1012,7 @@ class AvanzaTradingTui(App):
         if not account:
             raise ValueError(f"Unknown account id: {account_id}")
         self.set_selected_account(account)
+        self.position_row_cache = {}
         self.refresh_portfolio()
         self.refresh_stoplosses()
 
