@@ -10,6 +10,14 @@ The tools prompt for:
 
 The password and TOTP prompts are masked. The TUI clears secret fields after a successful login.
 
+As an alternative, use 1Password CLI integration:
+
+```bash
+python avanza_cli.py portfolio summary --onepassword-item Avanza --onepassword-vault Private
+```
+
+The item must contain username and password fields and a one-time password field. The script runs `op item get ITEM --format json` for username/password and `op item get ITEM --otp` for the current TOTP code. 1Password authorization is handled by the local 1Password app/CLI; the tool does not persist the returned secrets.
+
 ## Portfolio
 
 Use the CLI for human-readable terminal output:

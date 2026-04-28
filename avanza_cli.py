@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import threading
 import textwrap
@@ -112,7 +113,92 @@ def prompt_credentials(username: str | None) -> dict[str, str]:
     }
 
 
+def onepassword_command(args: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            ["op", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("1Password CLI 'op' is not installed or is not on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("1Password CLI timed out waiting for authorization.") from exc
+    except subprocess.CalledProcessError as exc:
+        message = (exc.stderr or exc.stdout or "").strip()
+        raise RuntimeError(f"1Password CLI failed: {message or exc}") from exc
+    return result.stdout.strip()
+
+
+def onepassword_item_json(item: str, vault: str | None = None) -> dict[str, Any]:
+    if not item.strip():
+        raise ValueError("1Password item name or ID is required.")
+    args = ["item", "get", item, "--format", "json"]
+    if vault:
+        args.extend(["--vault", vault])
+    raw = onepassword_command(args)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("1Password CLI returned invalid JSON.") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("1Password CLI returned an unexpected item shape.")
+    return data
+
+
+def onepassword_field_value(item: dict[str, Any], labels: set[str], purposes: set[str]) -> str:
+    for field in item.get("fields", []):
+        if not isinstance(field, dict):
+            continue
+        label = str(field.get("label") or field.get("id") or "").strip().lower()
+        purpose = str(field.get("purpose") or "").strip().lower()
+        value = field.get("value")
+        if value is None:
+            continue
+        if label in labels or purpose in purposes:
+            return str(value)
+    return ""
+
+
+def onepassword_credentials(item: str, vault: str | None = None) -> dict[str, str]:
+    item_data = onepassword_item_json(item, vault)
+    username = onepassword_field_value(
+        item_data,
+        {"username", "user name", "email", "e-mail"},
+        {"username"},
+    )
+    password = onepassword_field_value(
+        item_data,
+        {"password"},
+        {"password"},
+    )
+
+    otp_args = ["item", "get", item, "--otp"]
+    if vault:
+        otp_args.extend(["--vault", vault])
+    totp_code = onepassword_command(otp_args).strip()
+
+    if not username:
+        raise ValueError("Could not find a username field in the 1Password item.")
+    if not password:
+        raise ValueError("Could not find a password field in the 1Password item.")
+    if not totp_code:
+        raise ValueError("Could not get a TOTP code from the 1Password item.")
+
+    return {
+        "username": username,
+        "password": password,
+        "totpToken": totp_code,
+    }
+
+
 def connect(args: argparse.Namespace) -> Avanza:
+    onepassword_item = getattr(args, "onepassword_item", None)
+    onepassword_vault = getattr(args, "onepassword_vault", None)
+    if onepassword_item:
+        return Avanza(onepassword_credentials(onepassword_item, onepassword_vault))
     return Avanza(prompt_credentials(args.username))
 
 
@@ -2347,6 +2433,10 @@ class AvanzaTradingTui(App):
                     max_length=8,
                 )
                 yield Button("Login", id="login", variant="primary")
+                yield Static("Or use 1Password CLI", id="onepassword-title")
+                yield Input(placeholder="1Password item name or ID", id="onepassword-item")
+                yield Input(placeholder="1Password vault (optional)", id="onepassword-vault")
+                yield Button("Login with 1Password", id="onepassword-login", variant="primary")
 
         with Vertical(id="workspace"):
             with Horizontal(id="topbar"):
@@ -2717,6 +2807,17 @@ class AvanzaTradingTui(App):
     def clear_secret_inputs(self) -> None:
         self.query_one("#password", Input).value = ""
         self.query_one("#totp", Input).value = ""
+
+    def complete_login(self, credentials: dict[str, str]) -> None:
+        self.avanza = Avanza(credentials)
+        self.clear_secret_inputs()
+        self.query_one("#login-screen").display = False
+        self.query_one("#workspace").display = True
+        self.write_log("[green]Logged in. Secret fields cleared.[/green]")
+        self.refresh_accounts()
+        self.refresh_portfolio()
+        self.refresh_stoplosses()
+        self.start_live_refresh()
 
     def record_event(self, category: str, event: str, details: dict[str, Any] | None = None) -> None:
         record = {
@@ -3483,6 +3584,8 @@ class AvanzaTradingTui(App):
         try:
             if button_id == "login":
                 self.handle_login()
+            elif button_id == "onepassword-login":
+                self.handle_1password_login()
             elif button_id == "profit-cycle":
                 self.cycle_profit_metric()
             elif button_id == "paper-mode-toggle":
@@ -3547,15 +3650,16 @@ class AvanzaTradingTui(App):
             raise ValueError("Username, password, and TOTP are required.")
 
         self.write_log("Logging in...")
-        self.avanza = Avanza({"username": username, "password": password, "totpToken": totp})
-        self.clear_secret_inputs()
-        self.query_one("#login-screen").display = False
-        self.query_one("#workspace").display = True
-        self.write_log("[green]Logged in. Secret fields cleared.[/green]")
-        self.refresh_accounts()
-        self.refresh_portfolio()
-        self.refresh_stoplosses()
-        self.start_live_refresh()
+        self.complete_login({"username": username, "password": password, "totpToken": totp})
+
+    def handle_1password_login(self) -> None:
+        item = self.input_value("onepassword-item")
+        vault = self.input_value("onepassword-vault") or None
+        if not item:
+            raise ValueError("1Password item name or ID is required.")
+
+        self.write_log("Requesting Avanza credentials from 1Password CLI...")
+        self.complete_login(onepassword_credentials(item, vault))
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
@@ -4103,6 +4207,16 @@ def add_common_auth(parser: argparse.ArgumentParser) -> None:
         metavar="USER",
         help="Avanza username. If omitted, you are prompted interactively.",
     )
+    parser.add_argument(
+        "--onepassword-item",
+        metavar="ITEM",
+        help="Read Avanza username, password, and TOTP from a 1Password item via the op CLI.",
+    )
+    parser.add_argument(
+        "--onepassword-vault",
+        metavar="VAULT",
+        help="Optional 1Password vault name or ID for --onepassword-item.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4123,6 +4237,7 @@ def build_parser() -> argparse.ArgumentParser:
 
             Credentials:
               Password and current TOTP code are prompted interactively and masked.
+              Or use --onepassword-item ITEM with the 1Password CLI.
 
             Safety:
               Mutating commands dry-run unless you pass --confirm.

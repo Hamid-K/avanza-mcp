@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import io
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from avanza_cli import (
     call_mcp_bridge,
     enum_value,
     load_mcp_session,
+    onepassword_credentials,
     parse_date,
     parse_price_type,
     prompt_credentials,
@@ -62,6 +64,17 @@ def test_parser_includes_portfolio_commands():
     assert args.portfolio_command == "positions"
     assert args.username == "alice"
 
+    op_args = parser.parse_args([
+        "portfolio",
+        "positions",
+        "--onepassword-item",
+        "Avanza",
+        "--onepassword-vault",
+        "Private",
+    ])
+    assert op_args.onepassword_item == "Avanza"
+    assert op_args.onepassword_vault == "Private"
+
     mcp_args = parser.parse_args(["mcp"])
     assert mcp_args.command == "mcp"
 
@@ -96,6 +109,9 @@ def test_tui_mounts_headless():
             await pilot.pause()
             assert app.query_one("#login-screen").display is True
             assert app.query_one("#workspace").display is False
+            assert app.query_one("#onepassword-item") is not None
+            assert app.query_one("#onepassword-vault") is not None
+            assert isinstance(app.query_one("#onepassword-login"), Button)
             assert app.query_one("#account-row") is not None
             assert app.query_one("#metric-grid") is not None
             assert app.query_one("#clock-status") is not None
@@ -556,6 +572,66 @@ def test_table_selection_can_be_restored_after_rebuild():
     asyncio.run(run_app())
 
 
+def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr(
+        "avanza_cli.onepassword_credentials",
+        lambda item, vault=None: {
+            "username": "alice",
+            "password": "secret-password",
+            "totpToken": "123456",
+        },
+    )
+
+    class FakeAvanza:
+        def __init__(self, credentials):
+            self.credentials = credentials
+
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {
+                        "id": "acc-1",
+                        "name": "ISK",
+                        "type": "ISK",
+                        "totalValue": {"value": 1000, "unit": "SEK"},
+                        "buyingPower": {"value": 500, "unit": "SEK"},
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": []}
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.query_one("#onepassword-item").value = "Avanza"
+            app.query_one("#onepassword-vault").value = "Private"
+
+            app.handle_1password_login()
+            await pilot.pause()
+
+            assert app.query_one("#login-screen").display is False
+            assert app.query_one("#workspace").display is True
+            assert app.query_one("#password").value == ""
+            assert app.query_one("#totp").value == ""
+            assert app.selected_account_id == "acc-1"
+
+    asyncio.run(run_app())
+
+
 def test_prompt_credentials_uses_totp_token(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt: "alice")
     prompts = iter(["secret-password", "123456"])
@@ -568,6 +644,41 @@ def test_prompt_credentials_uses_totp_token(monkeypatch):
         "password": "secret-password",
         "totpToken": "123456",
     }
+
+
+def test_onepassword_credentials_reads_item_and_otp(monkeypatch):
+    calls = []
+
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(command, check, capture_output, text, timeout):
+        calls.append(command)
+        if command[:3] == ["op", "item", "get"] and "--format" in command:
+            return Result(json.dumps({
+                "fields": [
+                    {"label": "username", "value": "alice"},
+                    {"label": "password", "value": "secret-password"},
+                ]
+            }))
+        if command[:3] == ["op", "item", "get"] and "--otp" in command:
+            return Result("123456\n")
+        raise AssertionError(command)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    credentials = onepassword_credentials("Avanza", "Private")
+
+    assert credentials == {
+        "username": "alice",
+        "password": "secret-password",
+        "totpToken": "123456",
+    }
+    assert calls == [
+        ["op", "item", "get", "Avanza", "--format", "json", "--vault", "Private"],
+        ["op", "item", "get", "Avanza", "--otp", "--vault", "Private"],
+    ]
 
 
 def test_render_accounts_overview_outputs_human_table(capsys):

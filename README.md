@@ -8,6 +8,8 @@ Credentials are prompted at runtime:
 - password: masked
 - current TOTP code: masked
 
+Alternatively, pass `--onepassword-item ITEM` and optional `--onepassword-vault VAULT` to read the Avanza username, password, and current TOTP code through the 1Password CLI (`op`). The TUI has a matching `Login with 1Password` path. The tool does not store these secrets; `op` will ask you to authorize access through the local 1Password app.
+
 The current TOTP code is passed to `avanza-api` as `totpToken`, which is the field name expected by the installed library version.
 
 ## Setup
@@ -88,7 +90,7 @@ Run the terminal UI from the same script:
 python avanza_cli.py tui
 ```
 
-The TUI masks password and TOTP inputs, clears those fields after a successful login, and hides the login screen. Use `Review Only` first to validate and log an order request without creating a paper or live order.
+The TUI masks password and TOTP inputs, clears those fields after a successful login, and hides the login screen. You can also enter a 1Password item name/ID and optional vault, then use `Login with 1Password` to let the local `op` CLI fetch username, password, and TOTP after your 1Password approval. Use `Review Only` first to validate and log an order request without creating a paper or live order.
 
 After login, the largest account by total value is selected by default. The top panel groups account metrics into colored cards, keeps action buttons together, and shows a live clock plus a weekday OMXS open/close countdown. The P/L metric cycles between `Day P/L` and `Position P/L` when clicked, with SEK and % values colored separately. The main table shows the selected account's stocks with day movement, profit state, a distinct header row, and a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. The order ticket searches as you type by stock name, ticker, or ISIN, so it supports opening new positions as well as trading current holdings. The lower table shows stop-losses and open orders for the selected account, with trigger and price values labeled as `SEK` or `%`; its cancel column opens a guarded cancellation ticket. Buy/sell side cells are color-coded green/red. Click any table column header to sort by that column; click the same header again to reverse the order. Drag the horizontal divider between tables, the vertical divider beside Active Trades, or the left edge of the order/stop-loss ticket to resize panes. Position and order state refreshes live every 5 seconds.
 
