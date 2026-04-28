@@ -153,6 +153,8 @@ def test_tui_mounts_headless():
             assert resizer.renderable == "─"
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
+            assert app.query_one("#valid-until", Input).value == "9999-12-31"
+            assert app.query_one("#regular-order-valid-until", Input).value == "9999-12-31"
             app.apply_pane_weights(3, 2)
             assert app.positions_pane_weight == 3
             assert app.activity_pane_weight == 2

@@ -35,6 +35,8 @@ MCP_SESSION_FILE = Path(__file__).with_name(".avanza_mcp_session.json")
 PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
+MAX_VALID_UNTIL_DATE = date.max
+MAX_VALID_UNTIL_TEXT = MAX_VALID_UNTIL_DATE.isoformat()
 
 TRIGGER_TYPE_CHOICES = [
     "less-or-equal",
@@ -2615,7 +2617,11 @@ class AvanzaTradingTui(App):
                         allow_blank=False,
                         id="trigger-value-type",
                     )
-                    yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="valid-until")
+                    yield Input(
+                        value=MAX_VALID_UNTIL_TEXT,
+                        placeholder=f"Valid until ({MAX_VALID_UNTIL_TEXT})",
+                        id="valid-until",
+                    )
                     yield Select(
                         [(label, label) for label in ORDER_TYPE_CHOICES],
                         value="sell",
@@ -2665,7 +2671,11 @@ class AvanzaTradingTui(App):
                         allow_blank=False,
                         id="regular-order-condition",
                     )
-                    yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="regular-order-valid-until")
+                    yield Input(
+                        value=MAX_VALID_UNTIL_TEXT,
+                        placeholder=f"Valid until ({MAX_VALID_UNTIL_TEXT})",
+                        id="regular-order-valid-until",
+                    )
                     yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
                     with Horizontal():
                         yield Button("Review Only", id="order-dry-run", variant="default")
