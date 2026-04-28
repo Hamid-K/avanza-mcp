@@ -53,7 +53,7 @@ python avanza_cli.py stoploss set \
 
 Add `--confirm` only after reviewing the request.
 
-In the TUI, the largest account by total value is selected after login. The account panel shows total value, buying power, status, and profit in colored metric cards. The top-right panel shows current time with seconds and a weekday OMXS open/close countdown. The stocks table includes a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. If the position payload does not include that flag, the TUI resolves it from Avanza market/orderbook/instrument details and caches it per order book for five minutes. The order ticket searches by stock name, ticker, or ISIN, and searched symbols stay selected during live portfolio refreshes. Click any table column header to sort by that column; click the same header again to reverse the order. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and both the positions/activity divider and Active Trades divider can be dragged to resize panes. Selected table rows are restored after live refreshes when the row still exists.
+In the TUI, the largest account by total value is selected after login. The account panel shows total value, buying power, status, and profit in colored metric cards. The P/L metric cycles between `Day P/L` and `Position P/L` when clicked, with SEK and % values colored separately. The top-right panel shows current time with seconds and a weekday OMXS open/close countdown. The stocks table has a distinct header row and includes a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. If the position payload does not include that flag, the TUI resolves it from Avanza market/orderbook/instrument details and caches it per order book for five minutes. The order ticket searches by stock name, ticker, or ISIN, and searched symbols stay selected during live portfolio refreshes. `Review Only` validates and logs the request without creating a paper or live order; the submit button follows the `Paper` tick box. Click any table column header to sort by that column; click the same header again to reverse the order. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and the positions/activity divider, Active Trades divider, and order/stop-loss ticket edge can be dragged to resize panes. Selected table rows are restored after live refreshes when the row still exists.
 
 ## MCP Mode
 
@@ -63,7 +63,7 @@ Start the TUI and log in first:
 python avanza_cli.py tui
 ```
 
-Enable the `MCP` checkbox in the TUI. This starts a localhost bridge that reuses the TUI's authenticated Avanza client and writes a local `.avanza_mcp_session.json` file. The file contains only localhost connection details and an ephemeral token; it is ignored by git.
+Enable the green/red `MCP` tick box in the TUI. This starts a localhost bridge that reuses the TUI's authenticated Avanza client and writes a local `.avanza_mcp_session.json` file. The file contains only localhost connection details and an ephemeral token; it is ignored by git.
 
 Configure Codex or another MCP client to run:
 
@@ -71,7 +71,7 @@ Configure Codex or another MCP client to run:
 python avanza_cli.py mcp
 ```
 
-The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, paper-trading, and stock-search tools. MCP starts read-only. To allow live order or stop-loss placement/deletion, enable the TUI `R/W` checkbox and require the MCP tool call to include `confirm: true`. Dry-run previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
+The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, paper-trading, and stock-search tools. MCP starts read-only. To allow live order or stop-loss placement/deletion, enable the TUI `Live R/W` tick box and require the MCP tool call to include `confirm: true`. Dry-run previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
 
 Codex and Codex CLI can run this local stdio MCP command from `~/.codex/config.toml`. ChatGPT developer mode supports remote MCP apps/connectors over SSE or streaming HTTP; it does not currently connect directly to local stdio MCP servers. To use this from ChatGPT, expose a remote streaming HTTP/SSE MCP server with appropriate authentication instead of the local `python avanza_cli.py mcp` proxy.
 

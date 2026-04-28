@@ -38,6 +38,7 @@ from avanza_cli import (
     active_paper_order_row,
     stop_loss_activity_row,
     stop_loss_row,
+    ticket_pane_width_after_drag,
     write_mcp_message,
 )
 
@@ -67,6 +68,11 @@ def test_pane_weights_after_drag_changes_relative_sizes():
 def test_side_panel_width_after_drag_changes_width():
     assert side_panel_width_after_drag(42, -5) == 47
     assert side_panel_width_after_drag(42, 20) == 30
+
+
+def test_ticket_pane_width_after_drag_changes_width():
+    assert ticket_pane_width_after_drag(64, -10) == 74
+    assert ticket_pane_width_after_drag(64, 20) == 52
 
 
 def test_market_clock_text_counts_to_open_and_close():

@@ -25,7 +25,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Checkbox, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
+from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
 
 
 console = Console()
@@ -57,11 +57,16 @@ REALTIME_STATUS_REFRESH_SECONDS = 300.0
 CHANGED_CELL_STYLE = "#d7ba7d"
 POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
+POSITIVE_PERCENT_STYLE = "#a9dcb8"
+NEGATIVE_PERCENT_STYLE = "#ebb0b0"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 MIN_PANE_WEIGHT = 1
 MAX_PANE_WEIGHT = 8
 MIN_ACTIVE_TRADES_WIDTH = 30
 MAX_ACTIVE_TRADES_WIDTH = 110
+MIN_TICKET_PANE_WIDTH = 52
+MAX_TICKET_PANE_WIDTH = 110
+PROFIT_METRIC_MODES = ("day", "position")
 REALTIME_KEYS = {
     "isRealTime",
     "isRealtime",
@@ -188,6 +193,10 @@ def pane_weights_after_drag(
 
 def side_panel_width_after_drag(start_width: int, delta_columns: int) -> int:
     return clamp(start_width - delta_columns, MIN_ACTIVE_TRADES_WIDTH, MAX_ACTIVE_TRADES_WIDTH)
+
+
+def ticket_pane_width_after_drag(start_width: int, delta_columns: int) -> int:
+    return clamp(start_width - delta_columns, MIN_TICKET_PANE_WIDTH, MAX_TICKET_PANE_WIDTH)
 
 
 def price_type_label(value: Any) -> str:
@@ -705,34 +714,62 @@ def account_metric_text(label: str, value: str, style: str = "bold") -> Text:
     return text
 
 
+def profit_metric_label(mode: str) -> str:
+    if mode == "position":
+        return "Position P/L"
+    return "Day P/L"
+
+
+def profit_metric_value_text(amount_value: float | None, percent_value: float | None, unit: str = "SEK") -> Text:
+    text = Text()
+    if amount_value is None:
+        text.append("-", style="dim")
+        return text
+
+    amount_style = metric_style(amount_value)
+    percent_style = (
+        POSITIVE_PERCENT_STYLE if amount_value > 0
+        else NEGATIVE_PERCENT_STYLE if amount_value < 0
+        else "dim"
+    )
+    text.append(money_text(amount_value, unit), style=amount_style)
+    if percent_value is not None:
+        text.append("  ")
+        text.append(percent_text(percent_value), style=percent_style)
+    return text
+
+
 def account_metric_values(
     account: dict[str, Any] | None,
     portfolio_data: dict[str, Any] | None = None,
     account_id: str | None = None,
+    profit_mode: str = "day",
 ) -> dict[str, Text]:
+    profit_label = profit_metric_label(profit_mode)
     if not account:
         return {
             "total": account_metric_text("Total", "-"),
             "buying": account_metric_text("Buying", "-"),
-            "profit": account_metric_text("Day P/L", "-"),
+            "profit": profit_metric_value_text(None, None),
+            "profit_label": Text(profit_label),
             "status": account_metric_text("Status", "-"),
         }
     total = amount(account, "totalValue") or "-"
     buying_power = amount(account, "buyingPower") or "-"
     status = str(account.get("status", "")) or "-"
-    profit = "-"
-    profit_style = "dim"
+    profit_amount: float | None = None
+    profit_percent: float | None = None
+    value_unit = "SEK"
     if portfolio_data is not None:
-        profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
-        if profit_amount is not None:
-            profit = money_text(profit_amount, value_unit)
-            if profit_percent is not None:
-                profit = f"{profit} ({percent_text(profit_percent)})"
-            profit_style = metric_style(profit_amount)
+        if profit_mode == "position":
+            profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
+        else:
+            profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
     return {
         "total": account_metric_text("Total", total, "bold"),
         "buying": account_metric_text("Buying", buying_power, "bold"),
-        "profit": account_metric_text("Day P/L", profit, profit_style),
+        "profit": profit_metric_value_text(profit_amount, profit_percent, value_unit),
+        "profit_label": Text(profit_label),
         "status": account_metric_text("Status", status, "bold"),
     }
 
@@ -1395,6 +1432,31 @@ class SidePaneResizer(Static):
         event.stop()
 
 
+class TicketPaneResizer(Static):
+    def __init__(self, ticket: str) -> None:
+        super().__init__("│", id=f"{ticket}-ticket-resizer", classes="ticket-resizer")
+
+    @staticmethod
+    def event_x(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
+        return int(event.screen_x if event.screen_x is not None else event.x)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.capture_mouse(True)
+        self.add_class("dragging")
+        self.app.start_ticket_pane_resize(self.event_x(event))
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self.app.update_ticket_pane_resize(self.event_x(event))
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        self.remove_class("dragging")
+        self.app.finish_ticket_pane_resize()
+        event.stop()
+
+
 MCP_TOOLS = [
     {
         "name": "avanza_status",
@@ -1792,6 +1854,27 @@ class AvanzaTradingTui(App):
         border-left: solid $secondary;
     }
 
+    #metric-profit {
+        padding: 0;
+    }
+
+    #profit-cycle {
+        min-width: 12;
+        width: 100%;
+        height: 1;
+        margin: 0;
+        padding: 0 1;
+        background: $boost;
+        color: $text-muted;
+        text-style: bold;
+    }
+
+    #metric-profit-value {
+        height: 2;
+        padding: 0 1;
+        content-align: left middle;
+    }
+
     #clock-status {
         height: 2;
         content-align: right middle;
@@ -1810,9 +1893,10 @@ class AvanzaTradingTui(App):
     }
 
     .toggle-control {
-        width: 10;
+        width: auto;
         height: 1;
         margin-left: 1;
+        align: left middle;
     }
 
     #live-status {
@@ -1820,10 +1904,31 @@ class AvanzaTradingTui(App):
         color: $success;
     }
 
-    Checkbox {
+    .mode-toggle-box {
+        min-width: 3;
+        width: 3;
         height: 1;
+        margin: 0;
+        padding: 0;
+        text-style: bold;
+    }
+
+    .mode-toggle-box.enabled {
+        background: $success-darken-2;
+        color: $success-lighten-3;
+    }
+
+    .mode-toggle-box.disabled {
+        background: $error-darken-3;
+        color: $error-lighten-2;
+    }
+
+    .mode-toggle-label {
         width: auto;
-        padding: 0 1;
+        min-width: 5;
+        height: 1;
+        margin-left: 1;
+        margin-right: 1;
         color: $text;
     }
 
@@ -1877,6 +1982,21 @@ class AvanzaTradingTui(App):
         color: $text;
     }
 
+    DataTable > .datatable--header {
+        background: $primary-darken-3;
+        color: $primary-lighten-3;
+        text-style: bold;
+    }
+
+    DataTable > .datatable--header-hover {
+        background: $accent;
+        color: $text;
+    }
+
+    DataTable > .datatable--even-row {
+        background: $surface-lighten-1 35%;
+    }
+
     #positions-panel {
         height: 2fr;
     }
@@ -1920,6 +2040,30 @@ class AvanzaTradingTui(App):
         padding: 1 2;
         border: tall $warning;
         background: $panel;
+    }
+
+    .ticket-resizer {
+        width: 1;
+        height: 1fr;
+        content-align: center middle;
+        color: $warning;
+        background: $boost;
+    }
+
+    .ticket-resizer:hover {
+        color: $text;
+        background: $warning-darken-3;
+    }
+
+    .ticket-resizer.dragging {
+        color: $text;
+        background: $warning;
+    }
+
+    .ticket-content {
+        width: 1fr;
+        height: 100%;
+        padding: 0 1;
     }
 
     .modal-header {
@@ -2016,6 +2160,11 @@ class AvanzaTradingTui(App):
         min-width: 18;
     }
 
+    #dry-run,
+    #order-dry-run {
+        min-width: 12;
+    }
+
     Input {
         margin-bottom: 1;
     }
@@ -2050,18 +2199,23 @@ class AvanzaTradingTui(App):
         self.paper_session_path = PAPER_SESSION_FILE
         self.paper_session = load_paper_session(self.paper_session_path)
         self.session_log_path = create_session_log_path("tui")
+        self.latest_portfolio_data: dict[str, Any] | None = None
         self.latest_stoploss_items: list[dict[str, Any]] = []
         self.latest_open_order_items: list[dict[str, Any]] = []
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.active_trades_width = 42
+        self.ticket_pane_width = 64
+        self.profit_metric_mode = "day"
         self.is_resizing_panes = False
         self.is_resizing_side_pane = False
+        self.is_resizing_ticket_pane = False
         self.resize_start_y = 0
         self.resize_start_x = 0
         self.resize_start_positions_weight = self.positions_pane_weight
         self.resize_start_activity_weight = self.activity_pane_weight
         self.resize_start_active_trades_width = self.active_trades_width
+        self.resize_start_ticket_pane_width = self.ticket_pane_width
         self.record_event(
             "app",
             "tui_start",
@@ -2097,7 +2251,9 @@ class AvanzaTradingTui(App):
                     with Horizontal(id="metric-grid"):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
                         yield Static("Buying\n-", id="metric-buying", classes="metric-card")
-                        yield Static("Profit\n-", id="metric-profit", classes="metric-card")
+                        with Vertical(id="metric-profit", classes="metric-card"):
+                            yield Button("Day P/L", id="profit-cycle", classes="metric-cycle")
+                            yield Static("-", id="metric-profit-value")
                         yield Static("Status\n-", id="metric-status", classes="metric-card")
                 with Vertical(id="right-controls"):
                     yield Static(market_clock_text(), id="clock-status")
@@ -2107,9 +2263,15 @@ class AvanzaTradingTui(App):
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
                     with Horizontal(id="toggle-controls"):
-                        yield Checkbox("Paper", value=True, id="paper-mode-enabled", classes="toggle-control")
-                        yield Checkbox("MCP", value=False, id="mcp-enabled", classes="toggle-control")
-                        yield Checkbox("R/W", value=False, id="mcp-write-enabled", classes="toggle-control")
+                        with Horizontal(classes="toggle-control"):
+                            yield Button("✓", id="paper-mode-toggle", classes="mode-toggle-box enabled")
+                            yield Static("Paper", id="paper-mode-label", classes="mode-toggle-label")
+                        with Horizontal(classes="toggle-control"):
+                            yield Button("×", id="mcp-toggle", classes="mode-toggle-box disabled")
+                            yield Static("MCP", id="mcp-label", classes="mode-toggle-label")
+                        with Horizontal(classes="toggle-control"):
+                            yield Button("×", id="mcp-write-toggle", classes="mode-toggle-box disabled")
+                            yield Static("R/W", id="mcp-write-label", classes="mode-toggle-label")
             with Horizontal(id="body"):
                 with Vertical(id="main"):
                     with Vertical(id="positions-panel"):
@@ -2129,77 +2291,81 @@ class AvanzaTradingTui(App):
                 with Vertical(id="active-trades-panel"):
                     yield Static("Active Trades", classes="panel")
                     yield DataTable(id="active-trades-table")
-            with Vertical(id="stoploss-modal"):
-                with Horizontal(classes="modal-header"):
-                    yield Button("X", id="close-stoploss-modal", classes="modal-close")
-                    yield Static("New Stop-Loss", classes="modal-title")
-                yield Static("Uses the selected account.", id="stoploss-account-note")
-                yield Select([], prompt="Select portfolio holding", allow_blank=True, id="instrument-select")
-                yield Input(placeholder="Volume", id="volume", type="number")
-                yield Select(
-                    [(label, label) for label in TRIGGER_TYPE_CHOICES],
-                    value="follow-upwards",
-                    allow_blank=False,
-                    id="trigger-type",
-                )
-                yield Input(placeholder="Trigger value", id="trigger-value", type="number")
-                yield Select(
-                    PRICE_TYPE_SELECT_OPTIONS,
-                    value="percentage",
-                    allow_blank=False,
-                    id="trigger-value-type",
-                )
-                yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="valid-until")
-                yield Select(
-                    [(label, label) for label in ORDER_TYPE_CHOICES],
-                    value="sell",
-                    allow_blank=False,
-                    id="order-type",
-                )
-                yield Input(placeholder="Order price", id="order-price", type="number")
-                yield Select(
-                    PRICE_TYPE_SELECT_OPTIONS,
-                    value="percentage",
-                    allow_blank=False,
-                    id="order-price-type",
-                )
-                yield Input(value="1", placeholder="Order valid days", id="order-valid-days", type="integer")
-                yield Switch(value=False, id="trigger-on-market-maker-quote")
-                yield Static("Trigger on market-maker quote")
-                yield Switch(value=False, id="short-selling-allowed")
-                yield Static("Allow short selling")
-                yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
-                with Horizontal():
-                    yield Button("Preview", id="dry-run", variant="default")
-                    yield Button("Create Paper Stop-Loss", id="place-live", variant="warning")
-            with Vertical(id="order-modal"):
-                with Horizontal(classes="modal-header"):
-                    yield Button("X", id="close-order-modal", classes="modal-close")
-                    yield Static("New Buy/Sell Order", classes="modal-title")
-                yield Static("Uses the selected account.", id="order-account-note")
-                with Horizontal(id="order-search-row"):
-                    yield Input(placeholder="Search stock, ticker, or ISIN", id="order-search")
-                    yield Button("Search", id="order-search-button", variant="primary")
-                yield Select([], prompt="Select stock/order book", allow_blank=True, id="order-instrument-select")
-                yield Select(
-                    [(label, label) for label in ORDER_TYPE_CHOICES],
-                    value="buy",
-                    allow_blank=False,
-                    id="regular-order-type",
-                )
-                yield Input(placeholder="Volume", id="regular-order-volume", type="integer")
-                yield Input(placeholder="Limit price (SEK)", id="regular-order-price", type="number")
-                yield Select(
-                    [(label, label) for label in ORDER_CONDITION_CHOICES],
-                    value="normal",
-                    allow_blank=False,
-                    id="regular-order-condition",
-                )
-                yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="regular-order-valid-until")
-                yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
-                with Horizontal():
-                    yield Button("Preview", id="order-dry-run", variant="default")
-                    yield Button("Create Paper Order", id="order-place-live", variant="warning")
+            with Horizontal(id="stoploss-modal"):
+                yield TicketPaneResizer("stoploss")
+                with Vertical(classes="ticket-content"):
+                    with Horizontal(classes="modal-header"):
+                        yield Button("X", id="close-stoploss-modal", classes="modal-close")
+                        yield Static("New Stop-Loss", classes="modal-title")
+                    yield Static("Uses the selected account.", id="stoploss-account-note")
+                    yield Select([], prompt="Select portfolio holding", allow_blank=True, id="instrument-select")
+                    yield Input(placeholder="Volume", id="volume", type="number")
+                    yield Select(
+                        [(label, label) for label in TRIGGER_TYPE_CHOICES],
+                        value="follow-upwards",
+                        allow_blank=False,
+                        id="trigger-type",
+                    )
+                    yield Input(placeholder="Trigger value", id="trigger-value", type="number")
+                    yield Select(
+                        PRICE_TYPE_SELECT_OPTIONS,
+                        value="percentage",
+                        allow_blank=False,
+                        id="trigger-value-type",
+                    )
+                    yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="valid-until")
+                    yield Select(
+                        [(label, label) for label in ORDER_TYPE_CHOICES],
+                        value="sell",
+                        allow_blank=False,
+                        id="order-type",
+                    )
+                    yield Input(placeholder="Order price", id="order-price", type="number")
+                    yield Select(
+                        PRICE_TYPE_SELECT_OPTIONS,
+                        value="percentage",
+                        allow_blank=False,
+                        id="order-price-type",
+                    )
+                    yield Input(value="1", placeholder="Order valid days", id="order-valid-days", type="integer")
+                    yield Switch(value=False, id="trigger-on-market-maker-quote")
+                    yield Static("Trigger on market-maker quote")
+                    yield Switch(value=False, id="short-selling-allowed")
+                    yield Static("Allow short selling")
+                    yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
+                    with Horizontal():
+                        yield Button("Review Only", id="dry-run", variant="default")
+                        yield Button("Create Paper Stop-Loss", id="place-live", variant="warning")
+            with Horizontal(id="order-modal"):
+                yield TicketPaneResizer("order")
+                with Vertical(classes="ticket-content"):
+                    with Horizontal(classes="modal-header"):
+                        yield Button("X", id="close-order-modal", classes="modal-close")
+                        yield Static("New Buy/Sell Order", classes="modal-title")
+                    yield Static("Uses the selected account.", id="order-account-note")
+                    with Horizontal(id="order-search-row"):
+                        yield Input(placeholder="Search stock, ticker, or ISIN", id="order-search")
+                        yield Button("Search", id="order-search-button", variant="primary")
+                    yield Select([], prompt="Select stock/order book", allow_blank=True, id="order-instrument-select")
+                    yield Select(
+                        [(label, label) for label in ORDER_TYPE_CHOICES],
+                        value="buy",
+                        allow_blank=False,
+                        id="regular-order-type",
+                    )
+                    yield Input(placeholder="Volume", id="regular-order-volume", type="integer")
+                    yield Input(placeholder="Limit price (SEK)", id="regular-order-price", type="number")
+                    yield Select(
+                        [(label, label) for label in ORDER_CONDITION_CHOICES],
+                        value="normal",
+                        allow_blank=False,
+                        id="regular-order-condition",
+                    )
+                    yield Input(placeholder=f"Valid until ({date.today().isoformat()})", id="regular-order-valid-until")
+                    yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
+                    with Horizontal():
+                        yield Button("Review Only", id="order-dry-run", variant="default")
+                        yield Button("Create Paper Order", id="order-place-live", variant="warning")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2254,6 +2420,8 @@ class AvanzaTradingTui(App):
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
         self.update_clock_status()
         self.start_clock()
+        self.apply_ticket_pane_width(self.ticket_pane_width)
+        self.update_mode_toggles()
 
     def on_resize(self, event: events.Resize) -> None:
         self.last_resize = (event.size.width, event.size.height)
@@ -2277,6 +2445,12 @@ class AvanzaTradingTui(App):
         self.active_trades_width = width
         self.query_one("#active-trades-panel").styles.width = width
         self.query_one("#body").refresh(layout=True)
+
+    def apply_ticket_pane_width(self, width: int) -> None:
+        self.ticket_pane_width = width
+        for selector in ("#order-modal", "#stoploss-modal"):
+            self.query_one(selector).styles.width = width
+        self.refresh(layout=True)
 
     def start_pane_resize(self, screen_y: int) -> None:
         self.is_resizing_panes = True
@@ -2313,6 +2487,22 @@ class AvanzaTradingTui(App):
 
     def finish_side_pane_resize(self) -> None:
         self.is_resizing_side_pane = False
+
+    def start_ticket_pane_resize(self, screen_x: int) -> None:
+        self.is_resizing_ticket_pane = True
+        self.resize_start_x = screen_x
+        self.resize_start_ticket_pane_width = self.ticket_pane_width
+
+    def update_ticket_pane_resize(self, screen_x: int) -> None:
+        if not self.is_resizing_ticket_pane:
+            return
+        delta_columns = screen_x - self.resize_start_x
+        self.apply_ticket_pane_width(
+            ticket_pane_width_after_drag(self.resize_start_ticket_pane_width, delta_columns)
+        )
+
+    def finish_ticket_pane_resize(self) -> None:
+        self.is_resizing_ticket_pane = False
 
     def sort_table(self, table: DataTable, column_key: Any, reverse: bool) -> None:
         table.sort(column_key, key=sortable_cell_value, reverse=reverse)
@@ -2390,11 +2580,13 @@ class AvanzaTradingTui(App):
         return self.selected_account_id
 
     def update_selected_account_summary(self, portfolio_data: dict[str, Any] | None = None) -> None:
+        portfolio_data = portfolio_data or self.latest_portfolio_data
         account = self.account_by_id(self.selected_account_id) if self.selected_account_id else None
-        metrics = account_metric_values(account, portfolio_data, self.selected_account_id)
+        metrics = account_metric_values(account, portfolio_data, self.selected_account_id, self.profit_metric_mode)
         self.query_one("#metric-total", Static).update(metrics["total"])
         self.query_one("#metric-buying", Static).update(metrics["buying"])
-        self.query_one("#metric-profit", Static).update(metrics["profit"])
+        self.query_one("#profit-cycle", Button).label = metrics["profit_label"].plain
+        self.query_one("#metric-profit-value", Static).update(metrics["profit"])
         self.query_one("#metric-status", Static).update(metrics["status"])
 
     def update_clock_status(self) -> None:
@@ -2420,6 +2612,19 @@ class AvanzaTradingTui(App):
         save_paper_session(self.paper_session, self.paper_session_path)
         self.update_active_trades_table()
 
+    def set_mode_toggle(self, button_id: str, label_id: str, enabled: bool, text: str) -> None:
+        button = self.query_one(f"#{button_id}", Button)
+        button.label = "✓" if enabled else "×"
+        button.remove_class("enabled")
+        button.remove_class("disabled")
+        button.add_class("enabled" if enabled else "disabled")
+        self.query_one(f"#{label_id}", Static).update(text)
+
+    def update_mode_toggles(self) -> None:
+        self.set_mode_toggle("paper-mode-toggle", "paper-mode-label", self.paper_mode_enabled, "Paper")
+        self.set_mode_toggle("mcp-toggle", "mcp-label", self.mcp_server is not None, "MCP")
+        self.set_mode_toggle("mcp-write-toggle", "mcp-write-label", self.mcp_write_enabled, "Live R/W")
+
     def update_paper_mode_ui(self) -> None:
         labels = {
             "#place-live": ("Create Paper Stop-Loss", "Submit Live Stop-Loss"),
@@ -2433,6 +2638,13 @@ class AvanzaTradingTui(App):
             else:
                 button.label = live_label
                 button.variant = "error"
+        self.update_mode_toggles()
+
+    def cycle_profit_metric(self) -> None:
+        current_index = PROFIT_METRIC_MODES.index(self.profit_metric_mode)
+        self.profit_metric_mode = PROFIT_METRIC_MODES[(current_index + 1) % len(PROFIT_METRIC_MODES)]
+        self.update_selected_account_summary()
+        self.write_log(f"Account P/L metric: {profit_metric_label(self.profit_metric_mode)}.")
 
     def active_trade_rows(self) -> list[tuple[str, ...]]:
         rows: list[tuple[str, ...]] = []
@@ -2902,6 +3114,7 @@ class AvanzaTradingTui(App):
         if not isinstance(data, dict):
             self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
+        self.latest_portfolio_data = data
         self.update_selected_account_summary(data)
 
         holding_options = stoploss_holding_options(data, self.selected_account_id)
@@ -3020,34 +3233,31 @@ class AvanzaTradingTui(App):
             if event.switch.id == "mcp-enabled":
                 event.switch.value = False
 
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        try:
-            if event.checkbox.id == "paper-mode-enabled":
-                self.paper_mode_enabled = bool(event.value)
-                self.update_paper_mode_ui()
-                mode = "paper" if self.paper_mode_enabled else "live"
-                self.write_log(f"Order placement mode: {mode}.")
-                self.record_event("trading", "paper_mode_changed", {"enabled": self.paper_mode_enabled})
-            elif event.checkbox.id == "mcp-enabled":
-                if event.value:
-                    self.start_mcp_bridge()
-                else:
-                    self.stop_mcp_bridge()
-            elif event.checkbox.id == "mcp-write-enabled":
-                self.mcp_write_enabled = bool(event.value)
-                self.update_mcp_session_file()
-                mode = "read/write" if self.mcp_write_enabled else "read-only"
-                self.write_mcp_log(f"MCP mode: {mode}.")
-        except Exception as exc:
-            self.write_mcp_log(f"[red]Checkbox failed:[/red] {exc}")
-            if event.checkbox.id == "mcp-enabled":
-                event.checkbox.value = False
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
         try:
             if button_id == "login":
                 self.handle_login()
+            elif button_id == "profit-cycle":
+                self.cycle_profit_metric()
+            elif button_id == "paper-mode-toggle":
+                self.paper_mode_enabled = not self.paper_mode_enabled
+                self.update_paper_mode_ui()
+                mode = "paper" if self.paper_mode_enabled else "live"
+                self.write_log(f"Order placement mode: {mode}.")
+                self.record_event("trading", "paper_mode_changed", {"enabled": self.paper_mode_enabled})
+            elif button_id == "mcp-toggle":
+                if self.mcp_server is None:
+                    self.start_mcp_bridge()
+                else:
+                    self.stop_mcp_bridge()
+                self.update_mode_toggles()
+            elif button_id == "mcp-write-toggle":
+                self.mcp_write_enabled = not self.mcp_write_enabled
+                self.update_mcp_session_file()
+                self.update_mode_toggles()
+                mode = "read/write" if self.mcp_write_enabled else "read-only"
+                self.write_mcp_log(f"MCP mode: {mode}.")
             elif button_id == "refresh-all":
                 self.refresh_accounts()
                 self.refresh_portfolio()
@@ -3098,13 +3308,13 @@ class AvanzaTradingTui(App):
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
-        self.write_log("[yellow]Dry-run stop-loss request:[/yellow]")
+        self.write_log("[yellow]Review-only stop-loss request. No paper or live order is created:[/yellow]")
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
 
     def handle_order_dry_run(self) -> None:
         _, _, preview = self.build_regular_order_request()
-        self.write_log("[yellow]Dry-run buy/sell order request:[/yellow]")
+        self.write_log("[yellow]Review-only buy/sell order request. No paper or live order is created:[/yellow]")
         for line in order_request_log_lines(preview):
             self.write_log(line)
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from textual import events
 from textual.geometry import Size
-from textual.widgets import Checkbox, DataTable
+from textual.widgets import Button, DataTable
 
 from avanza.constants import OrderType, StopLossPriceType
 from rich.text import Text
@@ -109,10 +109,15 @@ def test_tui_mounts_headless():
             assert app.query_one("#active-trades-table") is not None
             assert app.query_one("#side-pane-resizer") is not None
             assert app.query_one("#order-modal").display is False
-            assert isinstance(app.query_one("#paper-mode-enabled"), Checkbox)
-            assert isinstance(app.query_one("#mcp-enabled"), Checkbox)
-            assert isinstance(app.query_one("#mcp-write-enabled"), Checkbox)
+            assert isinstance(app.query_one("#paper-mode-toggle"), Button)
+            assert app.query_one("#paper-mode-label").renderable == "Paper"
+            assert isinstance(app.query_one("#mcp-toggle"), Button)
+            assert app.query_one("#mcp-label").renderable == "MCP"
+            assert isinstance(app.query_one("#mcp-write-toggle"), Button)
+            assert app.query_one("#mcp-write-label").renderable == "Live R/W"
             assert app.query_one("#mcp-log") is not None
+            assert app.query_one("#order-ticket-resizer") is not None
+            assert app.query_one("#stoploss-ticket-resizer") is not None
             resizer = app.query_one("#pane-resizer")
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
@@ -143,6 +148,13 @@ def test_tui_mounts_headless():
             assert app.active_trades_width == 47
             side_resizer.on_mouse_up(FakeMouse(screen_x=95))
             assert app.is_resizing_side_pane is False
+
+            ticket_resizer = app.query_one("#stoploss-ticket-resizer")
+            ticket_resizer.on_mouse_down(FakeMouse(screen_x=100))
+            ticket_resizer.on_mouse_move(FakeMouse(screen_x=90))
+            assert app.ticket_pane_width == 74
+            ticket_resizer.on_mouse_up(FakeMouse(screen_x=90))
+            assert app.is_resizing_ticket_pane is False
 
     asyncio.run(run_app())
 
@@ -247,9 +259,13 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert app.query_one("#totp").value == ""
             assert app.selected_account_id == "acc-2"
             total_metric = str(app.query_one("#metric-total").render())
-            profit_metric = str(app.query_one("#metric-profit").render())
+            profit_label = str(app.query_one("#profit-cycle", Button).label)
+            profit_metric = str(app.query_one("#metric-profit-value").render())
             assert "5,000" in total_metric or "5000" in total_metric
-            assert "Day P/L" in profit_metric
+            assert "Day P/L" in profit_label
+            assert "+10.00 SEK" in profit_metric
+            app.cycle_profit_metric()
+            assert "Position P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
             assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}
