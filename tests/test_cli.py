@@ -548,6 +548,38 @@ def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
     asyncio.run(run_app())
 
 
+def test_tui_order_ticket_validates_required_numeric_fields():
+    from avanza_cli import AvanzaTradingTui
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test():
+            app.selected_account_id = "acc-1"
+            app.query_one("#order-instrument-select", Select).set_options([("Example AB", "ob-1")])
+            app.query_one("#order-instrument-select", Select).value = "ob-1"
+            app.query_one("#regular-order-valid-until").value = "2026-05-28"
+            app.query_one("#regular-order-volume").value = "3"
+
+            with pytest.raises(ValueError, match="Limit price is required"):
+                app.build_regular_order_request()
+
+            app.query_one("#regular-order-price").value = "abc"
+            with pytest.raises(ValueError, match="Limit price must be a number"):
+                app.build_regular_order_request()
+
+            app.query_one("#regular-order-price").value = "100"
+            app.query_one("#regular-order-volume").value = ""
+            with pytest.raises(ValueError, match="Volume is required"):
+                app.build_regular_order_request()
+
+            app.query_one("#regular-order-volume").value = "3"
+            app.query_one("#regular-order-valid-until").value = ""
+            with pytest.raises(ValueError, match="Valid until is required"):
+                app.build_regular_order_request()
+
+    asyncio.run(run_app())
+
+
 def test_table_selection_can_be_restored_after_rebuild():
     from avanza_cli import AvanzaTradingTui
 

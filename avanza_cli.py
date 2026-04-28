@@ -2801,6 +2801,33 @@ class AvanzaTradingTui(App):
             return str(widget.value)
         raise TypeError(f"Unsupported input widget: {widget_id}")
 
+    def required_input_value(self, widget_id: str, label: str) -> str:
+        value = self.input_value(widget_id)
+        if not value:
+            raise ValueError(f"{label} is required.")
+        return value
+
+    def input_float_value(self, widget_id: str, label: str) -> float:
+        value = self.required_input_value(widget_id, label)
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be a number.") from exc
+
+    def input_int_value(self, widget_id: str, label: str) -> int:
+        value = self.required_input_value(widget_id, label)
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be a whole number.") from exc
+
+    def input_date_value(self, widget_id: str, label: str) -> date:
+        value = self.required_input_value(widget_id, label)
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be an ISO date, for example {date.today().isoformat()}.") from exc
+
     def switch_value(self, widget_id: str) -> bool:
         return bool(self.query_one(f"#{widget_id}", Switch).value)
 
@@ -3290,19 +3317,19 @@ class AvanzaTradingTui(App):
         order_book_id = self.input_value("instrument-select")
         if not order_book_id:
             raise ValueError("Select a portfolio holding first.")
-        valid_until = date.fromisoformat(self.input_value("valid-until"))
+        valid_until = self.input_date_value("valid-until", "Stop-loss valid until")
         trigger = StopLossTrigger(
             type=enum_value(StopLossTriggerType, self.input_value("trigger-type")),
-            value=float(self.input_value("trigger-value")),
+            value=self.input_float_value("trigger-value", "Trigger value"),
             valid_until=valid_until,
             value_type=enum_value(StopLossPriceType, self.input_value("trigger-value-type")),
             trigger_on_market_maker_quote=self.switch_value("trigger-on-market-maker-quote"),
         )
         order_event = StopLossOrderEvent(
             type=enum_value(OrderType, self.input_value("order-type")),
-            price=float(self.input_value("order-price")),
-            volume=float(self.input_value("volume")),
-            valid_days=int(self.input_value("order-valid-days")),
+            price=self.input_float_value("order-price", "Order price"),
+            volume=self.input_float_value("volume", "Volume"),
+            valid_days=self.input_int_value("order-valid-days", "Order valid days"),
             price_type=enum_value(StopLossPriceType, self.input_value("order-price-type")),
             short_selling_allowed=self.switch_value("short-selling-allowed"),
         )
@@ -3338,9 +3365,9 @@ class AvanzaTradingTui(App):
                 "account_id": selected_account_id,
                 "order_book_id": order_book_id,
                 "order_type": self.input_value("regular-order-type"),
-                "price": float(self.input_value("regular-order-price")),
-                "valid_until": date.fromisoformat(self.input_value("regular-order-valid-until")),
-                "volume": int(self.input_value("regular-order-volume")),
+                "price": self.input_float_value("regular-order-price", "Limit price"),
+                "valid_until": self.input_date_value("regular-order-valid-until", "Valid until"),
+                "volume": self.input_int_value("regular-order-volume", "Volume"),
                 "condition": self.input_value("regular-order-condition"),
             }
         )
