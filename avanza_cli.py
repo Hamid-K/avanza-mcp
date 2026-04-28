@@ -64,6 +64,7 @@ SELL_SIDE_STYLE = "bold white on #8f2438"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 MIN_PANE_WEIGHT = 1
 MAX_PANE_WEIGHT = 8
+PANE_RESIZE_STEP = 0.25
 MIN_ACTIVE_TRADES_WIDTH = 30
 MAX_ACTIVE_TRADES_WIDTH = 110
 MIN_TICKET_PANE_WIDTH = 52
@@ -115,7 +116,7 @@ def connect(args: argparse.Namespace) -> Avanza:
     return Avanza(prompt_credentials(args.username))
 
 
-def clamp(value: int, minimum: int, maximum: int) -> int:
+def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
@@ -184,12 +185,13 @@ def market_clock_text(now: datetime | None = None) -> str:
 
 
 def pane_weights_after_drag(
-    start_positions_weight: int,
-    start_activity_weight: int,
+    start_positions_weight: float,
+    start_activity_weight: float,
     delta_rows: int,
-) -> tuple[int, int]:
-    positions_weight = clamp(start_positions_weight + delta_rows, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
-    activity_weight = clamp(start_activity_weight - delta_rows, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
+) -> tuple[float, float]:
+    delta_weight = delta_rows * PANE_RESIZE_STEP
+    positions_weight = clamp(start_positions_weight + delta_weight, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
+    activity_weight = clamp(start_activity_weight - delta_weight, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
     return positions_weight, activity_weight
 
 
@@ -2520,7 +2522,7 @@ class AvanzaTradingTui(App):
         if self.avanza and self.selected_account_id:
             self.call_after_refresh(self.refresh_selected_account_live)
 
-    def apply_pane_weights(self, positions_weight: int, activity_weight: int) -> None:
+    def apply_pane_weights(self, positions_weight: float, activity_weight: float) -> None:
         self.positions_pane_weight = positions_weight
         self.activity_pane_weight = activity_weight
         self.query_one("#positions-panel").styles.height = f"{positions_weight}fr"

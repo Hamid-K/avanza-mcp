@@ -81,8 +81,8 @@ def test_sortable_cell_value_normalizes_human_table_values():
 
 
 def test_pane_weights_after_drag_changes_relative_sizes():
-    assert pane_weights_after_drag(2, 1, 1) == (3, 1)
-    assert pane_weights_after_drag(2, 3, -1) == (1, 4)
+    assert pane_weights_after_drag(2, 1, 1) == (2.25, 1)
+    assert pane_weights_after_drag(2, 3, -1) == (1.75, 3.25)
 
 
 def test_side_panel_width_after_drag_changes_width():

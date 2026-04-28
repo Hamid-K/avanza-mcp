@@ -138,8 +138,8 @@ def test_tui_mounts_headless():
 
             resizer.on_mouse_down(FakeMouse(10))
             resizer.on_mouse_move(FakeMouse(12))
-            assert app.positions_pane_weight == 5
-            assert app.activity_pane_weight == 1
+            assert app.positions_pane_weight == 3.5
+            assert app.activity_pane_weight == 1.5
             resizer.on_mouse_up(FakeMouse(12))
             assert app.is_resizing_panes is False
 
