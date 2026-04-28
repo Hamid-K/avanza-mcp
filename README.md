@@ -8,6 +8,8 @@ Credentials are prompted at runtime:
 - password: masked
 - current TOTP code: masked
 
+The current TOTP code is passed to `avanza-api` as `totpToken`, which is the field name expected by the installed library version.
+
 ## Setup
 
 ```bash

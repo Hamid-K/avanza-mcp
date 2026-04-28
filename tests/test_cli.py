@@ -4,7 +4,7 @@ import pytest
 
 from avanza.constants import OrderType, StopLossPriceType
 
-from avanza_cli import build_parser, enum_value, parse_date
+from avanza_cli import build_parser, enum_value, parse_date, prompt_credentials
 
 
 def test_parse_date_accepts_iso_date():
@@ -28,6 +28,20 @@ def test_parser_includes_portfolio_commands():
     assert args.command == "portfolio"
     assert args.portfolio_command == "positions"
     assert args.username == "alice"
+
+
+def test_prompt_credentials_uses_totp_token(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "alice")
+    prompts = iter(["secret-password", "123456"])
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: next(prompts))
+
+    credentials = prompt_credentials(None)
+
+    assert credentials == {
+        "username": "alice",
+        "password": "secret-password",
+        "totpToken": "123456",
+    }
 
 
 def test_stoploss_set_dry_run_does_not_require_login(capsys):

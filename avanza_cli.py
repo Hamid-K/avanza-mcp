@@ -31,7 +31,7 @@ def prompt_credentials(username: str | None) -> dict[str, str]:
     return {
         "username": username,
         "password": password,
-        "totpCode": totp_code,
+        "totpToken": totp_code,
     }
 
 
@@ -519,7 +519,7 @@ class AvanzaTradingTui(App):
             raise ValueError("Username, password, and TOTP are required.")
 
         self.log("Logging in...")
-        self.avanza = Avanza({"username": username, "password": password, "totpCode": totp})
+        self.avanza = Avanza({"username": username, "password": password, "totpToken": totp})
         self.clear_secret_inputs()
         self.log("[green]Logged in. Secret fields cleared.[/green]")
         self.refresh_accounts()
