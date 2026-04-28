@@ -269,6 +269,18 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                             "relative": {"value": 1, "unit": "%"},
                             "absolute": {"value": 10, "unit": "SEK"},
                         },
+                        "lastTradingWeekPerformance": {
+                            "relative": {"value": 2, "unit": "%"},
+                            "absolute": {"value": 20, "unit": "SEK"},
+                        },
+                        "lastTradingMonthPerformance": {
+                            "relative": {"value": 3, "unit": "%"},
+                            "absolute": {"value": 30, "unit": "SEK"},
+                        },
+                        "lastTradingYearPerformance": {
+                            "relative": {"value": 4, "unit": "%"},
+                            "absolute": {"value": 40, "unit": "SEK"},
+                        },
                     }
                 ],
                 "withoutOrderbook": [],
@@ -316,10 +328,20 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             profit_label = str(app.query_one("#profit-cycle", Button).label)
             profit_metric = str(app.query_one("#metric-profit-value").render())
             assert "5,000" in total_metric or "5000" in total_metric
-            assert "Day P/L" in profit_label
+            assert "1D P/L" in profit_label
             assert "+10.00 SEK" in profit_metric
             app.cycle_profit_metric()
-            assert "Position P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "1W P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "+20.00 SEK" in str(app.query_one("#metric-profit-value").render())
+            app.cycle_profit_metric()
+            assert "1M P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "+30.00 SEK" in str(app.query_one("#metric-profit-value").render())
+            app.cycle_profit_metric()
+            assert "1Y P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "+40.00 SEK" in str(app.query_one("#metric-profit-value").render())
+            app.cycle_profit_metric()
+            assert "Total P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "+100.00 SEK" in str(app.query_one("#metric-profit-value").render())
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
             assert app.holding_volumes_by_order_book == {"ob-1": "25"}

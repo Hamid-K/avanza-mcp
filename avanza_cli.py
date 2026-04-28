@@ -70,7 +70,12 @@ MIN_ACTIVE_TRADES_WIDTH = 30
 MAX_ACTIVE_TRADES_WIDTH = 110
 MIN_TICKET_PANE_WIDTH = 52
 MAX_TICKET_PANE_WIDTH = 110
-PROFIT_METRIC_MODES = ("day", "position")
+PROFIT_METRIC_MODES = ("day", "week", "month", "year", "total")
+WINDOW_PERFORMANCE_KEYS = {
+    "week": ("lastTradingWeekPerformance", "weekPerformance", "oneWeekPerformance", "lastWeekPerformance"),
+    "month": ("lastTradingMonthPerformance", "monthPerformance", "oneMonthPerformance", "lastMonthPerformance"),
+    "year": ("lastTradingYearPerformance", "yearPerformance", "oneYearPerformance", "lastYearPerformance"),
+}
 REALTIME_KEYS = {
     "isRealTime",
     "isRealtime",
@@ -775,6 +780,66 @@ def portfolio_day_summary(
     return day_total, day_percent, value_unit
 
 
+def portfolio_window_summary(
+    data: dict[str, Any],
+    account_id: str | None,
+    mode: str,
+    account: dict[str, Any] | None = None,
+) -> tuple[float | None, float | None, str]:
+    performance_keys = WINDOW_PERFORMANCE_KEYS.get(mode, ())
+    if not performance_keys:
+        return None, None, "SEK"
+
+    absolute_total = 0.0
+    weighted_relative_total = 0.0
+    weighted_base_total = 0.0
+    position_total = 0.0
+    value_unit = "SEK"
+    found_absolute = False
+    found_relative = False
+
+    for section in ("withOrderbook", "withoutOrderbook"):
+        for item in data.get(section, []):
+            if not isinstance(item, dict) or not matches_account(item, account_id):
+                continue
+
+            current_value = value_number(item, "value")
+            if current_value is not None:
+                position_total += current_value
+                value_unit = str(nested_value(item, "value", "unit") or value_unit)
+
+            performance: dict[str, Any] | None = None
+            for key in performance_keys:
+                candidate = item.get(key)
+                if isinstance(candidate, dict):
+                    performance = candidate
+                    break
+            if performance is None:
+                continue
+
+            absolute_value = value_number(performance, "absolute")
+            if absolute_value is not None:
+                absolute_total += absolute_value
+                value_unit = str(nested_value(performance, "absolute", "unit") or value_unit)
+                found_absolute = True
+
+            relative_value = value_number(performance, "relative")
+            if relative_value is not None and current_value is not None:
+                weighted_relative_total += relative_value * current_value
+                weighted_base_total += current_value
+                found_relative = True
+
+    amount_value = absolute_total if found_absolute else None
+    percent_value: float | None = None
+    if found_relative and weighted_base_total:
+        percent_value = weighted_relative_total / weighted_base_total
+    elif found_absolute:
+        denominator = value_number(account or {}, "totalValue") or position_total
+        percent_value = (absolute_total / denominator) * 100 if denominator else None
+
+    return amount_value, percent_value, value_unit
+
+
 def account_stats_text(
     account: dict[str, Any],
     portfolio_data: dict[str, Any] | None = None,
@@ -823,9 +888,14 @@ def account_metric_text(label: str, value: str, style: str = "bold") -> Text:
 
 
 def profit_metric_label(mode: str) -> str:
-    if mode == "position":
-        return "Position P/L"
-    return "Day P/L"
+    labels = {
+        "day": "1D P/L",
+        "week": "1W P/L",
+        "month": "1M P/L",
+        "year": "1Y P/L",
+        "total": "Total P/L",
+    }
+    return labels.get(mode, "1D P/L")
 
 
 def profit_metric_value_text(amount_value: float | None, percent_value: float | None, unit: str = "SEK") -> Text:
@@ -869,8 +939,15 @@ def account_metric_values(
     profit_percent: float | None = None
     value_unit = "SEK"
     if portfolio_data is not None:
-        if profit_mode == "position":
+        if profit_mode == "total":
             profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
+        elif profit_mode in WINDOW_PERFORMANCE_KEYS:
+            profit_amount, profit_percent, value_unit = portfolio_window_summary(
+                portfolio_data,
+                account_id,
+                profit_mode,
+                account,
+            )
         else:
             profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
     return {
@@ -2477,7 +2554,7 @@ class AvanzaTradingTui(App):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
                         yield Static("Buying\n-", id="metric-buying", classes="metric-card")
                         with Vertical(id="metric-profit", classes="metric-card"):
-                            yield Button("Day P/L", id="profit-cycle", classes="metric-cycle")
+                            yield Button("1D P/L", id="profit-cycle", classes="metric-cycle")
                             yield Static("-", id="metric-profit-value")
                         yield Static("Status\n-", id="metric-status", classes="metric-card")
                 with Vertical(id="right-controls"):
