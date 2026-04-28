@@ -20,7 +20,7 @@ pip install -r requirements.txt
 
 ## Commands
 
-Console commands print pretty JSON. In an interactive terminal the JSON is syntax highlighted.
+Console commands print human-readable Rich tables and summaries, not raw API payloads.
 
 Show account overview:
 

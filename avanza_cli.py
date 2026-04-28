@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import getpass
-import json
 import sys
 from datetime import date
 from typing import Any
@@ -10,6 +9,8 @@ from avanza import Avanza
 from avanza.constants import OrderType, StopLossPriceType, StopLossTriggerType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Static
@@ -43,10 +44,50 @@ def connect(args: argparse.Namespace) -> Avanza:
     return Avanza(prompt_credentials(args.username))
 
 
-def dump(data: Any) -> None:
-    console.print_json(
-        json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False)
-    )
+def render_table(title: str, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
+    table = Table(title=title, show_lines=False)
+    for column in columns:
+        table.add_column(column, overflow="fold")
+
+    for row in rows:
+        table.add_row(*(str(value) for value in row))
+
+    console.print(table)
+
+
+def render_message(title: str, lines: list[str]) -> None:
+    console.print(Panel("\n".join(lines), title=title, expand=False))
+
+
+def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
+    trigger = preview["stop_loss_trigger"]
+    order_event = preview["stop_loss_order_event"]
+    return [
+        f"Account: {preview['account_id']}",
+        f"Order book: {preview['order_book_id']}",
+        f"Trigger: {trigger['type']} {trigger['value']} {trigger['value_type']}",
+        f"Trigger valid until: {trigger['valid_until']}",
+        f"Order: {order_event['type']} {order_event['volume']} @ {order_event['price']} {order_event['price_type']}",
+        f"Order valid days after trigger: {order_event['valid_days']}",
+    ]
+
+
+def render_stop_loss_request(title: str, preview: dict[str, Any]) -> None:
+    render_message(title, format_stop_loss_request(preview))
+
+
+def render_result(title: str, result: Any) -> None:
+    if isinstance(result, dict):
+        scalar_rows = [
+            (key, value)
+            for key, value in result.items()
+            if not isinstance(value, (dict, list))
+        ]
+        if scalar_rows:
+            render_table(title, ["Field", "Value"], scalar_rows)
+            return
+
+    render_message(title, ["Avanza accepted the request, but returned no concise status fields."])
 
 
 def parse_date(value: str) -> date:
@@ -164,6 +205,179 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
         f"{trigger.get('type', '')} {trigger.get('value', '')} {trigger.get('valueType', '')}",
         f"{order.get('type', '')} {order.get('volume', '')} @ {order.get('price', '')} {order.get('priceType', '')}",
         str(trigger.get("validUntil", "")),
+    )
+
+
+def stop_loss_request_log_lines(preview: dict[str, Any]) -> list[str]:
+    return [line.replace("[", "\\[").replace("]", "\\]") for line in format_stop_loss_request(preview)]
+
+
+def render_accounts_overview(overview: dict[str, Any]) -> None:
+    accounts = account_rows_from_overview(overview)
+    if not accounts:
+        render_message("Accounts", ["No accounts found."])
+        return
+
+    render_table(
+        "Accounts",
+        ["Account ID", "Name", "Type", "Total Value", "Buying Power", "Status"],
+        [account_row(account) for account in accounts],
+    )
+
+
+def render_portfolio_positions(positions: dict[str, Any]) -> None:
+    position_rows: list[tuple[Any, ...]] = []
+    for section in ("withOrderbook", "withoutOrderbook"):
+        for item in positions.get(section, []):
+            if isinstance(item, dict):
+                position_rows.append(position_row(item))
+
+    cash_rows = [
+        cash_row(item)
+        for item in positions.get("cashPositions", [])
+        if isinstance(item, dict)
+    ]
+
+    if position_rows:
+        render_table(
+            "Portfolio Positions",
+            [
+                "Account",
+                "Account ID",
+                "Instrument",
+                "Order Book ID",
+                "ISIN",
+                "Volume",
+                "Value",
+                "Avg Price",
+                "Acquired",
+                "Day %",
+            ],
+            position_rows,
+        )
+    else:
+        render_message("Portfolio Positions", ["No instrument positions found."])
+
+    if cash_rows:
+        render_table(
+            "Cash Positions",
+            [
+                "Account",
+                "Account ID",
+                "Type",
+                "Order Book ID",
+                "ISIN",
+                "Volume",
+                "Balance",
+                "Avg Price",
+                "Acquired",
+                "Day %",
+            ],
+            cash_rows,
+        )
+
+
+def render_portfolio_summary(positions: dict[str, Any]) -> None:
+    render_message(
+        "Portfolio Summary",
+        [
+            f"Listed positions: {len(positions.get('withOrderbook', []))}",
+            f"Unlisted positions: {len(positions.get('withoutOrderbook', []))}",
+            f"Cash positions: {len(positions.get('cashPositions', []))}",
+        ],
+    )
+    cash_rows = [
+        cash_row(item)
+        for item in positions.get("cashPositions", [])
+        if isinstance(item, dict)
+    ]
+    if cash_rows:
+        render_table(
+            "Cash Positions",
+            [
+                "Account",
+                "Account ID",
+                "Type",
+                "Order Book ID",
+                "ISIN",
+                "Volume",
+                "Balance",
+                "Avg Price",
+                "Acquired",
+                "Day %",
+            ],
+            cash_rows,
+        )
+
+
+def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
+    if not isinstance(results, dict):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for hit_group in results.get("hits", []):
+        if not isinstance(hit_group, dict):
+            continue
+        group_type = hit_group.get("instrumentType", "")
+        top_hits = hit_group.get("topHits") or []
+        for hit in top_hits:
+            if isinstance(hit, dict):
+                row = dict(hit)
+                row.setdefault("instrumentType", group_type)
+                rows.append(row)
+    return rows
+
+
+def render_search_results(results: Any) -> None:
+    hits = flattened_search_hits(results)
+    if not hits:
+        render_message("Search Results", ["No matching stocks found."])
+        return
+
+    rows = []
+    for hit in hits:
+        rows.append(
+            (
+                hit.get("name", ""),
+                hit.get("tickerSymbol", ""),
+                hit.get("instrumentType", ""),
+                hit.get("id", "") or hit.get("orderbookId", ""),
+                hit.get("isin", ""),
+                hit.get("currency", ""),
+            )
+        )
+
+    render_table(
+        "Search Results",
+        ["Name", "Ticker", "Type", "Order Book ID", "ISIN", "Currency"],
+        rows,
+    )
+
+
+def render_stoplosses(stoplosses: Any) -> None:
+    if not isinstance(stoplosses, list):
+        render_message("Stop-Loss Orders", ["Unexpected response shape from Avanza."])
+        return
+
+    rows = [stop_loss_row(item) for item in stoplosses if isinstance(item, dict)]
+    if not rows:
+        render_message("Stop-Loss Orders", ["No open stop-loss orders found."])
+        return
+
+    render_table(
+        "Stop-Loss Orders",
+        [
+            "ID",
+            "Status",
+            "Account",
+            "Account ID",
+            "Instrument",
+            "Order Book ID",
+            "Trigger",
+            "Order",
+            "Valid Until",
+        ],
+        rows,
     )
 
 
@@ -407,8 +621,7 @@ class AvanzaTradingTui(App):
 
         data = avanza.get_all_stop_losses()
         if not isinstance(data, list):
-            self.log("[yellow]Unexpected stop-loss response:[/yellow]")
-            self.log(json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+            self.log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
             return
 
         visible_count = 0
@@ -429,8 +642,7 @@ class AvanzaTradingTui(App):
 
         overview = avanza.get_overview()
         if not isinstance(overview, dict):
-            self.log("[yellow]Unexpected account overview response:[/yellow]")
-            self.log(json.dumps(overview, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+            self.log(f"[yellow]Unexpected account overview response type:[/yellow] {type(overview).__name__}")
             return
 
         self.accounts = account_rows_from_overview(overview)
@@ -448,8 +660,7 @@ class AvanzaTradingTui(App):
 
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
-            self.log("[yellow]Unexpected portfolio response:[/yellow]")
-            self.log(json.dumps(data, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+            self.log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
 
         count = 0
@@ -535,7 +746,8 @@ class AvanzaTradingTui(App):
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
         self.log("[yellow]Dry-run stop-loss request:[/yellow]")
-        self.log(json.dumps(preview, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+        for line in stop_loss_request_log_lines(preview):
+            self.log(line)
 
     def handle_place_live(self) -> None:
         if self.input_value("place-confirm") != "PLACE":
@@ -544,7 +756,8 @@ class AvanzaTradingTui(App):
         avanza = self.require_connection()
         trigger, order_event, preview = self.build_stop_loss_request()
         self.log("[red]Placing live stop-loss request:[/red]")
-        self.log(json.dumps(preview, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+        for line in stop_loss_request_log_lines(preview):
+            self.log(line)
 
         result = avanza.place_stop_loss_order(
             parent_stop_loss_id="0",
@@ -553,8 +766,13 @@ class AvanzaTradingTui(App):
             stop_loss_trigger=trigger,
             stop_loss_order_event=order_event,
         )
-        self.log("[green]Avanza response:[/green]")
-        self.log(json.dumps(result, indent=2, sort_keys=True, default=str, ensure_ascii=False))
+        if isinstance(result, dict):
+            status = result.get("status") or result.get("orderRequestStatus") or "response received"
+            identifier = result.get("stoplossOrderId") or result.get("orderId") or ""
+            suffix = f" ({identifier})" if identifier else ""
+            self.log(f"[green]Avanza status:[/green] {status}{suffix}")
+        else:
+            self.log("[green]Avanza accepted the request.[/green]")
         self.refresh_stoplosses()
 
 
@@ -564,45 +782,44 @@ def cmd_tui(_args: argparse.Namespace) -> None:
 
 def cmd_accounts(args: argparse.Namespace) -> None:
     avanza = connect(args)
-    dump(avanza.get_overview())
+    render_accounts_overview(avanza.get_overview())
 
 
 def cmd_portfolio_positions(args: argparse.Namespace) -> None:
     avanza = connect(args)
-    dump(avanza.get_accounts_positions())
+    render_portfolio_positions(avanza.get_accounts_positions())
 
 
 def cmd_portfolio_summary(args: argparse.Namespace) -> None:
     avanza = connect(args)
-    positions = avanza.get_accounts_positions()
-    summary = {
-        "listed_positions": len(positions.get("withOrderbook", [])),
-        "unlisted_positions": len(positions.get("withoutOrderbook", [])),
-        "cash_positions": len(positions.get("cashPositions", [])),
-        "cash": positions.get("cashPositions", []),
-    }
-    dump(summary)
+    render_portfolio_summary(avanza.get_accounts_positions())
 
 
 def cmd_search(args: argparse.Namespace) -> None:
     avanza = connect(args)
-    dump(avanza.search_for_stock(args.query, args.limit))
+    render_search_results(avanza.search_for_stock(args.query, args.limit))
 
 
 def cmd_stoploss_list(args: argparse.Namespace) -> None:
     avanza = connect(args)
-    dump(avanza.get_all_stop_losses())
+    render_stoplosses(avanza.get_all_stop_losses())
 
 
 def cmd_stoploss_delete(args: argparse.Namespace) -> None:
     if not args.confirm:
-        print("Dry run: add --confirm to delete this stop-loss order.")
-        dump({"account_id": args.account_id, "stop_loss_id": args.stop_loss_id})
+        render_message(
+            "Dry Run",
+            [
+                "Add --confirm to delete this stop-loss order.",
+                f"Account: {args.account_id}",
+                f"Stop-loss ID: {args.stop_loss_id}",
+            ],
+        )
         return
 
     avanza = connect(args)
     result = avanza.delete_stop_loss_order(args.account_id, args.stop_loss_id)
-    dump({"deleted": True, "result": result})
+    render_result("Delete Stop-Loss Result", {"deleted": True, "result": result})
 
 
 def cmd_stoploss_set(args: argparse.Namespace) -> None:
@@ -649,8 +866,10 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
     }
 
     if not args.confirm:
-        print("Dry run: add --confirm to place this stop-loss order.")
-        dump(request_preview)
+        render_stop_loss_request(
+            "Dry Run: add --confirm to place this stop-loss order.",
+            request_preview,
+        )
         return
 
     avanza = connect(args)
@@ -661,7 +880,7 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
         stop_loss_trigger=trigger,
         stop_loss_order_event=order_event,
     )
-    dump(result)
+    render_result("Place Stop-Loss Result", result)
 
 
 def add_common_auth(parser: argparse.ArgumentParser) -> None:

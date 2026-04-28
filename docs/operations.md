@@ -12,7 +12,7 @@ The password and TOTP prompts are masked. The TUI clears secret fields after a s
 
 ## Portfolio
 
-Use the CLI for JSON output:
+Use the CLI for human-readable terminal output:
 
 ```bash
 python avanza_cli.py portfolio summary

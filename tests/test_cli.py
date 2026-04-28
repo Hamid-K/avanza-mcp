@@ -1,5 +1,4 @@
 import argparse
-import json
 
 import pytest
 
@@ -45,15 +44,29 @@ def test_prompt_credentials_uses_totp_token(monkeypatch):
     }
 
 
-def test_dump_outputs_pretty_json(capsys):
-    from avanza_cli import dump
+def test_render_accounts_overview_outputs_human_table(capsys):
+    from avanza_cli import render_accounts_overview
 
-    dump({"b": 1, "a": {"c": 2}})
+    render_accounts_overview(
+        {
+            "accounts": [
+                {
+                    "id": "acc-1",
+                    "name": {"defaultName": "ISK", "userDefinedName": "Trading"},
+                    "type": "ISK",
+                    "totalValue": {"value": 1000, "unit": "SEK"},
+                    "buyingPower": {"value": 250, "unit": "SEK"},
+                    "status": "ACTIVE",
+                }
+            ]
+        }
+    )
     output = capsys.readouterr().out
 
-    assert json.loads(output) == {"a": {"c": 2}, "b": 1}
-    assert output.startswith("{\n")
-    assert '  "a": {' in output
+    assert "Accounts" in output
+    assert "Trading" in output
+    assert "1000 SEK" in output
+    assert '"accounts"' not in output
 
 
 def test_stoploss_set_dry_run_does_not_require_login(capsys):
@@ -88,7 +101,8 @@ def test_stoploss_set_dry_run_does_not_require_login(capsys):
     args.func(args)
     output = capsys.readouterr().out
 
-    assert "Dry run" in output
-    assert '"account_id": "acc-1"' in output
-    assert '"type": "FOLLOW_UPWARDS"' in output
-    assert '"value_type": "PERCENTAGE"' in output
+    assert "Dry Run" in output
+    assert "Account: acc-1" in output
+    assert "Order book: ob-1" in output
+    assert "Trigger: FOLLOW_UPWARDS 5.0 PERCENTAGE" in output
+    assert '"account_id"' not in output
