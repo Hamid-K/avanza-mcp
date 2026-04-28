@@ -119,6 +119,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#order-ticket-resizer") is not None
             assert app.query_one("#stoploss-ticket-resizer") is not None
             resizer = app.query_one("#pane-resizer")
+            assert resizer.renderable == "─"
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
             app.apply_pane_weights(3, 2)

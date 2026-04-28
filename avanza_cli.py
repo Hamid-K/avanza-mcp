@@ -1445,7 +1445,7 @@ def order_stock_name(item: dict[str, Any]) -> str:
 
 class PaneResizer(Static):
     def __init__(self) -> None:
-        super().__init__("drag to resize", id="pane-resizer")
+        super().__init__("─", id="pane-resizer")
 
     @staticmethod
     def event_y(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
