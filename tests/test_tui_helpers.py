@@ -25,6 +25,8 @@ from avanza_cli import (
     position_state_row,
     position_holding_label,
     position_row,
+    position_trade_action_row,
+    position_trade_target,
     lookup_realtime_status,
     mcp_error,
     mcp_success,
@@ -43,6 +45,7 @@ from avanza_cli import (
     stop_loss_activity_row,
     stop_loss_row,
     ticket_pane_width_after_drag,
+    trade_action_badge,
     write_mcp_message,
 )
 
@@ -268,6 +271,22 @@ def test_position_state_row_includes_day_and_profit_state():
     )
     assert row[9].plain == "●"
     assert str(row[9].style) == "#7fbf8f"
+
+
+def test_position_trade_action_row_adds_buy_sell_actions():
+    item = {
+        "instrument": {
+            "name": "Example AB",
+            "orderbook": {"id": "ob-1", "quote": {"isRealTime": True}},
+        },
+        "volume": {"value": 10, "unit": "st"},
+        "value": {"value": 1100, "unit": "SEK"},
+    }
+
+    row = position_trade_action_row(item)
+
+    assert row[:4] == ("Example AB", trade_action_badge("buy"), trade_action_badge("sell"), "ob-1")
+    assert position_trade_target(item) == {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10.0"}
 
 
 def test_realtime_status_badge_uses_green_or_yellow_dot():

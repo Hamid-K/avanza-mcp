@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from textual import events
 from textual.geometry import Size
-from textual.widgets import Button, DataTable
+from textual.widgets import Button, DataTable, Input, Select
 
 from avanza.constants import OrderType, StopLossPriceType
 from rich.text import Text
@@ -24,6 +24,7 @@ from avanza_cli import (
     read_mcp_message,
     restore_table_row_selection,
     selected_table_row_key,
+    trade_action_badge,
     write_mcp_message,
 )
 
@@ -440,9 +441,18 @@ def test_tui_sorts_table_when_header_is_clicked():
         app = AvanzaTradingTui()
         async with app.run_test() as pilot:
             table = app.query_one("#portfolio-table", DataTable)
-            table.add_row("Beta", "ob-2", "1 st", Text("2,000.00 SEK"), "", "", "", "", "", "Yes")
-            table.add_row("Alpha", "ob-1", "1 st", Text("1,000.00 SEK"), "", "", "", "", "", "No")
-            value_column = list(table.columns.keys())[3]
+            table.add_row(
+                "Beta", trade_action_badge("buy"), trade_action_badge("sell"),
+                "ob-2", "1 st", Text("2,000.00 SEK"), "", "", "", "", "", "Yes",
+            )
+            table.add_row(
+                "Alpha", trade_action_badge("buy"), trade_action_badge("sell"),
+                "ob-1", "1 st", Text("1,000.00 SEK"), "", "", "", "", "", "No",
+            )
+            value_column = next(
+                key for key, column in table.columns.items()
+                if getattr(column.label, "plain", str(column.label)) == "Value"
+            )
             label = table.columns[value_column].label
 
             app.on_data_table_header_selected(DataTable.HeaderSelected(table, value_column, 3, label))
@@ -452,6 +462,65 @@ def test_tui_sorts_table_when_header_is_clicked():
             app.on_data_table_header_selected(DataTable.HeaderSelected(table, value_column, 3, label))
             await pilot.pause()
             assert table.get_row_at(0)[0] == "Beta"
+
+    asyncio.run(run_app())
+
+
+def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
+    from avanza_cli import AvanzaTradingTui
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            class RowKey:
+                value = "row-1"
+
+            class CellKey:
+                row_key = RowKey()
+
+            class FakeCellSelected:
+                data_table = app.query_one("#portfolio-table", DataTable)
+                cell_key = CellKey()
+                value = trade_action_badge("sell")
+                stopped = False
+
+                def stop(self):
+                    self.stopped = True
+
+            app.portfolio_trade_targets_by_row_key["row-1"] = {
+                "stock": "Example AB",
+                "order_book_id": "ob-1",
+                "volume": "10",
+            }
+            event = FakeCellSelected()
+            app.on_data_table_cell_selected(event)
+            await pilot.pause()
+
+            assert event.stopped is True
+            assert app.query_one("#order-modal").display is True
+            assert app.query_one("#order-instrument-select", Select).value == "ob-1"
+            assert app.query_one("#regular-order-type", Select).value == "sell"
+            assert app.query_one("#regular-order-volume", Input).value == "10"
+
+            app.open_order_modal_for_portfolio_action(
+                "sell",
+                {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10"},
+            )
+            await pilot.pause()
+
+            assert app.query_one("#order-modal").display is True
+            assert app.query_one("#order-instrument-select", Select).value == "ob-1"
+            assert app.query_one("#regular-order-type", Select).value == "sell"
+            assert app.query_one("#regular-order-volume", Input).value == "10"
+
+            app.open_order_modal_for_portfolio_action(
+                "buy",
+                {"stock": "Example AB", "order_book_id": "ob-1", "volume": "10"},
+            )
+            await pilot.pause()
+
+            assert app.query_one("#regular-order-type", Select).value == "buy"
+            assert app.query_one("#regular-order-volume", Input).value == ""
 
     asyncio.run(run_app())
 

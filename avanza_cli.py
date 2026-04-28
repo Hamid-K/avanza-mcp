@@ -805,6 +805,11 @@ def position_state_row(item: dict[str, Any], realtime_override: str | None = Non
     )
 
 
+def position_trade_action_row(item: dict[str, Any], realtime_override: str | None = None) -> tuple[Any, ...]:
+    row = position_state_row(item, realtime_override)
+    return (row[0], trade_action_badge("buy"), trade_action_badge("sell"), *row[1:])
+
+
 def position_order_book_id(item: dict[str, Any]) -> str:
     return str(nested_value(item, "instrument", "orderbook", "id"))
 
@@ -814,6 +819,14 @@ def position_holding_label(item: dict[str, Any]) -> str:
     order_book_id = position_order_book_id(item)
     owned_volume = amount(item, "volume")
     return f"{instrument_name} - owned {owned_volume} ({order_book_id})"
+
+
+def position_trade_target(item: dict[str, Any]) -> dict[str, str]:
+    return {
+        "stock": str(nested_value(item, "instrument", "name")),
+        "order_book_id": position_order_book_id(item),
+        "volume": str(value_number(item, "volume") or ""),
+    }
 
 
 def stoploss_holding_options(positions: dict[str, Any], account_id: str | None) -> list[tuple[str, str]]:
@@ -880,6 +893,15 @@ def side_badge(value: Any) -> Text:
 
 def cancel_badge() -> Text:
     return Text(" × ", style=SELL_SIDE_STYLE)
+
+
+def trade_action_badge(side: str) -> Text:
+    normalized = side.lower()
+    if normalized == "buy":
+        return Text(" BUY ", style=BUY_SIDE_STYLE)
+    if normalized == "sell":
+        return Text(" SELL ", style=SELL_SIDE_STYLE)
+    return Text(str(side or "-"), style="dim")
 
 
 def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
@@ -2274,6 +2296,7 @@ class AvanzaTradingTui(App):
         self.latest_portfolio_data: dict[str, Any] | None = None
         self.latest_stoploss_items: list[dict[str, Any]] = []
         self.latest_open_order_items: list[dict[str, Any]] = []
+        self.portfolio_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.cancel_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.pending_cancel_target: dict[str, str] | None = None
         self.positions_pane_weight = 2
@@ -2474,6 +2497,8 @@ class AvanzaTradingTui(App):
         portfolio_table = self.query_one("#portfolio-table", DataTable)
         portfolio_table.add_columns(
             "Stock",
+            "Buy",
+            "Sell",
             "Order Book ID",
             "Volume",
             "Value",
@@ -2616,6 +2641,19 @@ class AvanzaTradingTui(App):
         event.stop()
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
+        if event.data_table.id == "portfolio-table":
+            action = plain_cell_value(event.value).strip().lower()
+            if action not in {"buy", "sell"}:
+                return
+            row_key = str(getattr(event.cell_key.row_key, "value", ""))
+            target = self.portfolio_trade_targets_by_row_key.get(row_key)
+            if not target:
+                self.write_log("[yellow]Could not resolve stock row for order ticket.[/yellow]")
+                return
+            self.open_order_modal_for_portfolio_action(action, target)
+            event.stop()
+            return
+
         if event.data_table.id not in {"stoploss-table", "active-trades-table"}:
             return
         if plain_cell_value(event.value).strip() != "×":
@@ -2627,6 +2665,32 @@ class AvanzaTradingTui(App):
             return
         self.open_cancel_modal(target)
         event.stop()
+
+    def open_order_modal_for_portfolio_action(self, side: str, target: dict[str, str]) -> None:
+        order_book_id = target.get("order_book_id", "")
+        if not order_book_id:
+            raise ValueError("Selected stock row has no order book id.")
+
+        self.query_one("#order-search", Input).value = ""
+        if self.latest_portfolio_data is not None:
+            self.restore_order_holding_options()
+
+        select = self.query_one("#order-instrument-select", Select)
+        if order_book_id not in self.holding_labels_by_order_book:
+            stock = target.get("stock") or order_book_id
+            volume = target.get("volume", "")
+            owned = f" - owned {volume}" if volume else ""
+            select.set_options([(f"{stock}{owned} ({order_book_id})", order_book_id)])
+            self.holding_labels_by_order_book[order_book_id] = stock
+            self.holding_volumes_by_order_book[order_book_id] = volume
+
+        select.value = order_book_id
+        self.query_one("#regular-order-type", Select).value = side
+        volume_input = self.query_one("#regular-order-volume", Input)
+        volume_input.value = target.get("volume", "") if side == "sell" else ""
+        stock_name = target.get("stock") or order_book_id
+        self.query_one("#order-search-status", Static).update(f"{side.upper()} ticket opened for {stock_name}.")
+        self.query_one("#order-modal").display = True
 
     def input_value(self, widget_id: str) -> str:
         widget = self.query_one(f"#{widget_id}")
@@ -3297,6 +3361,7 @@ class AvanzaTradingTui(App):
 
         count = 0
         next_cache: dict[str, tuple[str, ...]] = {}
+        self.portfolio_trade_targets_by_row_key = {}
         for section in ("withOrderbook", "withoutOrderbook"):
             for item in data.get(section, []):
                 if isinstance(item, dict):
@@ -3305,8 +3370,16 @@ class AvanzaTradingTui(App):
                     row_key = str(item.get("id", f"{section}-{count}"))
                     current_row = position_state_row(item, self.realtime_status_for_position(item))
                     previous_row = self.position_row_cache.get(row_key)
-                    table.add_row(*changed_position_row(current_row, previous_row), key=row_key)
+                    changed_row = changed_position_row(current_row, previous_row)
+                    table.add_row(
+                        changed_row[0],
+                        trade_action_badge("buy"),
+                        trade_action_badge("sell"),
+                        *changed_row[1:],
+                        key=row_key,
+                    )
                     next_cache[row_key] = current_row
+                    self.portfolio_trade_targets_by_row_key[row_key] = position_trade_target(item)
                     count += 1
 
         self.position_row_cache = next_cache
