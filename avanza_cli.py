@@ -195,6 +195,8 @@ def onepassword_credentials(item: str, vault: str | None = None) -> dict[str, st
 
 
 def connect(args: argparse.Namespace) -> Avanza:
+    if getattr(args, "username", None) and getattr(args, "onepassword_item", None):
+        raise ValueError("Use either --username or --onepassword-item, not both.")
     onepassword_item = getattr(args, "onepassword_item", None)
     onepassword_vault = getattr(args, "onepassword_vault", None)
     if onepassword_item:
@@ -3137,6 +3139,12 @@ class AvanzaTradingTui(App):
         if self.order_search_timer is not None:
             self.order_search_timer.stop()
             self.order_search_timer = None
+        if self.live_refresh_timer is not None:
+            self.live_refresh_timer.stop()
+            self.live_refresh_timer = None
+        if self.clock_timer is not None:
+            self.clock_timer.stop()
+            self.clock_timer = None
         self.stop_mcp_bridge()
 
     def require_mcp_write(self, confirmed: bool) -> None:
@@ -3652,12 +3660,8 @@ class AvanzaTradingTui(App):
         self.order_search_timer = self.set_timer(0.35, self.handle_order_search_from_timer)
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
-        try:
-            return
-        except Exception as exc:
-            self.write_mcp_log(f"[red]MCP switch failed:[/red] {exc}")
-            if event.switch.id == "mcp-enabled":
-                event.switch.value = False
+        # No action required for switch state changes; values are read on submit.
+        return
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -4032,7 +4036,11 @@ def call_mcp_bridge(session: dict[str, Any], tool: str, arguments: dict[str, Any
         with urlopen(request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        payload = json.loads(exc.read().decode("utf-8") or "{}")
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            payload = {"error": body or f"HTTP {exc.code}"}
         payload.setdefault("ok", False)
         payload.setdefault("error", f"HTTP {exc.code}")
     except URLError as exc:

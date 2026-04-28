@@ -17,6 +17,7 @@ from rich.text import Text
 from avanza_cli import (
     build_parser,
     call_mcp_bridge,
+    connect,
     enum_value,
     load_mcp_session,
     onepassword_credentials,
@@ -77,6 +78,12 @@ def test_parser_includes_portfolio_commands():
 
     mcp_args = parser.parse_args(["mcp"])
     assert mcp_args.command == "mcp"
+
+
+def test_connect_rejects_conflicting_auth_sources():
+    args = argparse.Namespace(username="alice", onepassword_item="Avanza", onepassword_vault=None)
+    with pytest.raises(ValueError, match="either --username or --onepassword-item"):
+        connect(args)
 
 
 def test_help_includes_examples_and_safety_notes(capsys):
@@ -182,6 +189,35 @@ def test_tui_mounts_headless():
             assert app.is_resizing_ticket_pane is False
 
     asyncio.run(run_app())
+
+
+def test_tui_on_unmount_stops_timers(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeTimer:
+        def __init__(self):
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    app = AvanzaTradingTui()
+    search_timer = FakeTimer()
+    live_timer = FakeTimer()
+    clock_timer = FakeTimer()
+    app.order_search_timer = search_timer
+    app.live_refresh_timer = live_timer
+    app.clock_timer = clock_timer
+    monkeypatch.setattr(app, "stop_mcp_bridge", lambda: None)
+
+    app.on_unmount()
+
+    assert search_timer.stopped is True
+    assert live_timer.stopped is True
+    assert clock_timer.stopped is True
+    assert app.order_search_timer is None
+    assert app.live_refresh_timer is None
+    assert app.clock_timer is None
 
 
 def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
@@ -416,6 +452,22 @@ def test_tui_tracks_terminal_resize():
 def test_load_mcp_session_requires_existing_session_file(tmp_path):
     with pytest.raises(RuntimeError):
         load_mcp_session(tmp_path / "missing-session.json")
+
+
+def test_call_mcp_bridge_handles_non_json_http_error(monkeypatch):
+    import urllib.error
+
+    class FakeHttpError(urllib.error.HTTPError):
+        def __init__(self):
+            super().__init__("http://127.0.0.1/call", 500, "boom", hdrs=None, fp=io.BytesIO(b"internal error"))
+
+    def fake_urlopen(_request, timeout):
+        raise FakeHttpError()
+
+    monkeypatch.setattr("avanza_cli.urlopen", fake_urlopen)
+    payload = call_mcp_bridge({"url": "http://127.0.0.1", "token": "x"}, "avanza_status", {})
+    assert payload["ok"] is False
+    assert payload["error"] == "internal error"
 
 
 def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
