@@ -7,6 +7,7 @@ from avanza_cli import (
     account_stats_text,
     amount,
     cash_row,
+    cancel_badge,
     changed_position_row,
     change_style,
     create_paper_order,
@@ -33,6 +34,7 @@ from avanza_cli import (
     sortable_cell_value,
     save_paper_session,
     side_panel_width_after_drag,
+    side_badge,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
     active_paper_order_row,
@@ -472,11 +474,12 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
         order["id"],
         "Example AB",
         "ob-1",
-        "SELL",
+        side_badge("SELL"),
         "10.0",
         "FOLLOW_UPWARDS 5.0%",
         "2026-05-28",
         "ACTIVE",
+        cancel_badge(),
     )
 
 
@@ -500,9 +503,10 @@ def test_paper_regular_order_active_row():
         order["id"],
         "Example AB",
         "ob-1",
-        "BUY",
+        side_badge("BUY"),
         "10",
         "100.0 SEK FILL_AND_KILL",
         "2026-05-28",
         "ACTIVE",
+        cancel_badge(),
     )

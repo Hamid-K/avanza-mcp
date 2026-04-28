@@ -344,6 +344,20 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 },
             )
             assert paper_regular["order"]["kind"] == "Order"
+            cancel_target = next(
+                target
+                for target in app.cancel_targets_by_row_key.values()
+                if target["id"] == paper_regular["order"]["id"]
+            )
+            app.open_cancel_modal(cancel_target)
+            assert app.query_one("#cancel-modal").display is True
+            app.handle_cancel_review()
+            app.handle_cancel_confirm()
+            cancelled_regular = app.execute_mcp_tool("avanza_paper_orders", {"active_only": False})["orders"]
+            assert any(
+                order["id"] == paper_regular["order"]["id"] and order["status"] == "CANCELLED"
+                for order in cancelled_regular
+            )
             with pytest.raises(PermissionError):
                 app.execute_mcp_tool(
                     "avanza_stoploss_delete",

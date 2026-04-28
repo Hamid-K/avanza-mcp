@@ -59,6 +59,8 @@ POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
 POSITIVE_PERCENT_STYLE = "#a9dcb8"
 NEGATIVE_PERCENT_STYLE = "#ebb0b0"
+BUY_SIDE_STYLE = "bold white on #1f6f43"
+SELL_SIDE_STYLE = "bold white on #8f2438"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 MIN_PANE_WEIGHT = 1
 MAX_PANE_WEIGHT = 8
@@ -864,6 +866,20 @@ def change_style(value: str) -> str:
     return CHANGED_CELL_STYLE
 
 
+def side_badge(value: Any) -> Text:
+    label = str(value or "").upper()
+    normalized = label.replace("_", "-").lower()
+    if normalized == "buy":
+        return Text(" BUY ", style=BUY_SIDE_STYLE)
+    if normalized == "sell":
+        return Text(" SELL ", style=SELL_SIDE_STYLE)
+    return Text(label or "-", style="dim")
+
+
+def cancel_badge() -> Text:
+    return Text(" × ", style=SELL_SIDE_STYLE)
+
+
 def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
     return (
         str(nested_value(item, "account", "name")),
@@ -879,7 +895,7 @@ def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
-def open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
+def open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or item.get("instrument") or {}
     price = item.get("price", "")
     price_type = item.get("priceType", "") or item.get("price_type", "")
@@ -889,7 +905,7 @@ def open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(item.get("status", "")),
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "") or item.get("orderbookId", "")),
-        str(item.get("type", "") or item.get("orderType", "")),
+        side_badge(item.get("type", "") or item.get("orderType", "")),
         str(item.get("volume", "")),
         formatted_typed_value(price, price_type) if price_type else str(price),
         str(item.get("validUntil", "")),
@@ -915,7 +931,7 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
-def stop_loss_activity_row(item: dict[str, Any]) -> tuple[str, ...]:
+def stop_loss_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
     order = item.get("order") or {}
@@ -930,10 +946,11 @@ def stop_loss_activity_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(order.get("volume", "")),
         formatted_typed_value(order.get("price", ""), order.get("priceType", "")),
         str(trigger.get("validUntil", "")),
+        cancel_badge(),
     )
 
 
-def active_stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
+def active_stop_loss_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
     order = item.get("order") or {}
@@ -943,15 +960,16 @@ def active_stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(item.get("id", "")),
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "")),
-        str(order.get("type", "")),
+        side_badge(order.get("type", "")),
         str(order.get("volume", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
         str(trigger.get("validUntil", "")),
         str(item.get("status", "")),
+        cancel_badge(),
     )
 
 
-def active_open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
+def active_open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or item.get("instrument") or {}
     price = item.get("price", "")
     price_type = item.get("priceType", "") or item.get("price_type", "")
@@ -961,15 +979,16 @@ def active_open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(item.get("id", "") or item.get("orderId", "")),
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "") or item.get("orderbookId", "")),
-        str(item.get("type", "") or item.get("orderType", "")),
+        side_badge(item.get("type", "") or item.get("orderType", "")),
         str(item.get("volume", "")),
         formatted_typed_value(price, price_type) if price_type else str(price),
         str(item.get("validUntil", "")),
         str(item.get("status", "")),
+        cancel_badge(),
     )
 
 
-def active_paper_order_row(item: dict[str, Any]) -> tuple[str, ...]:
+def active_paper_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     request = item.get("request") or {}
     if item.get("kind") == "Order":
         return (
@@ -978,11 +997,12 @@ def active_paper_order_row(item: dict[str, Any]) -> tuple[str, ...]:
             str(item.get("id", "")),
             str(item.get("instrument", "") or request.get("order_book_id", "")),
             str(request.get("order_book_id", "")),
-            str(request.get("order_type", "")),
+            side_badge(request.get("order_type", "")),
             str(request.get("volume", "")),
             f"{request.get('price', '')} SEK {request.get('condition', '')}".strip(),
             str(request.get("valid_until", "") or item.get("created_at", "")),
             str(item.get("status", "")),
+            cancel_badge(),
         )
     trigger = request.get("stop_loss_trigger") or {}
     order = request.get("stop_loss_order_event") or {}
@@ -992,11 +1012,12 @@ def active_paper_order_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(item.get("id", "")),
         str(item.get("instrument", "") or request.get("order_book_id", "")),
         str(request.get("order_book_id", "")),
-        str(order.get("type", "")),
+        side_badge(order.get("type", "")),
         str(order.get("volume", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('value_type', ''))}",
         str(trigger.get("valid_until", "") or item.get("created_at", "")),
         str(item.get("status", "")),
+        cancel_badge(),
     )
 
 
@@ -1380,6 +1401,24 @@ def cancel_paper_order(session: dict[str, Any], paper_order_id: str) -> dict[str
             append_paper_event(session, "paper_cancel", {"id": paper_order_id})
             return item
     raise ValueError(f"Unknown paper order id: {paper_order_id}")
+
+
+def order_account_id(item: dict[str, Any], fallback: str | None = None) -> str:
+    account = item.get("account") if isinstance(item.get("account"), dict) else {}
+    return str(
+        account.get("id")
+        or item.get("accountId")
+        or item.get("account_id")
+        or fallback
+        or ""
+    )
+
+
+def order_stock_name(item: dict[str, Any]) -> str:
+    orderbook = item.get("orderbook") or item.get("instrument") or {}
+    if isinstance(orderbook, dict):
+        return str(orderbook.get("name") or "")
+    return ""
 
 
 class PaneResizer(Static):
@@ -2031,7 +2070,8 @@ class AvanzaTradingTui(App):
     }
 
     #stoploss-modal,
-    #order-modal {
+    #order-modal,
+    #cancel-modal {
         display: none;
         dock: right;
         width: 64;
@@ -2156,12 +2196,14 @@ class AvanzaTradingTui(App):
     }
 
     #place-live,
-    #order-place-live {
+    #order-place-live,
+    #cancel-confirm-button {
         min-width: 18;
     }
 
     #dry-run,
-    #order-dry-run {
+    #order-dry-run,
+    #cancel-review {
         min-width: 12;
     }
 
@@ -2202,6 +2244,8 @@ class AvanzaTradingTui(App):
         self.latest_portfolio_data: dict[str, Any] | None = None
         self.latest_stoploss_items: list[dict[str, Any]] = []
         self.latest_open_order_items: list[dict[str, Any]] = []
+        self.cancel_targets_by_row_key: dict[str, dict[str, str]] = {}
+        self.pending_cancel_target: dict[str, str] | None = None
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.active_trades_width = 42
@@ -2366,6 +2410,16 @@ class AvanzaTradingTui(App):
                     with Horizontal():
                         yield Button("Review Only", id="order-dry-run", variant="default")
                         yield Button("Create Paper Order", id="order-place-live", variant="warning")
+            with Vertical(id="cancel-modal"):
+                with Horizontal(classes="modal-header"):
+                    yield Button("X", id="close-cancel-modal", classes="modal-close")
+                    yield Static("Cancel Order", classes="modal-title")
+                yield Static("-", id="cancel-summary")
+                yield Static('Type "CANCEL" for live Avanza cancellation.', id="cancel-instructions")
+                yield Input(placeholder='Type "CANCEL" for live cancellation', id="cancel-confirm")
+                with Horizontal():
+                    yield Button("Review Only", id="cancel-review", variant="default")
+                    yield Button("Cancel Order", id="cancel-confirm-button", variant="error")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2380,6 +2434,7 @@ class AvanzaTradingTui(App):
             "Volume",
             "Price",
             "Valid Until",
+            "Cancel",
         )
         stoploss_table.cursor_type = "row"
         stoploss_table.zebra_stripes = True
@@ -2412,6 +2467,7 @@ class AvanzaTradingTui(App):
             "Trigger/Price",
             "Valid/Created",
             "Status",
+            "Cancel",
         )
         active_table.cursor_type = "row"
         active_table.zebra_stripes = True
@@ -2525,6 +2581,19 @@ class AvanzaTradingTui(App):
         self.sort_table(table, event.column_key, reverse)
         direction = "descending" if reverse else "ascending"
         self.write_log(f"Sorted {table.id or 'table'} by {event.label.plain} ({direction}).")
+        event.stop()
+
+    def on_data_table_cell_selected(self, event: DataTable.CellSelected) -> None:
+        if event.data_table.id not in {"stoploss-table", "active-trades-table"}:
+            return
+        if plain_cell_value(event.value).strip() != "×":
+            return
+        row_key = str(getattr(event.cell_key.row_key, "value", ""))
+        target = self.cancel_targets_by_row_key.get(row_key)
+        if not target:
+            self.write_log("[yellow]Could not resolve cancellation target for this row.[/yellow]")
+            return
+        self.open_cancel_modal(target)
         event.stop()
 
     def input_value(self, widget_id: str) -> str:
@@ -2646,12 +2715,42 @@ class AvanzaTradingTui(App):
         self.update_selected_account_summary()
         self.write_log(f"Account P/L metric: {profit_metric_label(self.profit_metric_mode)}.")
 
-    def active_trade_rows(self) -> list[tuple[str, ...]]:
-        rows: list[tuple[str, ...]] = []
+    def live_cancel_target(self, kind: str, item: dict[str, Any]) -> dict[str, str]:
+        identifier = str(item.get("id", "") or item.get("orderId", ""))
+        return {
+            "mode": "Live",
+            "kind": kind,
+            "id": identifier,
+            "account_id": order_account_id(item, self.selected_account_id),
+            "stock": order_stock_name(item),
+        }
+
+    def paper_cancel_target(self, item: dict[str, Any]) -> dict[str, str]:
+        request = item.get("request") if isinstance(item.get("request"), dict) else {}
+        return {
+            "mode": "Paper",
+            "kind": str(item.get("kind", "Order")),
+            "id": str(item.get("id", "")),
+            "account_id": str(request.get("account_id") or self.selected_account_id or ""),
+            "stock": str(item.get("instrument") or request.get("order_book_id") or ""),
+        }
+
+    def active_trade_rows(self) -> list[tuple[Any, ...]]:
+        rows: list[tuple[Any, ...]] = []
         rows.extend(active_stop_loss_row(item) for item in self.latest_stoploss_items)
         rows.extend(active_open_order_row(item) for item in self.latest_open_order_items)
         rows.extend(active_paper_order_row(item) for item in paper_orders(self.paper_session, self.selected_account_id, active_only=True))
         return rows
+
+    def active_trade_entries(self) -> list[tuple[tuple[Any, ...], dict[str, str]]]:
+        entries: list[tuple[tuple[Any, ...], dict[str, str]]] = []
+        entries.extend((active_stop_loss_row(item), self.live_cancel_target("Stop-loss", item)) for item in self.latest_stoploss_items)
+        entries.extend((active_open_order_row(item), self.live_cancel_target("Order", item)) for item in self.latest_open_order_items)
+        entries.extend(
+            (active_paper_order_row(item), self.paper_cancel_target(item))
+            for item in paper_orders(self.paper_session, self.selected_account_id, active_only=True)
+        )
+        return entries
 
     def update_active_trades_table(self) -> None:
         try:
@@ -2660,8 +2759,15 @@ class AvanzaTradingTui(App):
             return
         selected_row_key = selected_table_row_key(table)
         table.clear()
-        for index, row in enumerate(self.active_trade_rows()):
-            table.add_row(*row, key=f"active-{index}-{row[0]}-{row[1]}-{row[2]}")
+        self.cancel_targets_by_row_key = {
+            key: value
+            for key, value in self.cancel_targets_by_row_key.items()
+            if not key.startswith("active-")
+        }
+        for index, (row, target) in enumerate(self.active_trade_entries()):
+            row_key = f"active-{index}-{row[0]}-{row[1]}-{row[2]}"
+            table.add_row(*row, key=row_key)
+            self.cancel_targets_by_row_key[row_key] = target
         restore_table_row_selection(table, selected_row_key)
 
     def portfolio_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
@@ -3035,6 +3141,11 @@ class AvanzaTradingTui(App):
         table = self.query_one("#stoploss-table", DataTable)
         selected_row_key = selected_table_row_key(table)
         table.clear()
+        self.cancel_targets_by_row_key = {
+            key: value
+            for key, value in self.cancel_targets_by_row_key.items()
+            if not key.startswith(("stoploss-", "order-", "active-"))
+        }
 
         visible_count = 0
         self.latest_stoploss_items = []
@@ -3045,7 +3156,9 @@ class AvanzaTradingTui(App):
                     if not matches_account(item, self.selected_account_id):
                         continue
                     self.latest_stoploss_items.append(item)
-                    table.add_row(*stop_loss_activity_row(item), key=f"stoploss-{item.get('id', visible_count)}")
+                    row_key = f"stoploss-{item.get('id', visible_count)}"
+                    table.add_row(*stop_loss_activity_row(item), key=row_key)
+                    self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Stop-loss", item)
                     visible_count += 1
         else:
             self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
@@ -3070,7 +3183,9 @@ class AvanzaTradingTui(App):
                 if not matches_account(item, self.selected_account_id):
                     continue
                 self.latest_open_order_items.append(item)
-                table.add_row(*open_order_row(item), key=f"order-{item.get('id', order_count)}")
+                row_key = f"order-{item.get('id', '') or item.get('orderId', '') or order_count}"
+                table.add_row(*open_order_row(item), cancel_badge(), key=row_key)
+                self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Order", item)
                 order_count += 1
 
         self.reapply_table_sort(table)
@@ -3273,6 +3388,8 @@ class AvanzaTradingTui(App):
                 self.query_one("#stoploss-modal").display = False
             elif button_id == "close-order-modal":
                 self.query_one("#order-modal").display = False
+            elif button_id == "close-cancel-modal":
+                self.close_cancel_modal()
             elif button_id == "clear-log":
                 self.query_one("#log", RichLog).clear()
             elif button_id == "dry-run":
@@ -3285,6 +3402,10 @@ class AvanzaTradingTui(App):
                 self.handle_order_dry_run()
             elif button_id == "order-place-live":
                 self.handle_order_place_live()
+            elif button_id == "cancel-review":
+                self.handle_cancel_review()
+            elif button_id == "cancel-confirm-button":
+                self.handle_cancel_confirm()
         except Exception as exc:
             self.write_log(f"[red]Error:[/red] {exc}")
 
@@ -3317,6 +3438,69 @@ class AvanzaTradingTui(App):
         self.write_log("[yellow]Review-only buy/sell order request. No paper or live order is created:[/yellow]")
         for line in order_request_log_lines(preview):
             self.write_log(line)
+
+    def cancel_summary_text(self, target: dict[str, str]) -> str:
+        stock = f" {target['stock']}" if target.get("stock") else ""
+        return f"{target.get('mode', '')} {target.get('kind', '')}{stock}\nID {target.get('id', '')}  Account {target.get('account_id', '')}"
+
+    def open_cancel_modal(self, target: dict[str, str]) -> None:
+        self.pending_cancel_target = target
+        self.query_one("#cancel-summary", Static).update(self.cancel_summary_text(target))
+        self.query_one("#cancel-confirm", Input).value = ""
+        button = self.query_one("#cancel-confirm-button", Button)
+        if target.get("mode") == "Paper":
+            self.query_one("#cancel-instructions", Static).update("Cancels the local paper order only. Avanza is not touched.")
+            button.label = "Cancel Paper Order"
+            button.variant = "warning"
+        else:
+            self.query_one("#cancel-instructions", Static).update('Type "CANCEL" to cancel this live Avanza order.')
+            button.label = "Cancel Live Order"
+            button.variant = "error"
+        self.query_one("#cancel-modal").display = True
+
+    def close_cancel_modal(self) -> None:
+        self.query_one("#cancel-modal").display = False
+        self.query_one("#cancel-confirm", Input).value = ""
+        self.pending_cancel_target = None
+
+    def handle_cancel_review(self) -> None:
+        target = self.pending_cancel_target
+        if not target:
+            raise ValueError("Select an order to cancel first.")
+        self.write_log("[yellow]Review-only cancel request. No order is cancelled:[/yellow]")
+        self.write_log(self.cancel_summary_text(target).replace("[", "\\[").replace("]", "\\]"))
+
+    def handle_cancel_confirm(self) -> None:
+        target = self.pending_cancel_target
+        if not target:
+            raise ValueError("Select an order to cancel first.")
+        identifier = target.get("id", "")
+        if not identifier:
+            raise ValueError("Selected order has no id.")
+
+        if target.get("mode") == "Paper":
+            paper_order = cancel_paper_order(self.paper_session, identifier)
+            self.save_paper_state()
+            self.record_event("trading", "paper_order_cancel_from_tui", {"order": paper_order})
+            self.write_log(f"[green]Paper order cancelled:[/green] {identifier}")
+            self.close_cancel_modal()
+            return
+
+        if self.input_value("cancel-confirm") != "CANCEL":
+            raise ValueError('Type "CANCEL" before live cancellation.')
+        account_id = target.get("account_id") or self.require_selected_account_id()
+        avanza = self.require_connection()
+        kind = target.get("kind", "")
+        if kind == "Stop-loss":
+            result = avanza.delete_stop_loss_order(account_id, identifier)
+            event_name = "live_stoploss_cancel_from_tui"
+        else:
+            result = avanza.delete_order(account_id, identifier)
+            event_name = "live_order_cancel_from_tui"
+        self.record_event("trading", event_name, {"target": target, "result": result})
+        self.write_log(f"[green]Live {kind.lower()} cancellation sent:[/green] {identifier}")
+        self.close_cancel_modal()
+        self.refresh_stoplosses()
 
     def handle_order_search(self) -> None:
         query = self.input_value("order-search")
