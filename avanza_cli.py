@@ -32,6 +32,8 @@ PRICE_TYPE_CHOICES = ["monetary", "percentage"]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
 LIVE_REFRESH_SECONDS = 5.0
 CHANGED_CELL_STYLE = "#d7ba7d"
+POSITIVE_CELL_STYLE = "#7fbf8f"
+NEGATIVE_CELL_STYLE = "#d98f8f"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 
 
@@ -287,10 +289,19 @@ def changed_position_row(
     cells: list[Any] = []
     for index, value in enumerate(current):
         if index in POSITION_CHANGE_COLUMNS and value and index < len(previous) and value != previous[index]:
-            cells.append(Text(value, style=CHANGED_CELL_STYLE))
+            cells.append(Text(value, style=change_style(value)))
         else:
             cells.append(value)
     return tuple(cells)
+
+
+def change_style(value: str) -> str:
+    stripped = value.strip()
+    if stripped.startswith("+"):
+        return POSITIVE_CELL_STYLE
+    if stripped.startswith("-"):
+        return NEGATIVE_CELL_STYLE
+    return CHANGED_CELL_STYLE
 
 
 def cash_row(item: dict[str, Any]) -> tuple[str, ...]:

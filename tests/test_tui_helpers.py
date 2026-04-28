@@ -5,6 +5,7 @@ from avanza_cli import (
     amount,
     cash_row,
     changed_position_row,
+    change_style,
     matches_account,
     position_state_row,
     position_holding_label,
@@ -162,9 +163,15 @@ def test_changed_position_row_styles_only_changed_numeric_cells():
     assert str(row[3]) == "1100 SEK"
     assert row[3].style
     assert str(row[5]) == "+1.25%"
-    assert row[5].style
+    assert str(row[5].style) == "#7fbf8f"
     assert str(row[8]) == "+200.00 SEK"
-    assert row[8].style
+    assert str(row[8].style) == "#7fbf8f"
+
+
+def test_change_style_is_directional_and_muted():
+    assert change_style("+1.25%") == "#7fbf8f"
+    assert change_style("-1.25%") == "#d98f8f"
+    assert change_style("1100 SEK") == "#d7ba7d"
 
 
 def test_stoploss_holding_options_show_owned_volume():

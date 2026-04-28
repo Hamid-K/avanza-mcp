@@ -14,4 +14,5 @@
 - Added TUI resize handling so layout and selected-account data refresh after terminal size changes.
 - Added gentle per-cell highlighting for changed live position metrics instead of highlighting entire rows.
 - Added a searchable stop-loss holding selector populated from the selected account portfolio, with owned share counts and automatic volume prefill.
+- Made live position cell highlights directional: muted green for positive changes and muted red for negative changes.
 - Added project documentation, packaging metadata, and tests.
