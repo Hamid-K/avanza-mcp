@@ -60,11 +60,11 @@ python avanza_cli.py stoploss set \
   --order-book-id ORDER_BOOK_ID \
   --trigger-type follow-upwards \
   --trigger-value 5 \
-  --trigger-value-type percentage \
+  --trigger-value-type % \
   --valid-until 2026-05-28 \
   --order-type sell \
   --order-price 1 \
-  --order-price-type percentage \
+  --order-price-type % \
   --volume 10
 ```
 
@@ -90,8 +90,8 @@ python avanza_cli.py tui
 
 The TUI masks password and TOTP inputs, clears those fields after a successful login, and hides the login screen. Use `Dry Run` first and review the request in the log panel.
 
-After login, use the account selector in the top bar to switch accounts. The main table shows the selected account's stock/share positions with day movement and profit state. The lower table shows stop-losses and open orders for the selected account. Position and order state refreshes live every 5 seconds.
+After login, the largest account by total value is selected by default. Use the wider account selector in the top bar to switch accounts; the right side shows total value, buying power, status, and the current portfolio profit summary. The main table shows the selected account's stock/share positions with day movement and profit state. The lower table shows stop-losses and open orders for the selected account, with trigger and price values labeled as `SEK` or `%`. Drag the divider between the two tables to resize the panes. Position and order state refreshes live every 5 seconds.
 
 ## Safety
 
-This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of percentage and gliding stop-loss fields with very small size before trusting it for meaningful orders.
+This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of `%` and gliding stop-loss fields with very small size before trusting it for meaningful orders.

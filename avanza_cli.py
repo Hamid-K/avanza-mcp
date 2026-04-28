@@ -28,13 +28,23 @@ TRIGGER_TYPE_CHOICES = [
     "follow-upwards",
     "follow-downwards",
 ]
-PRICE_TYPE_CHOICES = ["monetary", "percentage"]
+PRICE_TYPE_ALIASES = {
+    "monetary": "monetary",
+    "sek": "monetary",
+    "currency": "monetary",
+    "percentage": "percentage",
+    "percent": "percentage",
+    "%": "percentage",
+}
+PRICE_TYPE_SELECT_OPTIONS = [("SEK", "monetary"), ("%", "percentage")]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
 LIVE_REFRESH_SECONDS = 5.0
 CHANGED_CELL_STYLE = "#d7ba7d"
 POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
+MIN_PANE_WEIGHT = 1
+MAX_PANE_WEIGHT = 8
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -62,6 +72,38 @@ def connect(args: argparse.Namespace) -> Avanza:
     return Avanza(prompt_credentials(args.username))
 
 
+def clamp(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, value))
+
+
+def pane_weights_after_drag(
+    start_positions_weight: int,
+    start_activity_weight: int,
+    delta_rows: int,
+) -> tuple[int, int]:
+    positions_weight = clamp(start_positions_weight + delta_rows, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
+    activity_weight = clamp(start_activity_weight - delta_rows, MIN_PANE_WEIGHT, MAX_PANE_WEIGHT)
+    return positions_weight, activity_weight
+
+
+def price_type_label(value: Any) -> str:
+    normalized = str(value).lower()
+    if normalized == "percentage":
+        return "%"
+    if normalized == "monetary":
+        return "SEK"
+    return str(value)
+
+
+def formatted_typed_value(value: Any, value_type: Any) -> str:
+    label = price_type_label(value_type)
+    if label == "%":
+        return f"{value}%"
+    if label == "SEK":
+        return f"{value} SEK"
+    return f"{value} {label}".strip()
+
+
 def render_table(title: str, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
     table = Table(title=title, show_lines=False)
     for column in columns:
@@ -83,9 +125,9 @@ def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
     return [
         f"Account: {preview['account_id']}",
         f"Order book: {preview['order_book_id']}",
-        f"Trigger: {trigger['type']} {trigger['value']} {trigger['value_type']}",
+        f"Trigger: {trigger['type']} {formatted_typed_value(trigger['value'], trigger['value_type'])}",
         f"Trigger valid until: {trigger['valid_until']}",
-        f"Order: {order_event['type']} {order_event['volume']} @ {order_event['price']} {order_event['price_type']}",
+        f"Order: {order_event['type']} {order_event['volume']} @ {formatted_typed_value(order_event['price'], order_event['price_type'])}",
         f"Order valid days after trigger: {order_event['valid_days']}",
     ]
 
@@ -113,6 +155,14 @@ def parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("Use YYYY-MM-DD format.") from exc
+
+
+def parse_price_type(value: str) -> str:
+    normalized = value.strip().lower()
+    try:
+        return PRICE_TYPE_ALIASES[normalized]
+    except KeyError as exc:
+        raise argparse.ArgumentTypeError("Use SEK for an absolute value or % for a relative value.") from exc
 
 
 def enum_value(enum_class: Any, value: str) -> Any:
@@ -165,6 +215,16 @@ def account_rows_from_overview(overview: dict[str, Any]) -> list[dict[str, Any]]
     return [account for account in accounts if isinstance(account, dict) and account.get("id")]
 
 
+def account_sort_value(account: dict[str, Any]) -> float:
+    return value_number(account, "totalValue") or 0.0
+
+
+def default_account(accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not accounts:
+        return None
+    return max(accounts, key=account_sort_value)
+
+
 def account_id_for_item(item: dict[str, Any]) -> str:
     return str(nested_value(item, "account", "id"))
 
@@ -213,6 +273,78 @@ def money_text(value: float | None, unit: str = "SEK") -> str:
         return ""
     sign = "+" if value > 0 else ""
     return f"{sign}{value:,.2f} {unit}"
+
+
+def metric_style(value: float | None) -> str:
+    if value is None:
+        return "dim"
+    if value > 0:
+        return POSITIVE_CELL_STYLE
+    if value < 0:
+        return NEGATIVE_CELL_STYLE
+    return "dim"
+
+
+def portfolio_profit_summary(data: dict[str, Any], account_id: str | None) -> tuple[float | None, float | None, str]:
+    current_total = 0.0
+    acquired_total = 0.0
+    value_unit = "SEK"
+    found = False
+
+    for section in ("withOrderbook", "withoutOrderbook"):
+        for item in data.get(section, []):
+            if not isinstance(item, dict) or not matches_account(item, account_id):
+                continue
+            current_value = value_number(item, "value")
+            acquired_value = value_number(item, "acquiredValue")
+            if current_value is None or acquired_value is None:
+                continue
+            current_total += current_value
+            acquired_total += acquired_value
+            value_unit = str(nested_value(item, "value", "unit") or value_unit)
+            found = True
+
+    if not found:
+        return None, None, value_unit
+
+    profit_amount = current_total - acquired_total
+    profit_percent = (profit_amount / acquired_total) * 100 if acquired_total else None
+    return profit_amount, profit_percent, value_unit
+
+
+def account_stats_text(
+    account: dict[str, Any],
+    portfolio_data: dict[str, Any] | None = None,
+    account_id: str | None = None,
+) -> Text:
+    text = Text()
+    name = account_display_name(account)
+    account_type = str(account.get("type", ""))
+    account_status = str(account.get("status", ""))
+    label = f"{name} ({account_type})" if account_type else name
+    text.append(label or "Selected account", style="bold")
+
+    total = amount(account, "totalValue") or "-"
+    buying_power = amount(account, "buyingPower") or "-"
+    text.append("  Total ", style="dim")
+    text.append(total, style="bold")
+    text.append("  Buying ", style="dim")
+    text.append(buying_power)
+
+    if portfolio_data is not None:
+        profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
+        if profit_amount is not None:
+            style = metric_style(profit_amount)
+            text.append("  Profit ", style="dim")
+            text.append(money_text(profit_amount, value_unit), style=style)
+            if profit_percent is not None:
+                text.append(" ")
+                text.append(f"({percent_text(profit_percent)})", style=style)
+
+    if account_status:
+        text.append("  ")
+        text.append(account_status, style="dim")
+    return text
 
 
 def position_state_row(item: dict[str, Any]) -> tuple[str, ...]:
@@ -321,6 +453,8 @@ def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
 
 def open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
     orderbook = item.get("orderbook") or item.get("instrument") or {}
+    price = item.get("price", "")
+    price_type = item.get("priceType", "") or item.get("price_type", "")
     return (
         "Order",
         str(item.get("id", "") or item.get("orderId", "")),
@@ -329,7 +463,7 @@ def open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(orderbook.get("id", "") or item.get("orderbookId", "")),
         str(item.get("type", "") or item.get("orderType", "")),
         str(item.get("volume", "")),
-        str(item.get("price", "")),
+        formatted_typed_value(price, price_type) if price_type else str(price),
         str(item.get("validUntil", "")),
     )
 
@@ -347,8 +481,8 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(account.get("id", "")),
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "")),
-        f"{trigger.get('type', '')} {trigger.get('value', '')} {trigger.get('valueType', '')}",
-        f"{order.get('type', '')} {order.get('volume', '')} @ {order.get('price', '')} {order.get('priceType', '')}",
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''))}",
         str(trigger.get("validUntil", "")),
     )
 
@@ -364,9 +498,9 @@ def stop_loss_activity_row(item: dict[str, Any]) -> tuple[str, ...]:
         str(item.get("status", "")),
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "")),
-        f"{trigger.get('type', '')} {trigger.get('value', '')} {trigger.get('valueType', '')}",
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
         str(order.get("volume", "")),
-        str(order.get("price", "")),
+        formatted_typed_value(order.get("price", ""), order.get("priceType", "")),
         str(trigger.get("validUntil", "")),
     )
 
@@ -581,7 +715,7 @@ class AvanzaTradingTui(App):
     }
 
     #topbar {
-        height: 2;
+        height: 3;
         padding: 0 1;
         background: $panel;
         border-bottom: solid $primary;
@@ -589,22 +723,21 @@ class AvanzaTradingTui(App):
     }
 
     #app-title {
-        width: 18;
+        width: 10;
         text-style: bold;
     }
 
     #account-select {
-        width: 44;
+        width: 56;
         margin-right: 1;
     }
 
     #selected-account {
         width: 1fr;
-        color: $text-muted;
     }
 
     #live-status {
-        width: 18;
+        width: 10;
         color: $success;
     }
 
@@ -627,7 +760,18 @@ class AvanzaTradingTui(App):
 
     #positions-panel {
         height: 2fr;
-        margin-bottom: 1;
+    }
+
+    #pane-resizer {
+        height: 1;
+        content-align: center middle;
+        color: $text-muted;
+        background: $boost;
+    }
+
+    #pane-resizer:hover {
+        color: $text;
+        background: $primary-darken-3;
     }
 
     #activity-panel {
@@ -727,6 +871,12 @@ class AvanzaTradingTui(App):
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
+        self.positions_pane_weight = 2
+        self.activity_pane_weight = 1
+        self.is_resizing_panes = False
+        self.resize_start_y = 0
+        self.resize_start_positions_weight = self.positions_pane_weight
+        self.resize_start_activity_weight = self.activity_pane_weight
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -757,6 +907,7 @@ class AvanzaTradingTui(App):
                 with Vertical(id="positions-panel"):
                     yield Static("Selected Account Positions", classes="panel")
                     yield DataTable(id="portfolio-table")
+                yield Static("drag to resize", id="pane-resizer")
                 with Vertical(id="activity-panel"):
                     yield Static("Stop-Losses and Open Orders", classes="panel")
                     yield DataTable(id="stoploss-table")
@@ -777,7 +928,7 @@ class AvanzaTradingTui(App):
                 )
                 yield Input(placeholder="Trigger value", id="trigger-value", type="number")
                 yield Select(
-                    [(label, label) for label in PRICE_TYPE_CHOICES],
+                    PRICE_TYPE_SELECT_OPTIONS,
                     value="percentage",
                     allow_blank=False,
                     id="trigger-value-type",
@@ -791,7 +942,7 @@ class AvanzaTradingTui(App):
                 )
                 yield Input(placeholder="Order price", id="order-price", type="number")
                 yield Select(
-                    [(label, label) for label in PRICE_TYPE_CHOICES],
+                    PRICE_TYPE_SELECT_OPTIONS,
                     value="percentage",
                     allow_blank=False,
                     id="order-price-type",
@@ -851,6 +1002,43 @@ class AvanzaTradingTui(App):
         if self.avanza and self.selected_account_id:
             self.call_after_refresh(self.refresh_selected_account_live)
 
+    def apply_pane_weights(self, positions_weight: int, activity_weight: int) -> None:
+        self.positions_pane_weight = positions_weight
+        self.activity_pane_weight = activity_weight
+        self.query_one("#positions-panel").styles.height = f"{positions_weight}fr"
+        self.query_one("#activity-panel").styles.height = f"{activity_weight}fr"
+        self.query_one("#main").refresh(layout=True)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if getattr(event.widget, "id", None) != "pane-resizer":
+            return
+        self.is_resizing_panes = True
+        self.resize_start_y = int(event.screen_y if event.screen_y is not None else event.y)
+        self.resize_start_positions_weight = self.positions_pane_weight
+        self.resize_start_activity_weight = self.activity_pane_weight
+        self.capture_mouse(event.widget)
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not self.is_resizing_panes:
+            return
+        current_y = int(event.screen_y if event.screen_y is not None else event.y)
+        delta_rows = current_y - self.resize_start_y
+        weights = pane_weights_after_drag(
+            self.resize_start_positions_weight,
+            self.resize_start_activity_weight,
+            delta_rows,
+        )
+        self.apply_pane_weights(*weights)
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if not self.is_resizing_panes:
+            return
+        self.is_resizing_panes = False
+        self.capture_mouse(None)
+        event.stop()
+
     def input_value(self, widget_id: str) -> str:
         widget = self.query_one(f"#{widget_id}")
         if isinstance(widget, Input):
@@ -881,14 +1069,22 @@ class AvanzaTradingTui(App):
             raise RuntimeError("Select an account first.")
         return self.selected_account_id
 
+    def update_selected_account_summary(self, portfolio_data: dict[str, Any] | None = None) -> None:
+        account = self.account_by_id(self.selected_account_id) if self.selected_account_id else None
+        if account:
+            self.query_one("#selected-account", Static).update(
+                account_stats_text(account, portfolio_data, self.selected_account_id)
+            )
+        else:
+            self.query_one("#selected-account", Static).update("Selected account: none")
+
     def set_selected_account(self, account: dict[str, Any]) -> None:
         account_id = str(account.get("id", ""))
         if not account_id:
             raise ValueError("Selected account has no id.")
 
         self.selected_account_id = account_id
-        label = f"Selected account: {account_display_name(account)} ({account_id})"
-        self.query_one("#selected-account", Static).update(label)
+        self.update_selected_account_summary()
         account_select = self.query_one("#account-select", Select)
         if account_select.value != account_id:
             account_select.value = account_id
@@ -987,7 +1183,10 @@ class AvanzaTradingTui(App):
 
         self.accounts = account_rows_from_overview(overview)
         account_options = [
-            (f"{account_display_name(account)} ({account.get('type', '')})", str(account.get("id", "")))
+            (
+                f"{account_display_name(account)} ({account.get('type', '')}) - {amount(account, 'totalValue')}",
+                str(account.get("id", "")),
+            )
             for account in self.accounts
         ]
         account_select = self.query_one("#account-select", Select)
@@ -995,7 +1194,9 @@ class AvanzaTradingTui(App):
 
         self.write_log(f"Loaded {len(self.accounts)} account(s).")
         if self.accounts and not self.selected_account_id:
-            self.set_selected_account(self.accounts[0])
+            selected_account = default_account(self.accounts)
+            if selected_account is not None:
+                self.set_selected_account(selected_account)
             account_select.value = self.selected_account_id
 
     def refresh_portfolio(self) -> None:
@@ -1007,6 +1208,7 @@ class AvanzaTradingTui(App):
         if not isinstance(data, dict):
             self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
+        self.update_selected_account_summary(data)
 
         holding_options = stoploss_holding_options(data, self.selected_account_id)
         holding_select = self.query_one("#instrument-select", Select)
@@ -1448,8 +1650,8 @@ def build_parser() -> argparse.ArgumentParser:
               follow-downwards gliding/trailing trigger for short/downward logic
 
             Price/value types:
-              monetary        explicit currency value
-              percentage      percentage offset/value, interpreted by Avanza
+              SEK             explicit currency value
+              %               relative offset/value, interpreted by Avanza
             """
         ),
         epilog=textwrap.dedent(
@@ -1460,11 +1662,11 @@ def build_parser() -> argparse.ArgumentParser:
                 --order-book-id ORDER_BOOK_ID \\
                 --trigger-type follow-upwards \\
                 --trigger-value 5 \\
-                --trigger-value-type percentage \\
+                --trigger-value-type % \\
                 --valid-until 2026-05-28 \\
                 --order-type sell \\
                 --order-price 1 \\
-                --order-price-type percentage \\
+                --order-price-type % \\
                 --volume 10
 
             Add --confirm only after reviewing the dry-run summary.
@@ -1477,12 +1679,24 @@ def build_parser() -> argparse.ArgumentParser:
     stoploss_set.add_argument("--parent-stop-loss-id", metavar="ID", default="0", help="Parent stop-loss id. Default: 0.")
     stoploss_set.add_argument("--trigger-type", choices=TRIGGER_TYPE_CHOICES, required=True, help="Stop-loss trigger behavior.")
     stoploss_set.add_argument("--trigger-value", metavar="VALUE", required=True, type=float, help="Trigger value, interpreted with --trigger-value-type.")
-    stoploss_set.add_argument("--trigger-value-type", choices=PRICE_TYPE_CHOICES, default="monetary", help="How to interpret --trigger-value. Default: monetary.")
+    stoploss_set.add_argument(
+        "--trigger-value-type",
+        metavar="{SEK,%}",
+        type=parse_price_type,
+        default="monetary",
+        help="How to interpret --trigger-value. Use SEK or %%. Default: SEK.",
+    )
     stoploss_set.add_argument("--valid-until", metavar="YYYY-MM-DD", required=True, type=parse_date, help="Last date the trigger remains valid.")
     stoploss_set.add_argument("--trigger-on-market-maker-quote", action="store_true", help="Allow market-maker quote to trigger the stop-loss.")
     stoploss_set.add_argument("--order-type", choices=ORDER_TYPE_CHOICES, default="sell", help="Order side after trigger. Default: sell.")
     stoploss_set.add_argument("--order-price", metavar="VALUE", required=True, type=float, help="Order price or offset, interpreted with --order-price-type.")
-    stoploss_set.add_argument("--order-price-type", choices=PRICE_TYPE_CHOICES, default="monetary", help="How to interpret --order-price. Default: monetary.")
+    stoploss_set.add_argument(
+        "--order-price-type",
+        metavar="{SEK,%}",
+        type=parse_price_type,
+        default="monetary",
+        help="How to interpret --order-price. Use SEK or %%. Default: SEK.",
+    )
     stoploss_set.add_argument("--volume", metavar="QTY", required=True, type=float, help="Number of shares/contracts to include in the triggered order.")
     stoploss_set.add_argument("--order-valid-days", metavar="DAYS", default=1, type=int, help="Triggered order validity in days. Default: 1.")
     stoploss_set.add_argument("--short-selling-allowed", action="store_true", help="Allow short selling for the triggered order.")

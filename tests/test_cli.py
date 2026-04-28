@@ -7,7 +7,7 @@ from textual.geometry import Size
 
 from avanza.constants import OrderType, StopLossPriceType
 
-from avanza_cli import build_parser, enum_value, parse_date, prompt_credentials
+from avanza_cli import build_parser, enum_value, parse_date, parse_price_type, prompt_credentials
 
 
 def test_parse_date_accepts_iso_date():
@@ -22,6 +22,11 @@ def test_parse_date_rejects_non_iso_date():
 def test_enum_value_accepts_hyphenated_names():
     assert enum_value(StopLossPriceType, "percentage") is StopLossPriceType.PERCENTAGE
     assert enum_value(OrderType, "sell") is OrderType.SELL
+
+
+def test_parse_price_type_accepts_percent_symbol():
+    assert parse_price_type("%") == "percentage"
+    assert parse_price_type("SEK") == "monetary"
 
 
 def test_parser_includes_portfolio_commands():
@@ -51,7 +56,7 @@ def test_help_includes_examples_and_safety_notes(capsys):
     assert "Trigger types:" in stoploss_help
     assert "follow-upwards" in stoploss_help
     assert "Gliding sell stop-loss dry-run:" in stoploss_help
-    assert "--trigger-value-type {monetary,percentage}" in stoploss_help
+    assert "--trigger-value-type {SEK,%}" in stoploss_help
 
 
 def test_tui_mounts_headless():
@@ -65,8 +70,12 @@ def test_tui_mounts_headless():
             assert app.query_one("#workspace").display is False
             assert app.query_one("#account-select") is not None
             assert app.query_one("#portfolio-table") is not None
+            assert app.query_one("#pane-resizer") is not None
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-modal").display is False
+            app.apply_pane_weights(3, 2)
+            assert app.positions_pane_weight == 3
+            assert app.activity_pane_weight == 2
 
     asyncio.run(run_app())
 
@@ -83,10 +92,18 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
                 "accounts": [
                     {
                         "id": "acc-1",
-                        "name": {"defaultName": "ISK", "userDefinedName": "Trading"},
+                        "name": {"defaultName": "ISK", "userDefinedName": "Small"},
                         "type": "ISK",
                         "totalValue": {"value": 1000, "unit": "SEK"},
                         "buyingPower": {"value": 250, "unit": "SEK"},
+                        "status": "ACTIVE",
+                    },
+                    {
+                        "id": "acc-2",
+                        "name": {"defaultName": "ISK", "userDefinedName": "Trading"},
+                        "type": "ISK",
+                        "totalValue": {"value": 5000, "unit": "SEK"},
+                        "buyingPower": {"value": 750, "unit": "SEK"},
                         "status": "ACTIVE",
                     }
                 ]
@@ -97,7 +114,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
                 "withOrderbook": [
                     {
                         "id": "pos-1",
-                        "account": {"id": "acc-1"},
+                        "account": {"id": "acc-2"},
                         "instrument": {
                             "name": "Example AB",
                             "orderbook": {"id": "ob-1"},
@@ -138,9 +155,12 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch):
             assert app.query_one("#workspace").display is True
             assert app.query_one("#password").value == ""
             assert app.query_one("#totp").value == ""
-            assert app.selected_account_id == "acc-1"
-            assert "Trading" in str(app.query_one("#selected-account").render())
-            assert app.query_one("#account-select").value == "acc-1"
+            assert app.selected_account_id == "acc-2"
+            summary = str(app.query_one("#selected-account").render())
+            assert "Trading" in summary
+            assert "5,000" in summary or "5000" in summary
+            assert "Profit" in summary
+            assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
             assert app.holding_volumes_by_order_book == {"ob-1": "25.0"}
             assert app.live_refresh_timer is not None
@@ -216,7 +236,7 @@ def test_stoploss_set_dry_run_does_not_require_login(capsys):
             "--trigger-value",
             "5",
             "--trigger-value-type",
-            "percentage",
+            "%",
             "--valid-until",
             "2026-05-28",
             "--order-type",
@@ -224,7 +244,7 @@ def test_stoploss_set_dry_run_does_not_require_login(capsys):
             "--order-price",
             "1",
             "--order-price-type",
-            "percentage",
+            "%",
             "--volume",
             "10",
         ]
@@ -236,5 +256,5 @@ def test_stoploss_set_dry_run_does_not_require_login(capsys):
     assert "Dry Run" in output
     assert "Account: acc-1" in output
     assert "Order book: ob-1" in output
-    assert "Trigger: FOLLOW_UPWARDS 5.0 PERCENTAGE" in output
+    assert "Trigger: FOLLOW_UPWARDS 5.0%" in output
     assert '"account_id"' not in output

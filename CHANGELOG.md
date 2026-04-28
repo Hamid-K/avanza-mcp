@@ -15,4 +15,8 @@
 - Added gentle per-cell highlighting for changed live position metrics instead of highlighting entire rows.
 - Added a searchable stop-loss holding selector populated from the selected account portfolio, with owned share counts and automatic volume prefill.
 - Made live position cell highlights directional: muted green for positive changes and muted red for negative changes.
+- Added a draggable TUI pane divider between positions and stop-loss/open-order tables.
+- Rendered stop-loss relative values as `%` in UI, console output, docs, and help.
+- Widened the TUI account bar, defaulted account selection to the largest account, and added colored account stats.
+- Added explicit `SEK`/`%` units to stop-loss activity prices.
 - Added project documentation, packaging metadata, and tests.

@@ -2,22 +2,38 @@ from avanza_cli import (
     account_display_name,
     account_row,
     account_rows_from_overview,
+    account_stats_text,
     amount,
     cash_row,
     changed_position_row,
     change_style,
+    default_account,
+    formatted_typed_value,
     matches_account,
+    pane_weights_after_drag,
+    portfolio_profit_summary,
     position_state_row,
     position_holding_label,
     position_row,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
+    stop_loss_activity_row,
     stop_loss_row,
 )
 
 
 def test_amount_formats_value_objects():
     assert amount({"value": {"value": 123.45, "unit": "SEK"}}, "value") == "123.45 SEK"
+
+
+def test_formatted_typed_value_uses_percent_symbol():
+    assert formatted_typed_value(5, "PERCENTAGE") == "5%"
+    assert formatted_typed_value(95.5, "MONETARY") == "95.5 SEK"
+
+
+def test_pane_weights_after_drag_changes_relative_sizes():
+    assert pane_weights_after_drag(2, 1, 1) == (3, 1)
+    assert pane_weights_after_drag(2, 3, -1) == (1, 4)
 
 
 def test_account_display_name_prefers_user_defined_name():
@@ -56,6 +72,41 @@ def test_account_rows_from_overview_uses_accounts_list():
     )
 
     assert accounts == [{"id": "acc-1", "name": {"defaultName": "ISK"}}]
+
+
+def test_default_account_uses_largest_total_value():
+    accounts = [
+        {"id": "acc-1", "totalValue": {"value": 1000, "unit": "SEK"}},
+        {"id": "acc-2", "totalValue": {"value": 5000, "unit": "SEK"}},
+    ]
+
+    assert default_account(accounts) == accounts[1]
+
+
+def test_account_stats_text_includes_profit_summary():
+    account = {
+        "name": {"defaultName": "ISK", "userDefinedName": "Trading"},
+        "type": "ISK",
+        "totalValue": {"value": 1100, "unit": "SEK"},
+        "buyingPower": {"value": 100, "unit": "SEK"},
+        "status": "ACTIVE",
+    }
+    positions = {
+        "withOrderbook": [
+            {
+                "account": {"id": "acc-1"},
+                "value": {"value": 1100, "unit": "SEK"},
+                "acquiredValue": {"value": 1000, "unit": "SEK"},
+            }
+        ],
+        "withoutOrderbook": [],
+    }
+
+    assert portfolio_profit_summary(positions, "acc-1") == (100.0, 10.0, "SEK")
+    summary = account_stats_text(account, positions, "acc-1").plain
+    assert "Trading (ISK)" in summary
+    assert "Total 1100 SEK" in summary
+    assert "Profit +100.00 SEK (+10.00%)" in summary
 
 
 def test_matches_account_filters_by_nested_account_id():
@@ -245,7 +296,22 @@ def test_stop_loss_row_extracts_order_data():
         "acc-1",
         "Example AB",
         "ob-1",
-        "FOLLOW_UPWARDS 5 PERCENTAGE",
-        "SELL 10 @ 1 PERCENTAGE",
+        "FOLLOW_UPWARDS 5%",
+        "SELL 10 @ 1%",
         "2026-05-28",
     )
+
+
+def test_stop_loss_activity_row_labels_order_price_type():
+    row = stop_loss_activity_row(
+        {
+            "id": "sl-1",
+            "status": "ACTIVE",
+            "orderbook": {"name": "Example AB", "id": "ob-1"},
+            "trigger": {"type": "FOLLOW_UPWARDS", "value": 5, "valueType": "PERCENTAGE"},
+            "order": {"volume": 10, "price": 1, "priceType": "PERCENTAGE"},
+        }
+    )
+
+    assert row[5] == "FOLLOW_UPWARDS 5%"
+    assert row[7] == "1%"
