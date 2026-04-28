@@ -11,3 +11,5 @@ htmlcov/
 .env.*
 !.env.example
 .avanza_mcp_session.json
+.avanza_paper_session.json
+avanza-cli/logs/

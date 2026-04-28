@@ -31,6 +31,8 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, S
 console = Console()
 HELP_FORMATTER = argparse.RawDescriptionHelpFormatter
 MCP_SESSION_FILE = Path(__file__).with_name(".avanza_mcp_session.json")
+PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
+LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
 TRIGGER_TYPE_CHOICES = [
@@ -71,6 +73,11 @@ DELAYED_KEYS = {
     "delayedQuotes",
     "isDelayedQuote",
 }
+LOG_CATEGORY_FILES = {
+    "app": "app.jsonl",
+    "mcp": "mcp.jsonl",
+    "trading": "trading.jsonl",
+}
 
 
 def prompt_credentials(username: str | None) -> dict[str, str]:
@@ -100,6 +107,42 @@ def connect(args: argparse.Namespace) -> Avanza:
 
 def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
+
+
+def timestamp() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
+def create_session_log_path(kind: str) -> Path:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return LOG_DIR / f"session-{kind}-{stamp}.jsonl"
+
+
+def strip_markup(value: str) -> str:
+    return value.replace("[green]", "").replace("[/green]", "").replace("[yellow]", "").replace("[/yellow]", "").replace("[red]", "").replace("[/red]", "")
+
+
+def summarize_mcp_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        summary: dict[str, Any] = {}
+        for key, value in result.items():
+            if isinstance(value, list):
+                summary[key] = {"count": len(value)}
+            elif isinstance(value, dict):
+                summary[key] = summarize_mcp_result(value)
+            else:
+                summary[key] = value
+        return summary
+    if isinstance(result, list):
+        return {"count": len(result)}
+    return {"value": result}
 
 
 def pane_weights_after_drag(
@@ -728,6 +771,51 @@ def stop_loss_activity_row(item: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def active_stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
+    orderbook = item.get("orderbook") or {}
+    trigger = item.get("trigger") or {}
+    order = item.get("order") or {}
+    return (
+        "Live",
+        "Stop-loss",
+        str(orderbook.get("name", "")),
+        str(order.get("type", "")),
+        str(order.get("volume", "")),
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        str(item.get("status", "")),
+    )
+
+
+def active_open_order_row(item: dict[str, Any]) -> tuple[str, ...]:
+    orderbook = item.get("orderbook") or item.get("instrument") or {}
+    price = item.get("price", "")
+    price_type = item.get("priceType", "") or item.get("price_type", "")
+    return (
+        "Live",
+        "Order",
+        str(orderbook.get("name", "")),
+        str(item.get("type", "") or item.get("orderType", "")),
+        str(item.get("volume", "")),
+        formatted_typed_value(price, price_type) if price_type else str(price),
+        str(item.get("status", "")),
+    )
+
+
+def active_paper_order_row(item: dict[str, Any]) -> tuple[str, ...]:
+    request = item.get("request") or {}
+    trigger = request.get("stop_loss_trigger") or {}
+    order = request.get("stop_loss_order_event") or {}
+    return (
+        "Paper",
+        str(item.get("kind", "Stop-loss")),
+        str(item.get("instrument", "") or request.get("order_book_id", "")),
+        str(order.get("type", "")),
+        str(order.get("volume", "")),
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('value_type', ''))}",
+        str(item.get("status", "")),
+    )
+
+
 def stop_loss_request_log_lines(preview: dict[str, Any]) -> list[str]:
     return [line.replace("[", "\\[").replace("]", "\\]") for line in format_stop_loss_request(preview)]
 
@@ -946,6 +1034,94 @@ def render_stoplosses(stoplosses: Any) -> None:
     )
 
 
+def empty_paper_session() -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    return {
+        "version": 1,
+        "created_at": now,
+        "updated_at": now,
+        "orders": [],
+        "events": [],
+    }
+
+
+def load_paper_session(path: Path | None = None) -> dict[str, Any]:
+    path = path or PAPER_SESSION_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return empty_paper_session()
+    if not isinstance(data, dict):
+        return empty_paper_session()
+    data.setdefault("version", 1)
+    data.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
+    data.setdefault("updated_at", data["created_at"])
+    data.setdefault("orders", [])
+    data.setdefault("events", [])
+    if not isinstance(data["orders"], list):
+        data["orders"] = []
+    if not isinstance(data["events"], list):
+        data["events"] = []
+    return data
+
+
+def save_paper_session(session: dict[str, Any], path: Path | None = None) -> None:
+    path = path or PAPER_SESSION_FILE
+    session["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(session, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def append_paper_event(session: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
+    events = session.setdefault("events", [])
+    events.append(
+        {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "type": event_type,
+            "payload": payload,
+        }
+    )
+
+
+def paper_orders(session: dict[str, Any], account_id: str | None = None, active_only: bool = False) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in session.get("orders", []):
+        if not isinstance(item, dict):
+            continue
+        request = item.get("request") if isinstance(item.get("request"), dict) else {}
+        if account_id and str(request.get("account_id", "")) != account_id:
+            continue
+        if active_only and str(item.get("status", "")).upper() not in {"ACTIVE", "PENDING"}:
+            continue
+        rows.append(item)
+    return rows
+
+
+def create_paper_stop_loss_order(args: dict[str, Any], instrument: str = "") -> dict[str, Any]:
+    _, _, preview = build_stop_loss_preview(args)
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    return {
+        "id": f"paper-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        "kind": "Stop-loss",
+        "status": "ACTIVE",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "instrument": instrument,
+        "request": preview,
+    }
+
+
+def cancel_paper_order(session: dict[str, Any], paper_order_id: str) -> dict[str, Any]:
+    for item in session.get("orders", []):
+        if isinstance(item, dict) and str(item.get("id", "")) == paper_order_id:
+            item["status"] = "CANCELLED"
+            item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            append_paper_event(session, "paper_cancel", {"id": paper_order_id})
+            return item
+    raise ValueError(f"Unknown paper order id: {paper_order_id}")
+
+
 class PaneResizer(Static):
     def __init__(self) -> None:
         super().__init__("drag to resize", id="pane-resizer")
@@ -1001,6 +1177,15 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_live_snapshot",
+        "description": "Read a decision-ready snapshot for polling loops: positions, live stop-losses/orders, paper orders, and safety mode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_search_stock",
         "description": "Search Avanza stock/order book data by name, ticker, or ISIN.",
         "inputSchema": {
@@ -1010,6 +1195,60 @@ MCP_TOOLS = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
             },
             "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_stoploss_set",
+        "description": "Create a local paper stop-loss order. This never places an Avanza order and is allowed in MCP read-only mode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_book_id": {"type": "string"},
+                "instrument": {"type": "string"},
+                "trigger_type": {"type": "string"},
+                "trigger_value": {"type": "number"},
+                "trigger_value_type": {"type": "string", "default": "%"},
+                "valid_until": {"type": "string"},
+                "order_type": {"type": "string", "default": "sell"},
+                "order_price": {"type": "number"},
+                "order_price_type": {"type": "string", "default": "%"},
+                "volume": {"type": "number"},
+                "order_valid_days": {"type": "integer", "default": 1},
+                "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
+                "short_selling_allowed": {"type": "boolean", "default": False},
+            },
+            "required": [
+                "account_id",
+                "order_book_id",
+                "trigger_value",
+                "valid_until",
+                "order_price",
+                "volume",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_orders",
+        "description": "List local paper-trading orders and events for the selected account, or a supplied account_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "active_only": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_cancel",
+        "description": "Cancel a local paper order. This never changes Avanza and is allowed in MCP read-only mode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"paper_order_id": {"type": "string"}},
+            "required": ["paper_order_id"],
             "additionalProperties": False,
         },
     },
@@ -1245,7 +1484,22 @@ class AvanzaTradingTui(App):
 
     #main {
         height: 1fr;
+        width: 1fr;
         padding: 1;
+    }
+
+    #body {
+        height: 1fr;
+    }
+
+    #active-trades-panel {
+        width: 42;
+        height: 1fr;
+        padding: 1 1 1 0;
+    }
+
+    #active-trades-table {
+        height: 1fr;
     }
 
     .panel {
@@ -1394,12 +1648,25 @@ class AvanzaTradingTui(App):
         self.mcp_thread: threading.Thread | None = None
         self.mcp_token: str | None = None
         self.mcp_write_enabled = False
+        self.paper_session_path = PAPER_SESSION_FILE
+        self.paper_session = load_paper_session(self.paper_session_path)
+        self.session_log_path = create_session_log_path("tui")
+        self.latest_stoploss_items: list[dict[str, Any]] = []
+        self.latest_open_order_items: list[dict[str, Any]] = []
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.is_resizing_panes = False
         self.resize_start_y = 0
         self.resize_start_positions_weight = self.positions_pane_weight
         self.resize_start_activity_weight = self.activity_pane_weight
+        self.record_event(
+            "app",
+            "tui_start",
+            {
+                "session_log": str(self.session_log_path),
+                "paper_session_file": str(self.paper_session_path),
+            },
+        )
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -1435,20 +1702,24 @@ class AvanzaTradingTui(App):
                     with Horizontal(id="mcp-write-controls"):
                         yield Static("R/W", id="mcp-write-label")
                         yield Switch(value=False, id="mcp-write-enabled")
-            with Vertical(id="main"):
-                with Vertical(id="positions-panel"):
-                    yield Static("Selected Account Positions", classes="panel")
-                    yield DataTable(id="portfolio-table")
-                yield PaneResizer()
-                with Vertical(id="activity-panel"):
-                    yield Static("Stop-Losses and Open Orders", classes="panel")
-                    yield DataTable(id="stoploss-table")
-                    with Horizontal():
-                        yield Button("Refresh Account", id="refresh-account", variant="primary")
-                        yield Button("Clear Log", id="clear-log")
-                    with Horizontal(id="console-row"):
-                        yield RichLog(id="log", highlight=True, markup=True)
-                        yield RichLog(id="mcp-log", highlight=True, markup=True)
+            with Horizontal(id="body"):
+                with Vertical(id="main"):
+                    with Vertical(id="positions-panel"):
+                        yield Static("Selected Account Positions", classes="panel")
+                        yield DataTable(id="portfolio-table")
+                    yield PaneResizer()
+                    with Vertical(id="activity-panel"):
+                        yield Static("Stop-Losses and Open Orders", classes="panel")
+                        yield DataTable(id="stoploss-table")
+                        with Horizontal():
+                            yield Button("Refresh Account", id="refresh-account", variant="primary")
+                            yield Button("Clear Log", id="clear-log")
+                        with Horizontal(id="console-row"):
+                            yield RichLog(id="log", highlight=True, markup=True)
+                            yield RichLog(id="mcp-log", highlight=True, markup=True)
+                with Vertical(id="active-trades-panel"):
+                    yield Static("Active Trades", classes="panel")
+                    yield DataTable(id="active-trades-table")
             with Vertical(id="stoploss-modal"):
                 yield Static("New Stop-Loss", classes="panel")
                 yield Static("Uses the selected account.", id="stoploss-account-note")
@@ -1524,13 +1795,19 @@ class AvanzaTradingTui(App):
         )
         portfolio_table.cursor_type = "row"
         portfolio_table.zebra_stripes = True
+
+        active_table = self.query_one("#active-trades-table", DataTable)
+        active_table.add_columns("Mode", "Kind", "Instrument", "Side", "Volume", "Trigger/Price", "Status")
+        active_table.cursor_type = "row"
+        active_table.zebra_stripes = True
+
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
 
     def on_resize(self, event: events.Resize) -> None:
         self.last_resize = (event.size.width, event.size.height)
         self.refresh(layout=True)
-        for selector in ("#workspace", "#main", "#portfolio-table", "#stoploss-table"):
+        for selector in ("#workspace", "#main", "#portfolio-table", "#stoploss-table", "#active-trades-table"):
             try:
                 self.query_one(selector).refresh(layout=True)
             except Exception:
@@ -1605,14 +1882,30 @@ class AvanzaTradingTui(App):
         self.query_one("#password", Input).value = ""
         self.query_one("#totp", Input).value = ""
 
+    def record_event(self, category: str, event: str, details: dict[str, Any] | None = None) -> None:
+        record = {
+            "timestamp": timestamp(),
+            "category": category,
+            "event": event,
+            "details": details or {},
+        }
+        append_jsonl(self.session_log_path, record)
+        category_file = LOG_CATEGORY_FILES.get(category)
+        if category_file:
+            append_jsonl(LOG_DIR / category_file, record)
+
     def write_log(self, message: str) -> None:
-        self.query_one("#log", RichLog).write(message)
+        stamped = f"{timestamp()} {message}"
+        self.query_one("#log", RichLog).write(stamped)
+        self.record_event("app", "console", {"message": strip_markup(message)})
 
     def write_mcp_log(self, message: str) -> None:
+        stamped = f"{timestamp()} {message}"
+        self.record_event("mcp", "console", {"message": strip_markup(message)})
         try:
-            self.query_one("#mcp-log", RichLog).write(message)
+            self.query_one("#mcp-log", RichLog).write(stamped)
         except Exception:
-            self.write_log(message)
+            self.write_log(stamped)
 
     def require_connection(self) -> Avanza:
         if self.avanza is None:
@@ -1638,8 +1931,86 @@ class AvanzaTradingTui(App):
             "ok": True,
             "enabled": self.mcp_server is not None,
             "read_write": self.mcp_write_enabled,
+            "paper_trading": True,
             "selected_account_id": self.selected_account_id,
             "accounts_loaded": len(self.accounts),
+            "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+            "paper_session_file": str(self.paper_session_path),
+        }
+
+    def save_paper_state(self) -> None:
+        save_paper_session(self.paper_session, self.paper_session_path)
+        self.update_active_trades_table()
+
+    def active_trade_rows(self) -> list[tuple[str, ...]]:
+        rows: list[tuple[str, ...]] = []
+        rows.extend(active_stop_loss_row(item) for item in self.latest_stoploss_items)
+        rows.extend(active_open_order_row(item) for item in self.latest_open_order_items)
+        rows.extend(active_paper_order_row(item) for item in paper_orders(self.paper_session, self.selected_account_id, active_only=True))
+        return rows
+
+    def update_active_trades_table(self) -> None:
+        try:
+            table = self.query_one("#active-trades-table", DataTable)
+        except Exception:
+            return
+        selected_row_key = selected_table_row_key(table)
+        table.clear()
+        for index, row in enumerate(self.active_trade_rows()):
+            table.add_row(*row, key=f"active-{index}-{row[0]}-{row[1]}-{row[2]}")
+        restore_table_row_selection(table, selected_row_key)
+
+    def portfolio_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+        data = avanza.get_accounts_positions()
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
+        rows = []
+        for section in ("withOrderbook", "withoutOrderbook"):
+            for item in data.get(section, []):
+                if isinstance(item, dict) and matches_account(item, account_id or None):
+                    status = self.realtime_status_for_position(item)
+                    row = list(position_state_row(item, status))
+                    row[-1] = status
+                    rows.append(tuple(row))
+        return {
+            "account_id": account_id or None,
+            "positions": rows_as_dicts(
+                ["Instrument", "Order Book ID", "Volume", "Value", "Avg Price", "Day %", "Day SEK", "Profit %", "Profit", "Real-time"],
+                rows,
+            ),
+        }
+
+    def stoploss_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+        data = avanza.get_all_stop_losses()
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
+        rows = [stop_loss_row(item) for item in data if isinstance(item, dict) and matches_account(item, account_id or None)]
+        return {
+            "account_id": account_id or None,
+            "stoplosses": rows_as_dicts(
+                ["ID", "Status", "Account", "Account ID", "Instrument", "Order Book ID", "Trigger", "Order", "Valid Until"],
+                rows,
+            ),
+        }
+
+    def open_orders_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+        try:
+            data = avanza.get_orders()
+        except Exception:
+            data = []
+        if isinstance(data, dict):
+            items = data.get("orders") or data.get("items") or []
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+        rows = [open_order_row(item) for item in items if isinstance(item, dict) and matches_account(item, account_id or None)]
+        return {
+            "account_id": account_id or None,
+            "orders": rows_as_dicts(
+                ["Kind", "ID", "Status", "Instrument", "Order Book ID", "Side", "Volume", "Price", "Valid Until"],
+                rows,
+            ),
         }
 
     def update_mcp_session_file(self) -> None:
@@ -1688,9 +2059,15 @@ class AvanzaTradingTui(App):
 
     def handle_mcp_tool_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.write_mcp_log(f"← {tool}")
+        self.record_event("mcp", "tool_call", {"tool": tool, "arguments": arguments})
         try:
             result = self.execute_mcp_tool(tool, arguments)
             self.write_mcp_log(f"[green]✓[/green] {tool}")
+            self.record_event(
+                "mcp",
+                "tool_result",
+                {"tool": tool, "ok": True, "summary": summarize_mcp_result(result)},
+            )
             return {
                 "ok": True,
                 "tool": tool,
@@ -1699,6 +2076,7 @@ class AvanzaTradingTui(App):
             }
         except Exception as exc:
             self.write_mcp_log(f"[red]✗ {tool}:[/red] {exc}")
+            self.record_event("mcp", "tool_error", {"tool": tool, "error": str(exc)})
             return {
                 "ok": False,
                 "tool": tool,
@@ -1719,36 +2097,23 @@ class AvanzaTradingTui(App):
             return rows_as_dicts(["ID", "Name", "Type", "Total Value", "Buying Power", "Status"], [account_row(account) for account in accounts])
 
         if tool == "avanza_portfolio":
-            data = avanza.get_accounts_positions()
-            if not isinstance(data, dict):
-                raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
-            rows = []
-            for section in ("withOrderbook", "withoutOrderbook"):
-                for item in data.get(section, []):
-                    if isinstance(item, dict) and matches_account(item, account_id or None):
-                        status = self.realtime_status_for_position(item)
-                        row = list(position_state_row(item, status))
-                        row[-1] = status
-                        rows.append(tuple(row))
-            return {
-                "account_id": account_id or None,
-                "positions": rows_as_dicts(
-                    ["Instrument", "Order Book ID", "Volume", "Value", "Avg Price", "Day %", "Day SEK", "Profit %", "Profit", "Real-time"],
-                    rows,
-                ),
-            }
+            return self.portfolio_snapshot(avanza, account_id)
 
         if tool == "avanza_stoplosses":
-            data = avanza.get_all_stop_losses()
-            if not isinstance(data, list):
-                raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
-            rows = [stop_loss_row(item) for item in data if isinstance(item, dict) and matches_account(item, account_id or None)]
+            return self.stoploss_snapshot(avanza, account_id)
+
+        if tool == "avanza_live_snapshot":
+            account_id = account_id or self.require_selected_account_id()
             return {
-                "account_id": account_id or None,
-                "stoplosses": rows_as_dicts(
-                    ["ID", "Status", "Account", "Account ID", "Instrument", "Order Book ID", "Trigger", "Order", "Valid Until"],
-                    rows,
-                ),
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "account_id": account_id,
+                "read_write": self.mcp_write_enabled,
+                "paper_trading": True,
+                "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+                "portfolio": self.portfolio_snapshot(avanza, account_id),
+                "stoplosses": self.stoploss_snapshot(avanza, account_id),
+                "open_orders": self.open_orders_snapshot(avanza, account_id),
+                "paper_orders": paper_orders(self.paper_session, account_id),
             }
 
         if tool == "avanza_search_stock":
@@ -1780,7 +2145,32 @@ class AvanzaTradingTui(App):
                 stop_loss_trigger=trigger,
                 stop_loss_order_event=order_event,
             )
+            self.record_event("trading", "live_stoploss_set", {"request": preview, "result": result})
             return {"dry_run": False, "request": preview, "result": result}
+
+        if tool == "avanza_paper_stoploss_set":
+            paper_order = create_paper_stop_loss_order(arguments, instrument=str(arguments.get("instrument", "")))
+            self.paper_session.setdefault("orders", []).append(paper_order)
+            append_paper_event(self.paper_session, "paper_stoploss_set", {"id": paper_order["id"], "request": paper_order["request"]})
+            self.save_paper_state()
+            self.record_event("trading", "paper_stoploss_set", {"order": paper_order})
+            return {"paper": True, "order": paper_order}
+
+        if tool == "avanza_paper_orders":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            active_only = bool(arguments.get("active_only", False))
+            return {
+                "paper": True,
+                "account_id": requested_account_id or None,
+                "orders": paper_orders(self.paper_session, requested_account_id or None, active_only),
+                "events": self.paper_session.get("events", []),
+            }
+
+        if tool == "avanza_paper_cancel":
+            paper_order = cancel_paper_order(self.paper_session, str(arguments["paper_order_id"]))
+            self.save_paper_state()
+            self.record_event("trading", "paper_order_cancel", {"order": paper_order})
+            return {"paper": True, "order": paper_order}
 
         if tool == "avanza_stoploss_delete":
             confirmed = bool(arguments.get("confirm", False))
@@ -1791,10 +2181,12 @@ class AvanzaTradingTui(App):
             }
             if not confirmed:
                 return {"dry_run": True, "request": request}
+            result = avanza.delete_stop_loss_order(request["account_id"], request["stop_loss_id"])
+            self.record_event("trading", "live_stoploss_delete", {"request": request, "result": result})
             return {
                 "dry_run": False,
                 "request": request,
-                "result": avanza.delete_stop_loss_order(request["account_id"], request["stop_loss_id"]),
+                "result": result,
             }
 
         raise ValueError(f"Unknown MCP tool: {tool}")
@@ -1885,12 +2277,14 @@ class AvanzaTradingTui(App):
         table.clear()
 
         visible_count = 0
+        self.latest_stoploss_items = []
         data = avanza.get_all_stop_losses()
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
                     if not matches_account(item, self.selected_account_id):
                         continue
+                    self.latest_stoploss_items.append(item)
                     table.add_row(*stop_loss_activity_row(item), key=f"stoploss-{item.get('id', visible_count)}")
                     visible_count += 1
         else:
@@ -1910,15 +2304,18 @@ class AvanzaTradingTui(App):
         else:
             order_items = []
 
+        self.latest_open_order_items = []
         for item in order_items:
             if isinstance(item, dict):
                 if not matches_account(item, self.selected_account_id):
                     continue
+                self.latest_open_order_items.append(item)
                 table.add_row(*open_order_row(item), key=f"order-{item.get('id', order_count)}")
                 order_count += 1
 
         self.reapply_table_sort(table)
         restore_table_row_selection(table, selected_row_key)
+        self.update_active_trades_table()
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
 
@@ -2132,6 +2529,7 @@ class AvanzaTradingTui(App):
             stop_loss_trigger=trigger,
             stop_loss_order_event=order_event,
         )
+        self.record_event("trading", "live_stoploss_set_from_tui", {"request": preview, "result": result})
         if isinstance(result, dict):
             status = result.get("status") or result.get("orderRequestStatus") or "response received"
             identifier = result.get("stoplossOrderId") or result.get("orderId") or ""

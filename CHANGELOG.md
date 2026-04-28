@@ -28,4 +28,8 @@
 - Registered `avanza_cli` with Codex MCP config while preserving existing MCP servers, and documented ChatGPT's remote-MCP limitation.
 - Split the TUI top bar into separate account and action rows so account stats, buttons, and MCP switches do not crowd or clip each other.
 - Hardened MCP stdio startup so Codex can initialize and list tools even before the authenticated TUI session file exists.
+- Added MCP live snapshots for polling-based auto-trading loops.
+- Added read-only-safe paper stop-loss tools with persisted local paper session state.
+- Added a right-side TUI Active Trades panel for live and paper orders.
+- Added timestamped JSONL session, app, MCP, and trading logs under `avanza-cli/logs/`.
 - Added project documentation, packaging metadata, and tests.

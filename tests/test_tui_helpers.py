@@ -9,10 +9,13 @@ from avanza_cli import (
     cash_row,
     changed_position_row,
     change_style,
+    create_paper_stop_loss_order,
     default_account,
     formatted_typed_value,
+    load_paper_session,
     matches_account,
     pane_weights_after_drag,
+    paper_orders,
     portfolio_profit_summary,
     position_state_row,
     position_holding_label,
@@ -25,8 +28,10 @@ from avanza_cli import (
     realtime_status,
     realtime_status_badge,
     sortable_cell_value,
+    save_paper_session,
     stoploss_holding_options,
     stoploss_volume_by_order_book,
+    active_paper_order_row,
     stop_loss_activity_row,
     stop_loss_row,
     write_mcp_message,
@@ -396,3 +401,36 @@ def test_stop_loss_activity_row_labels_order_price_type():
 
     assert row[5] == "FOLLOW_UPWARDS 5%"
     assert row[7] == "1%"
+
+
+def test_paper_session_round_trip_and_active_row(tmp_path):
+    path = tmp_path / "paper.json"
+    session = load_paper_session(path)
+    order = create_paper_stop_loss_order(
+        {
+            "account_id": "acc-1",
+            "order_book_id": "ob-1",
+            "trigger_value": 5,
+            "trigger_value_type": "%",
+            "valid_until": "2026-05-28",
+            "order_price": 1,
+            "order_price_type": "%",
+            "volume": 10,
+        },
+        instrument="Example AB",
+    )
+    session["orders"].append(order)
+    save_paper_session(session, path)
+
+    loaded = load_paper_session(path)
+
+    assert paper_orders(loaded, "acc-1", active_only=True)[0]["id"] == order["id"]
+    assert active_paper_order_row(order) == (
+        "Paper",
+        "Stop-loss",
+        "Example AB",
+        "SELL",
+        "10.0",
+        "FOLLOW_UPWARDS 5.0%",
+        "ACTIVE",
+    )

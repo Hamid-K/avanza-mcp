@@ -74,3 +74,23 @@ python avanza_cli.py mcp
 The MCP proxy exposes account, portfolio, stop-loss, and stock-search tools. MCP starts read-only. To allow live stop-loss placement or deletion, enable the TUI `R/W` switch and require the MCP tool call to include `confirm: true`. Dry-run stop-loss previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
 
 Codex and Codex CLI can run this local stdio MCP command from `~/.codex/config.toml`. ChatGPT developer mode supports remote MCP apps/connectors over SSE or streaming HTTP; it does not currently connect directly to local stdio MCP servers. To use this from ChatGPT, expose a remote streaming HTTP/SSE MCP server with appropriate authentication instead of the local `python avanza_cli.py mcp` proxy.
+
+For live monitoring loops, poll `avanza_live_snapshot` no faster than the TUI refresh interval. The snapshot includes positions, stop-losses, open orders, paper orders, safety mode, and `poll_interval_seconds`. MCP does not push unsolicited events to Codex; polling keeps sequencing explicit and auditable.
+
+Paper trading tools are available even while MCP is read-only:
+
+- `avanza_paper_stoploss_set` creates a local paper stop-loss.
+- `avanza_paper_orders` lists the local paper session.
+- `avanza_paper_cancel` cancels a local paper order.
+
+Paper tools never call Avanza mutation endpoints. State is stored in `.avanza_paper_session.json`, which is ignored by git.
+
+## Logs
+
+Every TUI run creates a timestamped JSONL session log under `avanza-cli/logs/`. Persistent category logs are kept next to it:
+
+- `app.jsonl` for TUI and console activity.
+- `mcp.jsonl` for MCP tool calls and results.
+- `trading.jsonl` for live and paper stop-loss/order changes.
+
+The lower-right MCP console also shows timestamped MCP activity while the TUI is running.

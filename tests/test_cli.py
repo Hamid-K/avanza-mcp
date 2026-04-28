@@ -28,6 +28,12 @@ from avanza_cli import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_runtime_files(monkeypatch, tmp_path):
+    monkeypatch.setattr("avanza_cli.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr("avanza_cli.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
+
+
 def test_parse_date_accepts_iso_date():
     assert parse_date("2026-05-28").isoformat() == "2026-05-28"
 
@@ -93,6 +99,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#action-row") is not None
             assert app.query_one("#account-select") is not None
             assert app.query_one("#portfolio-table") is not None
+            assert app.query_one("#active-trades-table") is not None
             assert app.query_one("#mcp-controls") is not None
             assert app.query_one("#mcp-write-controls") is not None
             assert app.query_one("#mcp-enabled") is not None
@@ -231,6 +238,31 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 },
             )
             assert dry_run["dry_run"] is True
+            snapshot = app.execute_mcp_tool("avanza_live_snapshot", {})
+            assert snapshot["poll_interval_seconds"] == 5.0
+            assert snapshot["portfolio"]["positions"][0]["Instrument"] == "Example AB"
+            paper_order = app.execute_mcp_tool(
+                "avanza_paper_stoploss_set",
+                {
+                    "account_id": "acc-2",
+                    "order_book_id": "ob-1",
+                    "instrument": "Example AB",
+                    "trigger_value": 5,
+                    "trigger_value_type": "%",
+                    "valid_until": "2026-05-28",
+                    "order_price": 1,
+                    "order_price_type": "%",
+                    "volume": 10,
+                },
+            )
+            assert paper_order["paper"] is True
+            assert paper_order["order"]["status"] == "ACTIVE"
+            active_table = app.query_one("#active-trades-table", DataTable)
+            assert active_table.row_count == 1
+            paper_orders = app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})
+            assert len(paper_orders["orders"]) == 1
+            cancelled = app.execute_mcp_tool("avanza_paper_cancel", {"paper_order_id": paper_order["order"]["id"]})
+            assert cancelled["order"]["status"] == "CANCELLED"
             with pytest.raises(PermissionError):
                 app.execute_mcp_tool(
                     "avanza_stoploss_delete",
@@ -305,6 +337,8 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
 
     assert initialize["result"]["serverInfo"]["name"] == "avanza_cli"
     assert any(tool["name"] == "avanza_status" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_paper_stoploss_set" for tool in tools["result"]["tools"])
 
 
 def test_tui_sorts_table_when_header_is_clicked():
