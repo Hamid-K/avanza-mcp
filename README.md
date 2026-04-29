@@ -18,6 +18,14 @@ The current TOTP code is passed to `avanza-api` as `totpToken`, which is the fie
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+chmod +x scripts/verify.sh .githooks/pre-commit .githooks/pre-push
+git config core.hooksPath .githooks
+```
+
+Run the full quality gate at any time:
+
+```bash
+scripts/verify.sh
 ```
 
 ## Commands

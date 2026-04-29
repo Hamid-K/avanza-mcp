@@ -2950,7 +2950,7 @@ class AvanzaTradingTui(App):
             "Valid Until",
             "Cancel",
         )
-        stoploss_table.cursor_type = "row"
+        stoploss_table.cursor_type = "cell"
         stoploss_table.zebra_stripes = True
 
         portfolio_table = self.query_one("#portfolio-table", DataTable)
@@ -2985,7 +2985,7 @@ class AvanzaTradingTui(App):
             "Status",
             "Cancel",
         )
-        active_table.cursor_type = "row"
+        active_table.cursor_type = "cell"
         active_table.zebra_stripes = True
 
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")

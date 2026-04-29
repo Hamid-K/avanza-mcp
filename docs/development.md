@@ -13,9 +13,19 @@ pip install -e ".[dev]"
 ## Test
 
 ```bash
-pytest
-python3 -m py_compile avanza_cli.py
+scripts/verify.sh
 ```
+
+## Mandatory Quality Gates
+
+Install local git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit .githooks/pre-push scripts/verify.sh
+```
+
+After this, both `git commit` and `git push` will fail unless `scripts/verify.sh` passes.
 
 ## Versioning Discipline
 
@@ -24,7 +34,7 @@ Use small commits. A commit should describe one coherent change and include matc
 Before committing:
 
 ```bash
-pytest
+scripts/verify.sh
 git status --short
 git diff --check
 ```

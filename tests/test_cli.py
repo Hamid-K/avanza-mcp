@@ -184,6 +184,8 @@ def test_tui_mounts_headless():
             resizer = app.query_one("#pane-resizer")
             assert resizer.renderable == "─"
             assert app.query_one("#stoploss-table") is not None
+            assert app.query_one("#stoploss-table", DataTable).cursor_type == "cell"
+            assert app.query_one("#active-trades-table", DataTable).cursor_type == "cell"
             assert app.query_one("#stoploss-modal").display is False
             expected_valid_until = max_valid_until_date().isoformat()
             assert app.query_one("#valid-until", Input).value == expected_valid_until
