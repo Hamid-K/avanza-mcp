@@ -36,6 +36,7 @@ PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
+STOPLOSS_ORDER_VALID_DAYS_DEFAULT = int(os.getenv("AVANZA_STOPLOSS_ORDER_VALID_DAYS_DEFAULT", "8"))
 
 TRIGGER_TYPE_CHOICES = [
     "less-or-equal",
@@ -1315,8 +1316,13 @@ def order_request_log_lines(preview: dict[str, Any]) -> list[str]:
 
 def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
     valid_until = args.get("valid_until")
-    if isinstance(valid_until, str):
-        valid_until = date.fromisoformat(valid_until)
+    if valid_until in (None, ""):
+        valid_until = max_valid_until_date()
+    elif isinstance(valid_until, str):
+        try:
+            valid_until = date.fromisoformat(valid_until)
+        except ValueError as exc:
+            raise ValueError("valid_until must be an ISO date string.") from exc
     if not isinstance(valid_until, date):
         raise ValueError("valid_until must be an ISO date string.")
     valid_until = validate_valid_until(valid_until, "valid_until")
@@ -1332,7 +1338,7 @@ def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, Stop
         type=enum_value(OrderType, str(args.get("order_type", "sell"))),
         price=float(args["order_price"]),
         volume=float(args["volume"]),
-        valid_days=int(args.get("order_valid_days", 1)),
+        valid_days=int(args.get("order_valid_days", STOPLOSS_ORDER_VALID_DAYS_DEFAULT)),
         price_type=enum_value(StopLossPriceType, parse_price_type(str(args.get("order_price_type", "SEK")))),
         short_selling_allowed=bool(args.get("short_selling_allowed", False)),
     )
@@ -1971,7 +1977,7 @@ MCP_TOOLS = [
                 "order_price": {"type": "number"},
                 "order_price_type": {"type": "string", "default": "%"},
                 "volume": {"type": "number"},
-                "order_valid_days": {"type": "integer", "default": 1},
+                "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                 "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                 "short_selling_allowed": {"type": "boolean", "default": False},
             },
@@ -1979,7 +1985,6 @@ MCP_TOOLS = [
                 "account_id",
                 "order_book_id",
                 "trigger_value",
-                "valid_until",
                 "order_price",
                 "volume",
             ],
@@ -2043,7 +2048,7 @@ MCP_TOOLS = [
                 "order_price": {"type": "number"},
                 "order_price_type": {"type": "string", "default": "%"},
                 "volume": {"type": "number"},
-                "order_valid_days": {"type": "integer", "default": 1},
+                "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                 "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                 "short_selling_allowed": {"type": "boolean", "default": False},
                 "confirm": {"type": "boolean", "default": False},
@@ -2052,7 +2057,6 @@ MCP_TOOLS = [
                 "account_id",
                 "order_book_id",
                 "trigger_value",
-                "valid_until",
                 "order_price",
                 "volume",
             ],
@@ -2140,7 +2144,7 @@ MCP_TOOLS = [
                 "order_price": {"type": "number"},
                 "order_price_type": {"type": "string", "default": "%"},
                 "volume": {"type": "number"},
-                "order_valid_days": {"type": "integer", "default": 1},
+                "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                 "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                 "short_selling_allowed": {"type": "boolean", "default": False},
                 "confirm": {"type": "boolean", "default": False},
@@ -2150,7 +2154,6 @@ MCP_TOOLS = [
                 "stop_loss_id",
                 "order_book_id",
                 "trigger_value",
-                "valid_until",
                 "order_price",
                 "volume",
             ],
@@ -2878,7 +2881,12 @@ class AvanzaTradingTui(App):
                         allow_blank=False,
                         id="order-price-type",
                     )
-                    yield Input(value="1", placeholder="Order valid days", id="order-valid-days", type="integer")
+                    yield Input(
+                        value=str(STOPLOSS_ORDER_VALID_DAYS_DEFAULT),
+                        placeholder="Order valid days",
+                        id="order-valid-days",
+                        type="integer",
+                    )
                     yield Switch(value=False, id="trigger-on-market-maker-quote")
                     yield Static("Trigger on market-maker quote")
                     yield Switch(value=False, id="short-selling-allowed")
@@ -5061,6 +5069,8 @@ def build_parser() -> argparse.ArgumentParser:
             Price/value types:
               SEK             explicit currency value
               %               relative offset/value, interpreted by Avanza
+
+            If --valid-until is omitted, avanza_cli auto-sets it to the longest allowed date.
             """
         ),
         epilog=textwrap.dedent(
@@ -5072,7 +5082,6 @@ def build_parser() -> argparse.ArgumentParser:
                 --trigger-type follow-upwards \\
                 --trigger-value 5 \\
                 --trigger-value-type % \\
-                --valid-until 2026-05-28 \\
                 --order-type sell \\
                 --order-price 1 \\
                 --order-price-type % \\
@@ -5095,7 +5104,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="monetary",
         help="How to interpret --trigger-value. Use SEK or %%. Default: SEK.",
     )
-    stoploss_set.add_argument("--valid-until", metavar="YYYY-MM-DD", required=True, type=parse_date, help="Last date the trigger remains valid.")
+    stoploss_set.add_argument(
+        "--valid-until",
+        metavar="YYYY-MM-DD",
+        default=max_valid_until_date().isoformat(),
+        type=parse_date,
+        help=f"Last date the trigger remains valid. Default: max allowed ({VALID_UNTIL_MAX_DAYS} days from today).",
+    )
     stoploss_set.add_argument("--trigger-on-market-maker-quote", action="store_true", help="Allow market-maker quote to trigger the stop-loss.")
     stoploss_set.add_argument("--order-type", choices=ORDER_TYPE_CHOICES, default="sell", help="Order side after trigger. Default: sell.")
     stoploss_set.add_argument("--order-price", metavar="VALUE", required=True, type=float, help="Order price or offset, interpreted with --order-price-type.")
@@ -5107,7 +5122,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="How to interpret --order-price. Use SEK or %%. Default: SEK.",
     )
     stoploss_set.add_argument("--volume", metavar="QTY", required=True, type=float, help="Number of shares/contracts to include in the triggered order.")
-    stoploss_set.add_argument("--order-valid-days", metavar="DAYS", default=1, type=int, help="Triggered order validity in days. Default: 1.")
+    stoploss_set.add_argument(
+        "--order-valid-days",
+        metavar="DAYS",
+        default=STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
+        type=int,
+        help=f"Triggered order validity in days. Default: {STOPLOSS_ORDER_VALID_DAYS_DEFAULT}.",
+    )
     stoploss_set.add_argument("--short-selling-allowed", action="store_true", help="Allow short selling for the triggered order.")
     stoploss_set.add_argument("--confirm", action="store_true", help="Actually place the stop-loss. Omit for dry-run.")
     stoploss_set.set_defaults(func=cmd_stoploss_set)

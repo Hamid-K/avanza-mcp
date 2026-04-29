@@ -16,7 +16,9 @@ from avanza.constants import OrderType, StopLossPriceType
 from rich.text import Text
 
 from avanza_cli import (
+    STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
     build_parser,
+    build_stop_loss_preview,
     call_mcp_bridge,
     connect,
     enum_value,
@@ -137,6 +139,35 @@ def test_help_includes_examples_and_safety_notes(capsys):
     assert "follow-upwards" in stoploss_help
     assert "Gliding sell stop-loss dry-run:" in stoploss_help
     assert "--trigger-value-type {SEK,%}" in stoploss_help
+
+
+def test_stoploss_defaults_use_max_valid_until_and_order_valid_days():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "stoploss",
+            "set",
+            "--account-id",
+            "acc-1",
+            "--order-book-id",
+            "ob-1",
+            "--trigger-type",
+            "follow-upwards",
+            "--trigger-value",
+            "5",
+            "--order-price",
+            "1",
+            "--volume",
+            "10",
+        ]
+    )
+
+    assert args.valid_until == max_valid_until_date()
+    assert args.order_valid_days == STOPLOSS_ORDER_VALID_DAYS_DEFAULT
+
+    _, _, preview = build_stop_loss_preview(vars(args))
+    assert preview["stop_loss_trigger"]["valid_until"] == max_valid_until_date().isoformat()
+    assert preview["stop_loss_order_event"]["valid_days"] == STOPLOSS_ORDER_VALID_DAYS_DEFAULT
 
 
 def test_tui_mounts_headless():

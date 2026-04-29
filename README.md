@@ -71,7 +71,6 @@ python avanza_cli.py stoploss set \
   --trigger-type follow-upwards \
   --trigger-value 5 \
   --trigger-value-type % \
-  --valid-until 2026-05-28 \
   --order-type sell \
   --order-price 1 \
   --order-price-type % \
@@ -79,6 +78,7 @@ python avanza_cli.py stoploss set \
 ```
 
 Place the order for real by adding `--confirm` after reviewing the dry-run output.
+If `--valid-until` is omitted, `avanza_cli` automatically uses the longest currently allowed date (today + 90 days).
 
 Delete a stop-loss order dry-run:
 
