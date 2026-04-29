@@ -26,7 +26,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
+from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch, TabbedContent, TabPane
 
 
 console = Console()
@@ -72,6 +72,7 @@ MAX_ACTIVE_TRADES_WIDTH = 110
 MIN_TICKET_PANE_WIDTH = 52
 MAX_TICKET_PANE_WIDTH = 110
 PROFIT_METRIC_MODES = ("day", "week", "month", "year", "total")
+PAPER_ORDER_ACTIVE_STATES = {"ACTIVE", "PENDING"}
 WINDOW_PERFORMANCE_KEYS = {
     "week": ("lastTradingWeekPerformance", "weekPerformance", "oneWeekPerformance", "lastWeekPerformance"),
     "month": ("lastTradingMonthPerformance", "monthPerformance", "oneMonthPerformance", "lastMonthPerformance"),
@@ -1008,6 +1009,36 @@ def position_state_row(item: dict[str, Any], realtime_override: str | None = Non
     )
 
 
+def position_state_row_with_quote(
+    item: dict[str, Any],
+    quote: dict[str, Any] | None,
+    realtime_override: str | None = None,
+) -> tuple[str, ...]:
+    base = list(position_state_row(item, realtime_override))
+    if not quote:
+        return tuple(base)
+
+    last_price = market_quote_last(quote)
+    change_percent = market_quote_change_percent(quote)
+    volume = value_number(item, "volume")
+    acquired_value = value_number(item, "acquiredValue")
+    value_unit = str(nested_value(item, "value", "unit") or "SEK")
+    if last_price is None or volume is None:
+        return tuple(base)
+
+    current_value = last_price * volume
+    day_absolute = current_value * (change_percent / 100.0) if change_percent is not None else None
+    profit_amount = (current_value - acquired_value) if acquired_value is not None else None
+    profit_percent = ((profit_amount / acquired_value) * 100.0) if (profit_amount is not None and acquired_value) else None
+
+    base[3] = money_text(current_value, value_unit)
+    base[5] = percent_text(change_percent)
+    base[6] = money_text(day_absolute, value_unit)
+    base[7] = percent_text(profit_percent)
+    base[8] = money_text(profit_amount, value_unit)
+    return tuple(base)
+
+
 def position_trade_action_row(item: dict[str, Any], realtime_override: str | None = None) -> tuple[Any, ...]:
     row = position_state_row(item, realtime_override)
     return (row[0], trade_action_badge("buy"), trade_action_badge("sell"), *row[1:])
@@ -1674,6 +1705,102 @@ def cancel_paper_order(session: dict[str, Any], paper_order_id: str) -> dict[str
     raise ValueError(f"Unknown paper order id: {paper_order_id}")
 
 
+def scalar_number(value: Any) -> float | None:
+    if isinstance(value, dict):
+        nested = value.get("value")
+        if isinstance(nested, (int, float)):
+            return float(nested)
+        if isinstance(nested, str):
+            try:
+                return float(nested.replace(",", ""))
+            except ValueError:
+                return None
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def first_numeric(payload: Any, paths: tuple[tuple[str, ...], ...]) -> float | None:
+    for path in paths:
+        current = payload
+        for key in path:
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                current = None
+            if current is None:
+                break
+        value = scalar_number(current)
+        if value is not None:
+            return value
+    return None
+
+
+def market_quote_last(payload: dict[str, Any]) -> float | None:
+    return first_numeric(
+        payload,
+        (
+            ("quote", "last"),
+            ("quote", "lastPrice"),
+            ("lastPrice",),
+            ("last",),
+            ("price",),
+            ("orderBook", "quote", "last"),
+            ("orderbook", "quote", "last"),
+        ),
+    )
+
+
+def market_quote_change_percent(payload: dict[str, Any]) -> float | None:
+    return first_numeric(
+        payload,
+        (
+            ("quote", "changePercent"),
+            ("changePercent",),
+            ("quote", "change", "percent"),
+            ("change", "percent"),
+        ),
+    )
+
+
+def paper_order_request(item: dict[str, Any]) -> dict[str, Any]:
+    request = item.get("request")
+    return request if isinstance(request, dict) else {}
+
+
+def paper_order_book_id(item: dict[str, Any]) -> str:
+    request = paper_order_request(item)
+    return str(request.get("order_book_id", ""))
+
+
+def paper_order_is_active(item: dict[str, Any]) -> bool:
+    return str(item.get("status", "")).upper() in PAPER_ORDER_ACTIVE_STATES
+
+
+def paper_order_side(item: dict[str, Any]) -> str:
+    request = paper_order_request(item)
+    kind = str(item.get("kind", ""))
+    if kind == "Order":
+        return str(request.get("order_type", "")).lower()
+    order_event = request.get("stop_loss_order_event") if isinstance(request.get("stop_loss_order_event"), dict) else {}
+    return str(order_event.get("type", "")).lower()
+
+
+def paper_order_volume(item: dict[str, Any]) -> float:
+    request = paper_order_request(item)
+    kind = str(item.get("kind", ""))
+    if kind == "Order":
+        return float(request.get("volume", 0) or 0)
+    order_event = request.get("stop_loss_order_event") if isinstance(request.get("stop_loss_order_event"), dict) else {}
+    return float(order_event.get("volume", 0) or 0)
+
+
 def order_account_id(item: dict[str, Any], fallback: str | None = None) -> str:
     account = item.get("account") if isinstance(item.get("account"), dict) else {}
     return str(
@@ -1799,6 +1926,15 @@ MCP_TOOLS = [
     {
         "name": "avanza_live_snapshot",
         "description": "Read a decision-ready snapshot for polling loops: positions, live stop-losses/orders, paper orders, and safety mode.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_realtime_quotes",
+        "description": "Fetch real-time quote snapshot for selected account holdings (best with a 5s polling loop).",
         "inputSchema": {
             "type": "object",
             "properties": {"account_id": {"type": "string"}},
@@ -1943,6 +2079,23 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_order_edit",
+        "description": "Dry-run or update an existing open order (price/volume/valid_until). Live update requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_id": {"type": "string"},
+                "price": {"type": "number"},
+                "valid_until": {"type": "string"},
+                "volume": {"type": "integer"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "order_id", "price", "valid_until", "volume"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_order_delete",
         "description": "Dry-run or delete a regular open order. Live deletion requires TUI R/W mode and confirm=true.",
         "inputSchema": {
@@ -1967,6 +2120,40 @@ MCP_TOOLS = [
                 "confirm": {"type": "boolean", "default": False},
             },
             "required": ["account_id", "stop_loss_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoploss_replace",
+        "description": "Dry-run or replace an existing stop-loss (delete old + place new). Supports gliding triggers. Live replace requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "stop_loss_id": {"type": "string"},
+                "order_book_id": {"type": "string"},
+                "trigger_type": {"type": "string"},
+                "trigger_value": {"type": "number"},
+                "trigger_value_type": {"type": "string", "default": "%"},
+                "valid_until": {"type": "string"},
+                "order_type": {"type": "string", "default": "sell"},
+                "order_price": {"type": "number"},
+                "order_price_type": {"type": "string", "default": "%"},
+                "volume": {"type": "number"},
+                "order_valid_days": {"type": "integer", "default": 1},
+                "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
+                "short_selling_allowed": {"type": "boolean", "default": False},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": [
+                "account_id",
+                "stop_loss_id",
+                "order_book_id",
+                "trigger_value",
+                "valid_until",
+                "order_price",
+                "volume",
+            ],
             "additionalProperties": False,
         },
     },
@@ -2248,6 +2435,19 @@ class AvanzaTradingTui(App):
         padding: 1;
     }
 
+    #workspace-tabs {
+        height: 1fr;
+    }
+
+    #workspace-tabs Tabs {
+        height: 1;
+    }
+
+    #workspace-tabs TabPane {
+        padding: 0;
+        height: 1fr;
+    }
+
     #body {
         height: 1fr;
     }
@@ -2277,6 +2477,24 @@ class AvanzaTradingTui(App):
     }
 
     #active-trades-table {
+        height: 1fr;
+    }
+
+    #paper-tab-layout {
+        height: 1fr;
+        padding: 1;
+    }
+
+    #paper-summary {
+        height: 3;
+        border: solid $primary;
+        padding: 0 1;
+        background: $boost;
+        margin-bottom: 1;
+    }
+
+    #paper-positions-table,
+    #paper-orders-table {
         height: 1fr;
     }
 
@@ -2522,8 +2740,10 @@ class AvanzaTradingTui(App):
         self.latest_stoploss_items: list[dict[str, Any]] = []
         self.latest_open_order_items: list[dict[str, Any]] = []
         self.portfolio_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
+        self.paper_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.cancel_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.pending_cancel_target: dict[str, str] | None = None
+        self.paper_quote_cache: dict[str, dict[str, Any]] = {}
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.active_trades_width = 42
@@ -3311,6 +3531,7 @@ class AvanzaTradingTui(App):
 
         if tool == "avanza_live_snapshot":
             account_id = account_id or self.require_selected_account_id()
+            realtime_quotes = self.realtime_quotes_snapshot(account_id)
             return {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "account_id": account_id,
@@ -3320,7 +3541,17 @@ class AvanzaTradingTui(App):
                 "portfolio": self.portfolio_snapshot(avanza, account_id),
                 "stoplosses": self.stoploss_snapshot(avanza, account_id),
                 "open_orders": self.open_orders_snapshot(avanza, account_id),
+                "realtime_quotes": realtime_quotes,
                 "paper_orders": paper_orders(self.paper_session, account_id),
+            }
+
+        if tool == "avanza_realtime_quotes":
+            account_id = account_id or self.require_selected_account_id()
+            return {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "account_id": account_id,
+                "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+                "quotes": self.realtime_quotes_snapshot(account_id),
             }
 
         if tool == "avanza_search_stock":
@@ -3372,6 +3603,34 @@ class AvanzaTradingTui(App):
             )
             self.record_event("trading", "live_order_set", {"request": preview, "result": result})
             return {"dry_run": False, "request": preview, "result": result}
+
+        if tool == "avanza_order_edit":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            valid_until = arguments.get("valid_until")
+            if isinstance(valid_until, str):
+                valid_until = date.fromisoformat(valid_until)
+            if not isinstance(valid_until, date):
+                raise ValueError("valid_until must be an ISO date string.")
+            valid_until = validate_valid_until(valid_until, "valid_until")
+            request = {
+                "account_id": str(arguments["account_id"]),
+                "order_id": str(arguments["order_id"]),
+                "price": float(arguments["price"]),
+                "valid_until": valid_until.isoformat(),
+                "volume": int(arguments["volume"]),
+            }
+            if not confirmed:
+                return {"dry_run": True, "request": request}
+            result = avanza.edit_order(
+                order_id=request["order_id"],
+                account_id=request["account_id"],
+                price=request["price"],
+                valid_until=valid_until,
+                volume=request["volume"],
+            )
+            self.record_event("trading", "live_order_edit", {"request": request, "result": result})
+            return {"dry_run": False, "request": request, "result": result}
 
         if tool == "avanza_paper_stoploss_set":
             paper_order = create_paper_stop_loss_order(arguments, instrument=str(arguments.get("instrument", "")))
@@ -3435,10 +3694,92 @@ class AvanzaTradingTui(App):
                 "result": result,
             }
 
+        if tool == "avanza_stoploss_replace":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            stop_loss_id = str(arguments["stop_loss_id"])
+            trigger, order_event, preview = build_stop_loss_preview(arguments)
+            request = {
+                "stop_loss_id": stop_loss_id,
+                "replacement": preview,
+            }
+            if not confirmed:
+                return {"dry_run": True, "summary": format_stop_loss_request(preview), "request": request}
+            delete_result = avanza.delete_stop_loss_order(preview["account_id"], stop_loss_id)
+            place_result = avanza.place_stop_loss_order(
+                parent_stop_loss_id=preview["parent_stop_loss_id"],
+                account_id=preview["account_id"],
+                order_book_id=preview["order_book_id"],
+                stop_loss_trigger=trigger,
+                stop_loss_order_event=order_event,
+            )
+            result = {"delete": delete_result, "place": place_result}
+            self.record_event("trading", "live_stoploss_replace", {"request": request, "result": result})
+            return {"dry_run": False, "request": request, "result": result}
+
         raise ValueError(f"Unknown MCP tool: {tool}")
 
-    def realtime_status_for_position(self, item: dict[str, Any]) -> str:
-        direct_status = realtime_status(item)
+    def quote_payload_for_order_book(self, order_book_id: str) -> dict[str, Any] | None:
+        if not order_book_id:
+            return None
+        avanza = self.require_connection()
+        try:
+            payload = avanza.get_market_data(order_book_id)
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            return payload
+        if hasattr(payload, "model_dump"):
+            try:
+                dumped = payload.model_dump()
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                return dumped
+        if hasattr(payload, "dict"):
+            try:
+                dumped = payload.dict()
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                return dumped
+        return None
+
+    def realtime_quotes_snapshot(self, account_id: str) -> list[dict[str, Any]]:
+        avanza = self.require_connection()
+        positions_data = self.latest_portfolio_data
+        if not isinstance(positions_data, dict):
+            positions_data = avanza.get_accounts_positions()
+            if isinstance(positions_data, dict):
+                self.latest_portfolio_data = positions_data
+        if not isinstance(positions_data, dict):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for section in ("withOrderbook", "withoutOrderbook"):
+            for item in positions_data.get(section, []):
+                if not isinstance(item, dict) or not matches_account(item, account_id or None):
+                    continue
+                order_book_id = position_order_book_id(item)
+                if not order_book_id or order_book_id in seen:
+                    continue
+                seen.add(order_book_id)
+                quote_payload = self.quote_payload_for_order_book(order_book_id) or {}
+                rows.append(
+                    {
+                        "stock": str(nested_value(item, "instrument", "name")),
+                        "order_book_id": order_book_id,
+                        "last": market_quote_last(quote_payload),
+                        "change_percent": market_quote_change_percent(quote_payload),
+                        "realtime_status": self.realtime_status_for_position(item, quote_payload),
+                        "updated_at": datetime.now().isoformat(timespec="seconds"),
+                    }
+                )
+        return rows
+
+    def realtime_status_for_position(self, item: dict[str, Any], quote_payload: dict[str, Any] | None = None) -> str:
+        direct_status = first_known_realtime_status(item, quote_payload or {})
         order_book_id = position_order_book_id(item)
         if not order_book_id:
             return direct_status
@@ -3666,7 +4007,13 @@ class AvanzaTradingTui(App):
                     if not matches_account(item, self.selected_account_id):
                         continue
                     row_key = str(item.get("id", f"{section}-{count}"))
-                    current_row = position_state_row(item, self.realtime_status_for_position(item))
+                    order_book_id = position_order_book_id(item)
+                    quote_payload = self.quote_payload_for_order_book(order_book_id)
+                    current_row = position_state_row_with_quote(
+                        item,
+                        quote_payload,
+                        self.realtime_status_for_position(item, quote_payload),
+                    )
                     previous_row = self.position_row_cache.get(row_key)
                     changed_row = changed_position_row(current_row, previous_row)
                     table.add_row(

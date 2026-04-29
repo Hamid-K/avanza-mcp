@@ -29,6 +29,7 @@ from avanza_cli import (
     read_mcp_message,
     restore_table_row_selection,
     selected_table_row_key,
+    position_state_row_with_quote,
     trade_action_badge,
     write_mcp_message,
 )
@@ -53,6 +54,29 @@ def test_parse_date_rejects_too_far_future_date():
     far_future = (date.today() + timedelta(days=365)).isoformat()
     with pytest.raises(argparse.ArgumentTypeError, match="exceeds Avanza limit"):
         parse_date(far_future)
+
+
+def test_position_state_row_with_quote_overrides_snapshot_values():
+    item = {
+        "instrument": {"name": "Example AB", "orderbook": {"id": "ob-1"}},
+        "volume": {"value": 10, "unit": "st"},
+        "value": {"value": 1000, "unit": "SEK"},
+        "averageAcquiredPrice": {"value": 90, "unit": "SEK"},
+        "acquiredValue": {"value": 900, "unit": "SEK"},
+        "lastTradingDayPerformance": {
+            "relative": {"value": 1, "unit": "%"},
+            "absolute": {"value": 10, "unit": "SEK"},
+        },
+    }
+    quote = {"quote": {"last": 110, "changePercent": 2.5}}
+    row = position_state_row_with_quote(item, quote, "Real-time")
+
+    assert row[0] == "Example AB"
+    assert "1,100.00 SEK" in row[3] or "1100.00 SEK" in row[3]
+    assert row[5] == "+2.50%"
+    assert "22.22%" in row[7]
+    assert isinstance(row[9], Text)
+    assert "●" in row[9].plain
 
 
 def test_enum_value_accepts_hyphenated_names():
@@ -315,6 +339,27 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 }
             ]
 
+        def get_market_data(self, order_book_id):
+            return {"quote": {"last": 41.5, "changePercent": 1.2}}
+
+        def edit_order(self, order_id, account_id, price, valid_until, volume):
+            return {
+                "orderRequestStatus": "SUCCESS",
+                "orderId": order_id,
+                "accountId": account_id,
+                "price": price,
+                "validUntil": valid_until.isoformat(),
+                "volume": volume,
+            }
+
+        def place_stop_loss_order(self, parent_stop_loss_id, account_id, order_book_id, stop_loss_trigger, stop_loss_order_event):
+            return {
+                "status": "SUCCESS",
+                "stoplossOrderId": "sl-new",
+                "accountId": account_id,
+                "orderBookId": order_book_id,
+            }
+
         def delete_stop_loss_order(self, account_id, stop_loss_id):
             return {"deleted": True, "account_id": account_id, "stop_loss_id": stop_loss_id}
 
@@ -380,6 +425,10 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             snapshot = app.execute_mcp_tool("avanza_live_snapshot", {})
             assert snapshot["poll_interval_seconds"] == 5.0
             assert snapshot["portfolio"]["positions"][0]["Stock"] == "Example AB"
+            assert snapshot["realtime_quotes"][0]["order_book_id"] == "ob-1"
+            quotes = app.execute_mcp_tool("avanza_realtime_quotes", {})
+            assert quotes["poll_interval_seconds"] == 5.0
+            assert quotes["quotes"][0]["last"] == 41.5
             paper_order = app.execute_mcp_tool(
                 "avanza_paper_stoploss_set",
                 {
@@ -451,6 +500,18 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "avanza_stoploss_delete",
                     {"account_id": "acc-2", "stop_loss_id": "sl-1", "confirm": True},
                 )
+            with pytest.raises(PermissionError):
+                app.execute_mcp_tool(
+                    "avanza_order_edit",
+                    {
+                        "account_id": "acc-2",
+                        "order_id": "ord-1",
+                        "price": 101,
+                        "valid_until": "2026-05-28",
+                        "volume": 2,
+                        "confirm": True,
+                    },
+                )
             app.mcp_write_enabled = True
             deletion = app.execute_mcp_tool(
                 "avanza_stoploss_delete",
@@ -458,6 +519,55 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             )
             assert deletion["dry_run"] is False
             assert deletion["result"]["deleted"] is True
+            order_edit = app.execute_mcp_tool(
+                "avanza_order_edit",
+                {
+                    "account_id": "acc-2",
+                    "order_id": "ord-1",
+                    "price": 101,
+                    "valid_until": "2026-05-28",
+                    "volume": 2,
+                    "confirm": True,
+                },
+            )
+            assert order_edit["dry_run"] is False
+            assert order_edit["result"]["orderRequestStatus"] == "SUCCESS"
+            stoploss_replace_dry = app.execute_mcp_tool(
+                "avanza_stoploss_replace",
+                {
+                    "account_id": "acc-2",
+                    "stop_loss_id": "sl-1",
+                    "order_book_id": "ob-1",
+                    "trigger_type": "follow-upwards",
+                    "trigger_value": 5,
+                    "trigger_value_type": "%",
+                    "valid_until": "2026-05-28",
+                    "order_type": "sell",
+                    "order_price": 1,
+                    "order_price_type": "%",
+                    "volume": 10,
+                },
+            )
+            assert stoploss_replace_dry["dry_run"] is True
+            stoploss_replace = app.execute_mcp_tool(
+                "avanza_stoploss_replace",
+                {
+                    "account_id": "acc-2",
+                    "stop_loss_id": "sl-1",
+                    "order_book_id": "ob-1",
+                    "trigger_type": "follow-upwards",
+                    "trigger_value": 5,
+                    "trigger_value_type": "%",
+                    "valid_until": "2026-05-28",
+                    "order_type": "sell",
+                    "order_price": 1,
+                    "order_price_type": "%",
+                    "volume": 10,
+                    "confirm": True,
+                },
+            )
+            assert stoploss_replace["dry_run"] is False
+            assert stoploss_replace["result"]["place"]["stoplossOrderId"] == "sl-new"
             app.start_mcp_bridge()
             session = load_mcp_session(tmp_path / "mcp-session.json")
             bridge_status = await asyncio.to_thread(call_mcp_bridge, session, "avanza_status", {})
