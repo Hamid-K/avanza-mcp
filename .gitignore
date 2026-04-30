@@ -10,6 +10,10 @@ htmlcov/
 .env
 .env.*
 !.env.example
+
+# Avanza local runtime state (can contain account/order/session metadata)
 .avanza_mcp_session.json
 .avanza_paper_session.json
+.avanza_*_session.json
 avanza-cli/logs/
+avanza-cli/backups/

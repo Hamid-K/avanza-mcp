@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 - 2026-04-30
+
+- Updated stop-loss defaults to auto-fill maximum allowed `valid_until` (today + 90 days) when omitted.
+- Standardized stop-loss triggered-order `valid_days` default to `8` across CLI, TUI, and MCP schemas.
+- Expanded docs to cover regular order (`orders`) CLI flows and current TUI P/L cycle timeframes (`1D/1W/1M/1Y/Total`).
+- Renamed project metadata/docs title to `Avanza-MCP`.
+- Hardened `.gitignore` for local state and runtime logs that can contain account/order/session metadata.
+
 ## 0.1.0 - 2026-04-28
 
 - Added interactive CLI for account overview, portfolio positions, stock search, and stop-loss management.

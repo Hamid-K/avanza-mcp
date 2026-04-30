@@ -60,8 +60,38 @@ python avanza_cli.py stoploss set \
 
 Add `--confirm` only after reviewing the request.
 If `--valid-until` is omitted, `avanza_cli` auto-fills the longest currently allowed date (today + 90 days).
+If `--order-valid-days` is omitted, `avanza_cli` uses the current Avanza-safe default (`8`).
 
-In the TUI, the largest account by total value is selected after login. The account panel shows total value, buying power, status, and profit in colored metric cards. The P/L metric cycles between `Day P/L` and `Position P/L` when clicked, with SEK and % values colored separately. The top-right panel shows current time with seconds and a weekday OMXS open/close countdown. The stocks table has a distinct header row and includes a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. If the position payload does not include that flag, the TUI resolves it from Avanza market/orderbook/instrument details and caches it per order book for five minutes. The order ticket searches as you type by stock name, ticker, or ISIN, and searched symbols stay selected during live portfolio refreshes. `Review Only` validates and logs the request without creating a paper or live order; the submit button follows the `Paper` tick box. Buy/sell side cells are color-coded green/red. The stop-loss/open-orders list and Active Trades panel include a cancel column; paper cancellation is local, while live Avanza cancellation opens a confirmation ticket that requires typing `CANCEL`. Click any table column header to sort by that column; click the same header again to reverse the order. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and the positions/activity divider, Active Trades divider, and order/stop-loss ticket edge can be dragged to resize panes. Selected table rows are restored after live refreshes when the row still exists.
+In the TUI, the largest account by total value is selected after login. The account panel shows total value, buying power, status, and profit in colored metric cards. The P/L metric cycles through `1D P/L`, `1W P/L`, `1M P/L`, `1Y P/L`, and `Total P/L` when clicked, with SEK and % values colored separately. The top-right panel shows current time with seconds and a weekday OMXS open/close countdown. The stocks table has a distinct header row and includes a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. If the position payload does not include that flag, the TUI resolves it from Avanza market/orderbook/instrument details and caches it per order book for five minutes. The order ticket searches as you type by stock name, ticker, or ISIN, and searched symbols stay selected during live portfolio refreshes. `Review Only` validates and logs the request without creating a paper or live order; the submit button follows the `Paper` tick box. Buy/sell side cells are color-coded green/red. The stop-loss/open-orders list and Active Trades panel include a cancel column; paper cancellation is local, while live Avanza cancellation opens a confirmation ticket that requires typing `CANCEL`. Click any table column header to sort by that column; click the same header again to reverse the order. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and the positions/activity divider, Active Trades divider, and order/stop-loss ticket edge can be dragged to resize panes. Selected table rows are restored after live refreshes when the row still exists.
+
+## Regular Orders
+
+List open orders:
+
+```bash
+python avanza_cli.py orders list
+```
+
+Dry-run a regular buy/sell order:
+
+```bash
+python avanza_cli.py orders set \
+  --account-id ACCOUNT_ID \
+  --order-book-id ORDER_BOOK_ID \
+  --order-type buy \
+  --price 100 \
+  --valid-until 2026-05-28 \
+  --volume 10 \
+  --condition normal
+```
+
+Delete an order:
+
+```bash
+python avanza_cli.py orders delete \
+  --account-id ACCOUNT_ID \
+  --order-id ORDER_ID
+```
 
 ## MCP Mode
 
