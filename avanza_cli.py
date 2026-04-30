@@ -1052,9 +1052,8 @@ def position_order_book_id(item: dict[str, Any]) -> str:
 
 def position_holding_label(item: dict[str, Any]) -> str:
     instrument_name = str(nested_value(item, "instrument", "name"))
-    order_book_id = position_order_book_id(item)
     owned_volume = amount(item, "volume")
-    return f"{instrument_name} - owned {owned_volume} ({order_book_id})"
+    return f"{instrument_name} - owned {owned_volume}"
 
 
 def position_trade_target(item: dict[str, Any]) -> dict[str, str]:
@@ -1087,7 +1086,7 @@ def holding_search_options(positions: dict[str, Any], account_id: str | None, qu
     return [
         (label, order_book_id)
         for label, order_book_id in stoploss_holding_options(positions, account_id)
-        if normalized_query in label.casefold() or normalized_query in order_book_id.casefold()
+        if normalized_query in label.casefold()
     ]
 
 
@@ -1181,10 +1180,8 @@ def open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     price_type = item.get("priceType", "") or item.get("price_type", "")
     return (
         "Order",
-        str(item.get("id", "") or item.get("orderId", "")),
         str(item.get("status", "")),
         str(orderbook.get("name", "")),
-        str(orderbook.get("id", "") or item.get("orderbookId", "")),
         side_badge(item.get("type", "") or item.get("orderType", "")),
         str(item.get("volume", "")),
         formatted_typed_value(price, price_type) if price_type else str(price),
@@ -1194,7 +1191,7 @@ def open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
 
 def open_order_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
     row = open_order_row(item)
-    return (*row[:5], "", *row[5:], cancel_badge())
+    return (*row[:3], "-", *row[3:], cancel_badge())
 
 
 def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
@@ -1204,12 +1201,9 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
     order = item.get("order") or {}
 
     return (
-        str(item.get("id", "")),
         str(item.get("status", "")),
         str(account.get("name", "")),
-        str(account.get("id", "")),
         str(orderbook.get("name", "")),
-        str(orderbook.get("id", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
         f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''))}",
         str(trigger.get("validUntil", "")),
@@ -1223,10 +1217,8 @@ def stop_loss_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
 
     return (
         "Stop-loss",
-        str(item.get("id", "")),
         str(item.get("status", "")),
         str(orderbook.get("name", "")),
-        str(orderbook.get("id", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
         side_badge(order.get("type", "")),
         str(order.get("volume", "")),
@@ -1243,9 +1235,7 @@ def active_stop_loss_row(item: dict[str, Any]) -> tuple[Any, ...]:
     return (
         "Live",
         "Stop-loss",
-        str(item.get("id", "")),
         str(orderbook.get("name", "")),
-        str(orderbook.get("id", "")),
         side_badge(order.get("type", "")),
         str(order.get("volume", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
@@ -1262,9 +1252,7 @@ def active_open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     return (
         "Live",
         "Order",
-        str(item.get("id", "") or item.get("orderId", "")),
         str(orderbook.get("name", "")),
-        str(orderbook.get("id", "") or item.get("orderbookId", "")),
         side_badge(item.get("type", "") or item.get("orderType", "")),
         str(item.get("volume", "")),
         formatted_typed_value(price, price_type) if price_type else str(price),
@@ -1280,9 +1268,7 @@ def active_paper_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
         return (
             "Paper",
             "Order",
-            str(item.get("id", "")),
             str(item.get("instrument", "") or request.get("order_book_id", "")),
-            str(request.get("order_book_id", "")),
             side_badge(request.get("order_type", "")),
             str(request.get("volume", "")),
             f"{request.get('price', '')} SEK {request.get('condition', '')}".strip(),
@@ -1295,9 +1281,7 @@ def active_paper_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
     return (
         "Paper",
         str(item.get("kind", "Stop-loss")),
-        str(item.get("id", "")),
         str(item.get("instrument", "") or request.get("order_book_id", "")),
-        str(request.get("order_book_id", "")),
         side_badge(order.get("type", "")),
         str(order.get("volume", "")),
         f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('value_type', ''))}",
@@ -1533,7 +1517,7 @@ def search_hit_label(hit: dict[str, Any]) -> str:
     order_book_id = search_hit_order_book_id(hit)
 
     parts = [name or order_book_id]
-    meta = [value for value in (ticker, instrument_type, currency, order_book_id) if value]
+    meta = [value for value in (ticker, instrument_type, currency) if value]
     if meta:
         parts.append(f"({' / '.join(meta)})")
     return " ".join(parts)
@@ -1552,7 +1536,6 @@ def render_search_results(results: Any) -> None:
                 hit.get("name", ""),
                 hit.get("tickerSymbol", ""),
                 hit.get("instrumentType", ""),
-                search_hit_order_book_id(hit),
                 hit.get("isin", ""),
                 hit.get("currency", ""),
             )
@@ -1560,7 +1543,7 @@ def render_search_results(results: Any) -> None:
 
     render_table(
         "Search Results",
-        ["Name", "Ticker", "Type", "Order Book ID", "ISIN", "Currency"],
+        ["Name", "Ticker", "Type", "ISIN", "Currency"],
         rows,
     )
 
@@ -1578,12 +1561,9 @@ def render_stoplosses(stoplosses: Any) -> None:
     render_table(
         "Stop-Loss Orders",
         [
-            "ID",
             "Status",
             "Account",
-            "Account ID",
             "Stock",
-            "Order Book ID",
             "Trigger",
             "Order",
             "Valid Until",
@@ -1605,7 +1585,7 @@ def render_orders(orders: Any) -> None:
         return
     render_table(
         "Open Orders",
-        ["Kind", "ID", "Status", "Stock", "Order Book ID", "Side", "Volume", "Price", "Valid Until"],
+        ["Kind", "Status", "Stock", "Side", "Volume", "Price", "Valid Until"],
         rows,
     )
 
@@ -3019,10 +2999,8 @@ class AvanzaTradingTui(App):
         stoploss_table = self.query_one("#stoploss-table", DataTable)
         stoploss_table.add_columns(
             "Kind",
-            "ID",
             "Status",
             "Stock",
-            "Order Book ID",
             "Trigger",
             "Side",
             "Volume",
@@ -3055,9 +3033,7 @@ class AvanzaTradingTui(App):
         active_table.add_columns(
             "Mode",
             "Kind",
-            "ID",
             "Stock",
-            "Order Book ID",
             "Side",
             "Volume",
             "Trigger/Price",
@@ -3557,7 +3533,7 @@ class AvanzaTradingTui(App):
         return {
             "account_id": account_id or None,
             "stoplosses": rows_as_dicts(
-                ["ID", "Status", "Account", "Account ID", "Stock", "Order Book ID", "Trigger", "Order", "Valid Until"],
+                ["Status", "Account", "Stock", "Trigger", "Order", "Valid Until"],
                 rows,
             ),
         }
@@ -3577,7 +3553,7 @@ class AvanzaTradingTui(App):
         return {
             "account_id": account_id or None,
             "orders": rows_as_dicts(
-                ["Kind", "ID", "Status", "Stock", "Order Book ID", "Side", "Volume", "Price", "Valid Until"],
+                ["Kind", "Status", "Stock", "Side", "Volume", "Price", "Valid Until"],
                 rows,
             ),
         }
@@ -4151,7 +4127,7 @@ class AvanzaTradingTui(App):
         except Exception:
             order_price_type = "monetary"
 
-        self.query_one("#stoploss-modal-title", Static).update(f"Edit Stop-Loss {self.pending_stoploss_edit_id}")
+        self.query_one("#stoploss-modal-title", Static).update("Edit Stop-Loss")
         self.query_one("#instrument-select", Select).value = order_book_id
         self.query_one("#volume", Input).value = str(order.get("volume", "") or "")
         self.query_one("#trigger-type", Select).value = str(trigger.get("type", "") or "follow-upwards").lower().replace("_", "-")
@@ -4167,7 +4143,7 @@ class AvanzaTradingTui(App):
         self.query_one("#place-confirm", Input).value = ""
         self.query_one("#place-live", Button).label = "Update Paper Stop-Loss" if self.paper_mode_enabled else "Update Live Stop-Loss"
         self.query_one("#stoploss-modal").display = True
-        self.write_log(f"Editing stop-loss {self.pending_stoploss_edit_id} for {orderbook.get('name', order_book_id)}.")
+        self.write_log(f"Editing stop-loss for {orderbook.get('name', order_book_id)}.")
 
     def refresh_accounts(self) -> None:
         avanza = self.require_connection()
@@ -4458,7 +4434,7 @@ class AvanzaTradingTui(App):
 
     def cancel_summary_text(self, target: dict[str, str]) -> str:
         stock = f" {target['stock']}" if target.get("stock") else ""
-        return f"{target.get('mode', '')} {target.get('kind', '')}{stock}\nID {target.get('id', '')}  Account {target.get('account_id', '')}"
+        return f"{target.get('mode', '')} {target.get('kind', '')}{stock}\nAccount {target.get('account_id', '')}"
 
     def open_cancel_modal(self, target: dict[str, str]) -> None:
         self.pending_cancel_target = target

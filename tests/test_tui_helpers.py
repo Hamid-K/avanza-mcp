@@ -427,9 +427,9 @@ def test_stoploss_holding_options_show_owned_volume():
         "withoutOrderbook": [],
     }
 
-    assert position_holding_label(positions["withOrderbook"][0]) == "Example AB - owned 25 st (ob-1)"
+    assert position_holding_label(positions["withOrderbook"][0]) == "Example AB - owned 25 st"
     assert stoploss_holding_options(positions, "acc-1") == [
-        ("Example AB - owned 25 st (ob-1)", "ob-1")
+        ("Example AB - owned 25 st", "ob-1")
     ]
     assert stoploss_volume_by_order_book(positions, "acc-1") == {"ob-1": "25"}
 
@@ -452,10 +452,10 @@ def test_holding_search_options_finds_owned_stock_case_insensitively():
     }
 
     assert holding_search_options(positions, "acc-1", "broad") == [
-        ("Broadcom - owned 17 st (369636)", "369636")
+        ("Broadcom - owned 17 st", "369636")
     ]
     assert holding_search_options(positions, "acc-1", "BROAD") == [
-        ("Broadcom - owned 17 st (369636)", "369636")
+        ("Broadcom - owned 17 st", "369636")
     ]
 
 
@@ -494,12 +494,9 @@ def test_stop_loss_row_extracts_order_data():
     )
 
     assert row == (
-        "sl-1",
         "ACTIVE",
         "ISK",
-        "acc-1",
         "Example AB",
-        "ob-1",
         "FOLLOW_UPWARDS 5%",
         "SELL 10 @ 1%",
         "2026-05-28",
@@ -517,9 +514,9 @@ def test_stop_loss_activity_row_labels_order_price_type():
         }
     )
 
-    assert row[5] == "FOLLOW_UPWARDS 5%"
-    assert row[6] == side_badge("sell")
-    assert row[8] == "1%"
+    assert row[3] == "FOLLOW_UPWARDS 5%"
+    assert row[4] == side_badge("sell")
+    assert row[6] == "1%"
 
 
 def test_open_order_activity_row_aligns_with_stop_loss_table_columns():
@@ -536,11 +533,11 @@ def test_open_order_activity_row_aligns_with_stop_loss_table_columns():
         }
     )
 
-    assert len(row) == 11
-    assert row[5] == ""
-    assert row[6] == side_badge("buy")
-    assert row[8] == "123 SEK"
-    assert row[10] == cancel_badge()
+    assert len(row) == 9
+    assert row[3] == "-"
+    assert row[4] == side_badge("buy")
+    assert row[6] == "123 SEK"
+    assert row[8] == cancel_badge()
 
 
 def test_paper_session_round_trip_and_active_row(tmp_path):
@@ -568,9 +565,7 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
     assert active_paper_order_row(order) == (
         "Paper",
         "Stop-loss",
-        order["id"],
         "Example AB",
-        "ob-1",
         side_badge("SELL"),
         "10.0",
         "FOLLOW_UPWARDS 5.0%",
@@ -597,9 +592,7 @@ def test_paper_regular_order_active_row():
     assert active_paper_order_row(order) == (
         "Paper",
         "Order",
-        order["id"],
         "Example AB",
-        "ob-1",
         side_badge("BUY"),
         "10",
         "100.0 SEK FILL_AND_KILL",
