@@ -5,15 +5,19 @@ Every meaningful change should be versioned in git and pass tests before it is c
 ## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --dev
+```
+
+If `uv` is missing:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 ## Test
 
 ```bash
-scripts/verify.sh
+uv run scripts/verify.sh
 ```
 
 ## Mandatory Quality Gates
@@ -34,7 +38,7 @@ Use small commits. A commit should describe one coherent change and include matc
 Before committing:
 
 ```bash
-scripts/verify.sh
+uv run scripts/verify.sh
 git status --short
 git diff --check
 ```

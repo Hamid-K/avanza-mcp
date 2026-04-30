@@ -1,5 +1,8 @@
 # Operations
 
+All commands below may be run with `uv run` when using the `uv` workflow.
+Example: `uv run python avanza_cli.py tui`.
+
 ## Login
 
 The tools prompt for:

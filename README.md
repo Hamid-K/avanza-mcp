@@ -22,12 +22,19 @@ The current TOTP code is passed to `avanza-api` as `totpToken`, which is the fie
 ## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync --dev
 chmod +x scripts/verify.sh .githooks/pre-commit .githooks/pre-push
 git config core.hooksPath .githooks
 ```
+
+If `uv` is not installed yet, install it first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Command examples below can be run either inside an activated environment or by prefixing with `uv run`.
+For example: `uv run python avanza_cli.py tui`.
 
 Run the full quality gate at any time:
 
