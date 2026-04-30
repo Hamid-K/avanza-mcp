@@ -19,7 +19,7 @@ Read operations may run after login. Mutating operations must remain explicit:
 
 - dry-run by default where practical
 - live order and stop-loss placement require an explicit confirmation action
-- live edits/replacements/deletions require explicit confirmation
+- live edits/deletions require explicit confirmation
 - MCP starts read-only; the TUI `R/W` switch must be enabled before live MCP mutations are accepted
 - live MCP mutations also require `confirm: true` in the tool arguments
 

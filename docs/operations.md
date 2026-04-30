@@ -141,7 +141,6 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_paper_cancel` | Cancel paper order. |
 | `avanza_stoploss_set` | Dry-run or place stop-loss. |
 | `avanza_stoploss_edit` | Dry-run or edit/replace stop-loss. |
-| `avanza_stoploss_replace` | Dry-run or replace stop-loss. |
 | `avanza_stoploss_delete` | Dry-run or delete stop-loss. |
 | `avanza_order_set` | Dry-run or place regular order. |
 | `avanza_order_edit` | Dry-run or edit regular order. |

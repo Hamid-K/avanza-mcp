@@ -176,7 +176,7 @@ After registration, start/reload Codex or Codex CLI. It will launch:
 python avanza_cli.py mcp
 ```
 
-The MCP proxy forwards tool calls to the authenticated TUI session through the localhost bridge. MCP starts read-only. Enable `Live R/W` in the TUI for live mutations; live stop-loss/order placement, edit, replace, or deletion still requires MCP arguments to include `confirm: true`. MCP activity is shown in the lower-right log console.
+The MCP proxy forwards tool calls to the authenticated TUI session through the localhost bridge. MCP starts read-only. Enable `Live R/W` in the TUI for live mutations; live stop-loss/order placement, edit, or deletion still requires MCP arguments to include `confirm: true`. MCP activity is shown in the lower-right log console.
 
 ### Available MCP Tools
 
@@ -195,7 +195,6 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_paper_cancel` | Cancel a paper order (local only). |
 | `avanza_stoploss_set` | Dry-run or place stop-loss. |
 | `avanza_stoploss_edit` | Dry-run or edit/replace stop-loss (delete + place). |
-| `avanza_stoploss_replace` | Dry-run or replace stop-loss (delete + place). |
 | `avanza_stoploss_delete` | Dry-run or delete stop-loss. |
 | `avanza_order_set` | Dry-run or place regular buy/sell order. |
 | `avanza_order_edit` | Dry-run or edit regular order. |

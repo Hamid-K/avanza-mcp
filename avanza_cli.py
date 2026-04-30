@@ -57,6 +57,7 @@ ORDER_TYPE_CHOICES = ["buy", "sell"]
 ORDER_CONDITION_CHOICES = ["normal", "fill-or-kill", "fill-and-kill"]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
+MCP_HEALTH_CHECK_SECONDS = 5.0
 CHANGED_CELL_STYLE = "#d7ba7d"
 POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
@@ -2153,41 +2154,8 @@ MCP_TOOLS = [
         },
     },
     {
-        "name": "avanza_stoploss_replace",
-        "description": "Dry-run or replace an existing stop-loss (delete old + place new). Supports gliding triggers. Live replace requires TUI R/W mode and confirm=true.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "account_id": {"type": "string"},
-                "stop_loss_id": {"type": "string"},
-                "order_book_id": {"type": "string"},
-                "trigger_type": {"type": "string"},
-                "trigger_value": {"type": "number"},
-                "trigger_value_type": {"type": "string", "default": "%"},
-                "valid_until": {"type": "string"},
-                "order_type": {"type": "string", "default": "sell"},
-                "order_price": {"type": "number"},
-                "order_price_type": {"type": "string", "default": "%"},
-                "volume": {"type": "number"},
-                "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
-                "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
-                "short_selling_allowed": {"type": "boolean", "default": False},
-                "confirm": {"type": "boolean", "default": False},
-            },
-            "required": [
-                "account_id",
-                "stop_loss_id",
-                "order_book_id",
-                "trigger_value",
-                "order_price",
-                "volume",
-            ],
-            "additionalProperties": False,
-        },
-    },
-    {
         "name": "avanza_stoploss_edit",
-        "description": "Dry-run or edit an existing stop-loss (delete old + place new). Alias of avanza_stoploss_replace.",
+        "description": "Dry-run or edit an existing stop-loss (delete old + place new). Supports gliding triggers.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2265,8 +2233,11 @@ class AvanzaMcpRequestHandler(BaseHTTPRequestHandler):
         if not self.authorized():
             self.send_json(401, {"error": "unauthorized"})
             return
-        payload = self.server.app.call_from_thread(self.server.app.mcp_status_payload)
-        self.send_json(200, payload)
+        try:
+            payload = self.server.app.call_from_thread(self.server.app.mcp_status_payload)
+            self.send_json(200, payload)
+        except Exception as exc:
+            self.send_json(500, {"ok": False, "error": str(exc)})
 
     def do_POST(self) -> None:
         if self.path != "/call":
@@ -2810,6 +2781,7 @@ class AvanzaTradingTui(App):
         self.selected_account_id: str | None = None
         self.live_refresh_timer = None
         self.clock_timer = None
+        self.mcp_health_timer = None
         self.order_search_timer = None
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
@@ -3100,6 +3072,8 @@ class AvanzaTradingTui(App):
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
         self.update_clock_status()
         self.start_clock()
+        if self.mcp_health_timer is None:
+            self.mcp_health_timer = self.set_interval(MCP_HEALTH_CHECK_SECONDS, self.ensure_mcp_bridge_health, pause=False)
         self.apply_ticket_pane_width(self.ticket_pane_width)
         self.apply_activity_subpane_weights(self.activity_table_weight, self.activity_logs_weight)
         self.update_mode_toggles()
@@ -3371,8 +3345,12 @@ class AvanzaTradingTui(App):
 
     def write_log(self, message: str) -> None:
         stamped = f"{timestamp()} {message}"
-        self.query_one("#log", RichLog).write(stamped)
         self.record_event("app", "console", {"message": strip_markup(message)})
+        try:
+            self.query_one("#log", RichLog).write(stamped)
+        except Exception:
+            # During shutdown the DOM may already be unmounted.
+            pass
 
     def write_mcp_log(self, message: str) -> None:
         stamped = f"{timestamp()} {message}"
@@ -3380,7 +3358,40 @@ class AvanzaTradingTui(App):
         try:
             self.query_one("#mcp-log", RichLog).write(stamped)
         except Exception:
-            self.write_log(stamped)
+            try:
+                self.query_one("#log", RichLog).write(stamped)
+            except Exception:
+                # During shutdown the DOM may already be unmounted.
+                pass
+
+    def ensure_mcp_bridge_health(self) -> None:
+        if self.mcp_server is None:
+            return
+
+        # If the bridge thread died, restart transparently.
+        if self.mcp_thread is None or not self.mcp_thread.is_alive():
+            self.record_event("mcp", "bridge_thread_dead", {"action": "restart"})
+            self.write_mcp_log("[yellow]MCP bridge thread stopped; restarting.[/yellow]")
+            self.stop_mcp_bridge(announce=False)
+            try:
+                self.start_mcp_bridge()
+                self.update_mode_toggles()
+            except Exception as exc:
+                self.record_event("mcp", "bridge_restart_failed", {"error": str(exc)})
+                self.write_mcp_log(f"[red]MCP bridge restart failed:[/red] {exc}")
+            return
+
+        # If the session file was removed or became stale, restore it.
+        try:
+            host, port = self.mcp_server.server_address
+            expected_url = f"http://{host}:{port}"
+            session = load_mcp_session(MCP_SESSION_FILE)
+            token = str(session.get("token", ""))
+            read_write = bool(session.get("read_write", False))
+            if session.get("url") != expected_url or token != (self.mcp_token or "") or read_write != self.mcp_write_enabled:
+                self.update_mcp_session_file()
+        except Exception:
+            self.update_mcp_session_file()
 
     def require_connection(self) -> Avanza:
         if self.avanza is None:
@@ -3594,17 +3605,28 @@ class AvanzaTradingTui(App):
         self.write_mcp_log(f"[green]MCP enabled[/green] at http://{host}:{port}.")
         self.write_mcp_log(f"Proxy command: python {Path(__file__).name} mcp")
 
-    def stop_mcp_bridge(self) -> None:
+    def stop_mcp_bridge(self, announce: bool = True) -> None:
         if self.mcp_server is None:
             remove_mcp_session_file()
             return
         server = self.mcp_server
+        thread = self.mcp_thread
         self.mcp_server = None
+        self.mcp_thread = None
         self.mcp_token = None
-        server.shutdown()
-        server.server_close()
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=0.5)
         remove_mcp_session_file()
-        self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
+        if announce:
+            self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
 
     def on_unmount(self) -> None:
         if self.order_search_timer is not None:
@@ -3616,7 +3638,10 @@ class AvanzaTradingTui(App):
         if self.clock_timer is not None:
             self.clock_timer.stop()
             self.clock_timer = None
-        self.stop_mcp_bridge()
+        if self.mcp_health_timer is not None:
+            self.mcp_health_timer.stop()
+            self.mcp_health_timer = None
+        self.stop_mcp_bridge(announce=False)
 
     def require_mcp_write(self, confirmed: bool) -> None:
         if not confirmed:
@@ -3839,12 +3864,16 @@ class AvanzaTradingTui(App):
             self.require_mcp_write(confirmed)
             stop_loss_id = str(arguments["stop_loss_id"])
             trigger, order_event, preview = build_stop_loss_preview(arguments)
+            deprecated_alias = tool == "avanza_stoploss_replace"
             request = {
                 "stop_loss_id": stop_loss_id,
                 "replacement": preview,
             }
             if not confirmed:
-                return {"dry_run": True, "summary": format_stop_loss_request(preview), "request": request}
+                payload = {"dry_run": True, "summary": format_stop_loss_request(preview), "request": request}
+                if deprecated_alias:
+                    payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
+                return payload
             delete_result = avanza.delete_stop_loss_order(preview["account_id"], stop_loss_id)
             place_result = avanza.place_stop_loss_order(
                 parent_stop_loss_id=preview["parent_stop_loss_id"],
@@ -3854,8 +3883,15 @@ class AvanzaTradingTui(App):
                 stop_loss_order_event=order_event,
             )
             result = {"delete": delete_result, "place": place_result}
-            self.record_event("trading", "live_stoploss_replace", {"request": request, "result": result})
-            return {"dry_run": False, "request": request, "result": result}
+            self.record_event(
+                "trading",
+                "live_stoploss_edit",
+                {"request": request, "result": result, "used_deprecated_alias": deprecated_alias},
+            )
+            payload = {"dry_run": False, "request": request, "result": result}
+            if deprecated_alias:
+                payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
+            return payload
 
         raise ValueError(f"Unknown MCP tool: {tool}")
 

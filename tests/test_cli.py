@@ -285,7 +285,7 @@ def test_tui_on_unmount_stops_timers(monkeypatch):
     app.order_search_timer = search_timer
     app.live_refresh_timer = live_timer
     app.clock_timer = clock_timer
-    monkeypatch.setattr(app, "stop_mcp_bridge", lambda: None)
+    monkeypatch.setattr(app, "stop_mcp_bridge", lambda announce=True: None)
 
     app.on_unmount()
 
@@ -295,6 +295,72 @@ def test_tui_on_unmount_stops_timers(monkeypatch):
     assert app.order_search_timer is None
     assert app.live_refresh_timer is None
     assert app.clock_timer is None
+
+
+def test_tui_write_logs_tolerate_missing_widgets(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    monkeypatch.setattr(app, "query_one", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("missing")))
+
+    app.write_log("hello")
+    app.write_mcp_log("hello")
+
+
+def test_tui_on_unmount_with_mcp_and_missing_log_widgets(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    class FakeServer:
+        def __init__(self):
+            self.shutdown_called = False
+            self.close_called = False
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+        def server_close(self):
+            self.close_called = True
+
+    class FakeThread:
+        def is_alive(self):
+            return False
+
+    app = AvanzaTradingTui()
+    server = FakeServer()
+    app.mcp_server = server
+    app.mcp_thread = FakeThread()
+    app.mcp_token = "token"
+    monkeypatch.setattr(app, "query_one", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("missing")))
+
+    app.on_unmount()
+
+    assert server.shutdown_called is True
+    assert server.close_called is True
+    assert app.mcp_server is None
+    assert app.mcp_thread is None
+    assert app.mcp_token is None
+
+
+def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test():
+            app.avanza = object()
+            app.start_mcp_bridge()
+            session_path = tmp_path / "mcp-session.json"
+            assert session_path.exists()
+            session_path.unlink()
+            app.ensure_mcp_bridge_health()
+            assert session_path.exists()
+            app.stop_mcp_bridge()
+
+    asyncio.run(run_app())
 
 
 def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
@@ -574,8 +640,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             )
             assert order_edit["dry_run"] is False
             assert order_edit["result"]["orderRequestStatus"] == "SUCCESS"
-            stoploss_replace_dry = app.execute_mcp_tool(
-                "avanza_stoploss_replace",
+            stoploss_edit_dry = app.execute_mcp_tool(
+                "avanza_stoploss_edit",
                 {
                     "account_id": "acc-2",
                     "stop_loss_id": "sl-1",
@@ -590,9 +656,9 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "volume": 10,
                 },
             )
-            assert stoploss_replace_dry["dry_run"] is True
-            stoploss_replace = app.execute_mcp_tool(
-                "avanza_stoploss_replace",
+            assert stoploss_edit_dry["dry_run"] is True
+            stoploss_edit = app.execute_mcp_tool(
+                "avanza_stoploss_edit",
                 {
                     "account_id": "acc-2",
                     "stop_loss_id": "sl-1",
@@ -608,8 +674,26 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "confirm": True,
                 },
             )
-            assert stoploss_replace["dry_run"] is False
-            assert stoploss_replace["result"]["place"]["stoplossOrderId"] == "sl-new"
+            assert stoploss_edit["dry_run"] is False
+            assert stoploss_edit["result"]["place"]["stoplossOrderId"] == "sl-new"
+            stoploss_replace_alias = app.execute_mcp_tool(
+                "avanza_stoploss_replace",
+                {
+                    "account_id": "acc-2",
+                    "stop_loss_id": "sl-1",
+                    "order_book_id": "ob-1",
+                    "trigger_type": "follow-upwards",
+                    "trigger_value": 5,
+                    "trigger_value_type": "%",
+                    "valid_until": "2026-05-28",
+                    "order_type": "sell",
+                    "order_price": 1,
+                    "order_price_type": "%",
+                    "volume": 10,
+                },
+            )
+            assert stoploss_replace_alias["dry_run"] is True
+            assert "deprecated" in stoploss_replace_alias.get("warning", "").lower()
             app.start_mcp_bridge()
             session = load_mcp_session(tmp_path / "mcp-session.json")
             bridge_status = await asyncio.to_thread(call_mcp_bridge, session, "avanza_status", {})
