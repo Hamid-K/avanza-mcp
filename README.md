@@ -1,5 +1,12 @@
 # Avanza-MCP
 
+> [!WARNING]
+> This is an experimental project. Use it at your own risk.
+>
+> Always start in **read-only** mode and **paper trading** mode first. Do not enable live write/trading until you have validated behavior end-to-end in paper mode.
+>
+> Notes below explain what paper trading mode is for and how to use it safely.
+
 Single-script CLI + Textual TUI for Avanza portfolio monitoring, regular buy/sell orders, stop-loss management, MCP integration, and paper trading.
 
 Credentials are prompted at runtime:
