@@ -67,7 +67,7 @@ SELL_SIDE_STYLE = "bold white on #8f2438"
 POSITION_CHANGE_COLUMNS = {2, 3, 4, 5, 6, 7, 8}
 MIN_PANE_WEIGHT = 1
 MAX_PANE_WEIGHT = 8
-PANE_RESIZE_STEP = 0.25
+PANE_RESIZE_STEP = 0.10
 MIN_ACTIVE_TRADES_WIDTH = 30
 MAX_ACTIVE_TRADES_WIDTH = 110
 MIN_TICKET_PANE_WIDTH = 52
@@ -1850,6 +1850,31 @@ class PaneResizer(Static):
         event.stop()
 
 
+class ActivityPaneResizer(Static):
+    def __init__(self) -> None:
+        super().__init__("─", id="activity-resizer")
+
+    @staticmethod
+    def event_y(event: events.MouseDown | events.MouseMove | events.MouseUp) -> int:
+        return int(event.screen_y if event.screen_y is not None else event.y)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.capture_mouse(True)
+        self.add_class("dragging")
+        self.app.start_activity_resize(self.event_y(event))
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self.app.update_activity_resize(self.event_y(event))
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        self.remove_class("dragging")
+        self.app.finish_activity_resize()
+        event.stop()
+
+
 class SidePaneResizer(Static):
     def __init__(self) -> None:
         super().__init__("│", id="side-pane-resizer")
@@ -2130,6 +2155,39 @@ MCP_TOOLS = [
     {
         "name": "avanza_stoploss_replace",
         "description": "Dry-run or replace an existing stop-loss (delete old + place new). Supports gliding triggers. Live replace requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "stop_loss_id": {"type": "string"},
+                "order_book_id": {"type": "string"},
+                "trigger_type": {"type": "string"},
+                "trigger_value": {"type": "number"},
+                "trigger_value_type": {"type": "string", "default": "%"},
+                "valid_until": {"type": "string"},
+                "order_type": {"type": "string", "default": "sell"},
+                "order_price": {"type": "number"},
+                "order_price_type": {"type": "string", "default": "%"},
+                "volume": {"type": "number"},
+                "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
+                "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
+                "short_selling_allowed": {"type": "boolean", "default": False},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": [
+                "account_id",
+                "stop_loss_id",
+                "order_book_id",
+                "trigger_value",
+                "order_price",
+                "volume",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoploss_edit",
+        "description": "Dry-run or edit an existing stop-loss (delete old + place new). Alias of avanza_stoploss_replace.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2553,6 +2611,31 @@ class AvanzaTradingTui(App):
         height: 1fr;
     }
 
+    #activity-table-section {
+        height: 3fr;
+    }
+
+    #activity-logs-section {
+        height: 1fr;
+    }
+
+    #activity-resizer {
+        height: 1;
+        content-align: center middle;
+        color: $text-muted;
+        background: $boost;
+    }
+
+    #activity-resizer:hover {
+        color: $text;
+        background: $primary-darken-3;
+    }
+
+    #activity-resizer.dragging {
+        color: $text;
+        background: $accent;
+    }
+
     #portfolio-table {
         height: 1fr;
     }
@@ -2567,8 +2650,8 @@ class AvanzaTradingTui(App):
         display: none;
         dock: right;
         width: 64;
-        height: 100%;
-        margin: 1;
+        height: 1fr;
+        margin: 0;
         padding: 1 2;
         border: tall $warning;
         background: $panel;
@@ -2639,7 +2722,7 @@ class AvanzaTradingTui(App):
     }
 
     #console-row {
-        height: 6;
+        height: 1fr;
     }
 
     #log {
@@ -2745,20 +2828,28 @@ class AvanzaTradingTui(App):
         self.portfolio_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.paper_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.cancel_targets_by_row_key: dict[str, dict[str, str]] = {}
+        self.stoploss_items_by_row_key: dict[str, dict[str, Any]] = {}
         self.pending_cancel_target: dict[str, str] | None = None
+        self.pending_stoploss_edit_id: str | None = None
         self.paper_quote_cache: dict[str, dict[str, Any]] = {}
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
+        self.activity_table_weight = 3
+        self.activity_logs_weight = 1
         self.active_trades_width = 42
         self.ticket_pane_width = 64
         self.profit_metric_mode = "day"
         self.is_resizing_panes = False
+        self.is_resizing_activity = False
         self.is_resizing_side_pane = False
         self.is_resizing_ticket_pane = False
         self.resize_start_y = 0
+        self.activity_resize_start_y = 0
         self.resize_start_x = 0
         self.resize_start_positions_weight = self.positions_pane_weight
         self.resize_start_activity_weight = self.activity_pane_weight
+        self.activity_resize_start_table_weight = self.activity_table_weight
+        self.activity_resize_start_logs_weight = self.activity_logs_weight
         self.resize_start_active_trades_width = self.active_trades_width
         self.resize_start_ticket_pane_width = self.ticket_pane_width
         self.record_event(
@@ -2830,117 +2921,121 @@ class AvanzaTradingTui(App):
                     yield PaneResizer()
                     with Vertical(id="activity-panel"):
                         yield Static("Stop-Losses and Open Orders", classes="panel")
-                        yield DataTable(id="stoploss-table")
-                        with Horizontal():
-                            yield Button("Refresh Account", id="refresh-account", variant="primary")
-                            yield Button("Clear Log", id="clear-log")
-                        with Horizontal(id="console-row"):
-                            yield RichLog(id="log", highlight=True, markup=True)
-                            yield RichLog(id="mcp-log", highlight=True, markup=True)
+                        with Vertical(id="activity-table-section"):
+                            yield DataTable(id="stoploss-table")
+                        yield ActivityPaneResizer()
+                        with Vertical(id="activity-logs-section"):
+                            with Horizontal():
+                                yield Button("Refresh Account", id="refresh-account", variant="primary")
+                                yield Button("Edit Stop-Loss", id="edit-stoploss", variant="primary")
+                                yield Button("Clear Log", id="clear-log")
+                            with Horizontal(id="console-row"):
+                                yield RichLog(id="log", highlight=True, markup=True)
+                                yield RichLog(id="mcp-log", highlight=True, markup=True)
                 yield SidePaneResizer()
                 with Vertical(id="active-trades-panel"):
                     yield Static("Active Trades", classes="panel")
                     yield DataTable(id="active-trades-table")
-            with Horizontal(id="stoploss-modal"):
-                yield TicketPaneResizer("stoploss")
-                with Vertical(classes="ticket-content"):
+                with Horizontal(id="stoploss-modal"):
+                    yield TicketPaneResizer("stoploss")
+                    with Vertical(classes="ticket-content"):
+                        with Horizontal(classes="modal-header"):
+                            yield Button("X", id="close-stoploss-modal", classes="modal-close")
+                            yield Static("New Stop-Loss", id="stoploss-modal-title", classes="modal-title")
+                        yield Static("Uses the selected account.", id="stoploss-account-note")
+                        yield Select([], prompt="Select portfolio holding", allow_blank=True, id="instrument-select")
+                        yield Input(placeholder="Volume", id="volume", type="number")
+                        yield Select(
+                            [(label, label) for label in TRIGGER_TYPE_CHOICES],
+                            value="follow-upwards",
+                            allow_blank=False,
+                            id="trigger-type",
+                        )
+                        yield Input(placeholder="Trigger value", id="trigger-value", type="number")
+                        yield Select(
+                            PRICE_TYPE_SELECT_OPTIONS,
+                            value="percentage",
+                            allow_blank=False,
+                            id="trigger-value-type",
+                        )
+                        yield Input(
+                            value=default_valid_until,
+                            placeholder=f"Valid until ({default_valid_until})",
+                            id="valid-until",
+                        )
+                        yield Select(
+                            [(label, label) for label in ORDER_TYPE_CHOICES],
+                            value="sell",
+                            allow_blank=False,
+                            id="order-type",
+                        )
+                        yield Input(placeholder="Order price", id="order-price", type="number")
+                        yield Select(
+                            PRICE_TYPE_SELECT_OPTIONS,
+                            value="percentage",
+                            allow_blank=False,
+                            id="order-price-type",
+                        )
+                        yield Input(
+                            value=str(STOPLOSS_ORDER_VALID_DAYS_DEFAULT),
+                            placeholder="Order valid days",
+                            id="order-valid-days",
+                            type="integer",
+                        )
+                        yield Switch(value=False, id="trigger-on-market-maker-quote")
+                        yield Static("Trigger on market-maker quote")
+                        yield Switch(value=False, id="short-selling-allowed")
+                        yield Static("Allow short selling")
+                        yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
+                        with Horizontal():
+                            yield Button("Review Only", id="dry-run", variant="default")
+                            yield Button("Create Paper Stop-Loss", id="place-live", variant="warning")
+                with Horizontal(id="order-modal"):
+                    yield TicketPaneResizer("order")
+                    with Vertical(classes="ticket-content"):
+                        with Horizontal(classes="modal-header"):
+                            yield Button("X", id="close-order-modal", classes="modal-close")
+                            yield Static("New Buy/Sell Order", classes="modal-title")
+                        yield Static("Uses the selected account.", id="order-account-note")
+                        with Horizontal(id="order-search-row"):
+                            yield Input(placeholder="Search stock, ticker, or ISIN", id="order-search")
+                            yield Button("Search", id="order-search-button", variant="primary")
+                        yield Static("Type at least 2 characters to search stocks.", id="order-search-status")
+                        yield Select([], prompt="Select stock/order book", allow_blank=True, id="order-instrument-select")
+                        yield Select(
+                            [(label, label) for label in ORDER_TYPE_CHOICES],
+                            value="buy",
+                            allow_blank=False,
+                            id="regular-order-type",
+                        )
+                        yield Input(placeholder="Volume", id="regular-order-volume", type="integer")
+                        yield Input(placeholder="Limit price (SEK)", id="regular-order-price", type="number")
+                        yield Static("Order value: -", id="regular-order-value")
+                        yield Select(
+                            [(label, label) for label in ORDER_CONDITION_CHOICES],
+                            value="normal",
+                            allow_blank=False,
+                            id="regular-order-condition",
+                        )
+                        yield Input(
+                            value=default_valid_until,
+                            placeholder=f"Valid until ({default_valid_until})",
+                            id="regular-order-valid-until",
+                        )
+                        yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
+                        with Horizontal():
+                            yield Button("Review Only", id="order-dry-run", variant="default")
+                            yield Button("Create Paper Order", id="order-place-live", variant="warning")
+                with Vertical(id="cancel-modal"):
                     with Horizontal(classes="modal-header"):
-                        yield Button("X", id="close-stoploss-modal", classes="modal-close")
-                        yield Static("New Stop-Loss", classes="modal-title")
-                    yield Static("Uses the selected account.", id="stoploss-account-note")
-                    yield Select([], prompt="Select portfolio holding", allow_blank=True, id="instrument-select")
-                    yield Input(placeholder="Volume", id="volume", type="number")
-                    yield Select(
-                        [(label, label) for label in TRIGGER_TYPE_CHOICES],
-                        value="follow-upwards",
-                        allow_blank=False,
-                        id="trigger-type",
-                    )
-                    yield Input(placeholder="Trigger value", id="trigger-value", type="number")
-                    yield Select(
-                        PRICE_TYPE_SELECT_OPTIONS,
-                        value="percentage",
-                        allow_blank=False,
-                        id="trigger-value-type",
-                    )
-                    yield Input(
-                        value=default_valid_until,
-                        placeholder=f"Valid until ({default_valid_until})",
-                        id="valid-until",
-                    )
-                    yield Select(
-                        [(label, label) for label in ORDER_TYPE_CHOICES],
-                        value="sell",
-                        allow_blank=False,
-                        id="order-type",
-                    )
-                    yield Input(placeholder="Order price", id="order-price", type="number")
-                    yield Select(
-                        PRICE_TYPE_SELECT_OPTIONS,
-                        value="percentage",
-                        allow_blank=False,
-                        id="order-price-type",
-                    )
-                    yield Input(
-                        value=str(STOPLOSS_ORDER_VALID_DAYS_DEFAULT),
-                        placeholder="Order valid days",
-                        id="order-valid-days",
-                        type="integer",
-                    )
-                    yield Switch(value=False, id="trigger-on-market-maker-quote")
-                    yield Static("Trigger on market-maker quote")
-                    yield Switch(value=False, id="short-selling-allowed")
-                    yield Static("Allow short selling")
-                    yield Input(placeholder='Type "PLACE" to enable live placement', id="place-confirm")
+                        yield Button("X", id="close-cancel-modal", classes="modal-close")
+                        yield Static("Cancel Order", classes="modal-title")
+                    yield Static("-", id="cancel-summary")
+                    yield Static('Type "CANCEL" for live Avanza cancellation.', id="cancel-instructions")
+                    yield Input(placeholder='Type "CANCEL" for live cancellation', id="cancel-confirm")
                     with Horizontal():
-                        yield Button("Review Only", id="dry-run", variant="default")
-                        yield Button("Create Paper Stop-Loss", id="place-live", variant="warning")
-            with Horizontal(id="order-modal"):
-                yield TicketPaneResizer("order")
-                with Vertical(classes="ticket-content"):
-                    with Horizontal(classes="modal-header"):
-                        yield Button("X", id="close-order-modal", classes="modal-close")
-                        yield Static("New Buy/Sell Order", classes="modal-title")
-                    yield Static("Uses the selected account.", id="order-account-note")
-                    with Horizontal(id="order-search-row"):
-                        yield Input(placeholder="Search stock, ticker, or ISIN", id="order-search")
-                        yield Button("Search", id="order-search-button", variant="primary")
-                    yield Static("Type at least 2 characters to search stocks.", id="order-search-status")
-                    yield Select([], prompt="Select stock/order book", allow_blank=True, id="order-instrument-select")
-                    yield Select(
-                        [(label, label) for label in ORDER_TYPE_CHOICES],
-                        value="buy",
-                        allow_blank=False,
-                        id="regular-order-type",
-                    )
-                    yield Input(placeholder="Volume", id="regular-order-volume", type="integer")
-                    yield Input(placeholder="Limit price (SEK)", id="regular-order-price", type="number")
-                    yield Static("Order value: -", id="regular-order-value")
-                    yield Select(
-                        [(label, label) for label in ORDER_CONDITION_CHOICES],
-                        value="normal",
-                        allow_blank=False,
-                        id="regular-order-condition",
-                    )
-                    yield Input(
-                        value=default_valid_until,
-                        placeholder=f"Valid until ({default_valid_until})",
-                        id="regular-order-valid-until",
-                    )
-                    yield Input(placeholder='Type "PLACE" to enable live placement', id="regular-order-confirm")
-                    with Horizontal():
-                        yield Button("Review Only", id="order-dry-run", variant="default")
-                        yield Button("Create Paper Order", id="order-place-live", variant="warning")
-            with Vertical(id="cancel-modal"):
-                with Horizontal(classes="modal-header"):
-                    yield Button("X", id="close-cancel-modal", classes="modal-close")
-                    yield Static("Cancel Order", classes="modal-title")
-                yield Static("-", id="cancel-summary")
-                yield Static('Type "CANCEL" for live Avanza cancellation.', id="cancel-instructions")
-                yield Input(placeholder='Type "CANCEL" for live cancellation', id="cancel-confirm")
-                with Horizontal():
-                    yield Button("Review Only", id="cancel-review", variant="default")
-                    yield Button("Cancel Order", id="cancel-confirm-button", variant="error")
+                        yield Button("Review Only", id="cancel-review", variant="default")
+                        yield Button("Cancel Order", id="cancel-confirm-button", variant="error")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -3001,6 +3096,7 @@ class AvanzaTradingTui(App):
         self.update_clock_status()
         self.start_clock()
         self.apply_ticket_pane_width(self.ticket_pane_width)
+        self.apply_activity_subpane_weights(self.activity_table_weight, self.activity_logs_weight)
         self.update_mode_toggles()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -3025,6 +3121,13 @@ class AvanzaTradingTui(App):
         self.active_trades_width = width
         self.query_one("#active-trades-panel").styles.width = width
         self.query_one("#body").refresh(layout=True)
+
+    def apply_activity_subpane_weights(self, table_weight: float, logs_weight: float) -> None:
+        self.activity_table_weight = table_weight
+        self.activity_logs_weight = logs_weight
+        self.query_one("#activity-table-section").styles.height = f"{table_weight}fr"
+        self.query_one("#activity-logs-section").styles.height = f"{logs_weight}fr"
+        self.query_one("#activity-panel").refresh(layout=True)
 
     def apply_ticket_pane_width(self, width: int) -> None:
         self.ticket_pane_width = width
@@ -3051,6 +3154,26 @@ class AvanzaTradingTui(App):
 
     def finish_pane_resize(self) -> None:
         self.is_resizing_panes = False
+
+    def start_activity_resize(self, screen_y: int) -> None:
+        self.is_resizing_activity = True
+        self.activity_resize_start_y = screen_y
+        self.activity_resize_start_table_weight = self.activity_table_weight
+        self.activity_resize_start_logs_weight = self.activity_logs_weight
+
+    def update_activity_resize(self, screen_y: int) -> None:
+        if not self.is_resizing_activity:
+            return
+        delta_rows = screen_y - self.activity_resize_start_y
+        table_weight, logs_weight = pane_weights_after_drag(
+            self.activity_resize_start_table_weight,
+            self.activity_resize_start_logs_weight,
+            delta_rows,
+        )
+        self.apply_activity_subpane_weights(table_weight, logs_weight)
+
+    def finish_activity_resize(self) -> None:
+        self.is_resizing_activity = False
 
     def start_side_pane_resize(self, screen_x: int) -> None:
         self.is_resizing_side_pane = True
@@ -3311,18 +3434,22 @@ class AvanzaTradingTui(App):
         self.set_mode_toggle("mcp-write-toggle", "mcp-write-label", self.mcp_write_enabled, "Live R/W")
 
     def update_paper_mode_ui(self) -> None:
-        labels = {
-            "#place-live": ("Create Paper Stop-Loss", "Submit Live Stop-Loss"),
-            "#order-place-live": ("Create Paper Order", "Submit Live Order"),
-        }
-        for selector, (paper_label, live_label) in labels.items():
-            button = self.query_one(selector, Button)
-            if self.paper_mode_enabled:
-                button.label = paper_label
-                button.variant = "warning"
-            else:
-                button.label = live_label
-                button.variant = "error"
+        stoploss_button = self.query_one("#place-live", Button)
+        editing = bool(self.pending_stoploss_edit_id)
+        if self.paper_mode_enabled:
+            stoploss_button.label = "Update Paper Stop-Loss" if editing else "Create Paper Stop-Loss"
+            stoploss_button.variant = "warning"
+        else:
+            stoploss_button.label = "Update Live Stop-Loss" if editing else "Submit Live Stop-Loss"
+            stoploss_button.variant = "error"
+
+        order_button = self.query_one("#order-place-live", Button)
+        if self.paper_mode_enabled:
+            order_button.label = "Create Paper Order"
+            order_button.variant = "warning"
+        else:
+            order_button.label = "Submit Live Order"
+            order_button.variant = "error"
         self.update_mode_toggles()
 
     def cycle_profit_metric(self) -> None:
@@ -3702,7 +3829,7 @@ class AvanzaTradingTui(App):
                 "result": result,
             }
 
-        if tool == "avanza_stoploss_replace":
+        if tool in {"avanza_stoploss_replace", "avanza_stoploss_edit"}:
             confirmed = bool(arguments.get("confirm", False))
             self.require_mcp_write(confirmed)
             stop_loss_id = str(arguments["stop_loss_id"])
@@ -3887,6 +4014,7 @@ class AvanzaTradingTui(App):
         table = self.query_one("#stoploss-table", DataTable)
         selected_row_key = selected_table_row_key(table)
         table.clear()
+        self.stoploss_items_by_row_key = {}
         self.cancel_targets_by_row_key = {
             key: value
             for key, value in self.cancel_targets_by_row_key.items()
@@ -3904,6 +4032,7 @@ class AvanzaTradingTui(App):
                     self.latest_stoploss_items.append(item)
                     row_key = f"stoploss-{item.get('id', visible_count)}"
                     table.add_row(*stop_loss_activity_row(item), key=row_key)
+                    self.stoploss_items_by_row_key[row_key] = item
                     self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Stop-loss", item)
                     visible_count += 1
         else:
@@ -3939,6 +4068,65 @@ class AvanzaTradingTui(App):
         self.update_active_trades_table()
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
+
+    def reset_stoploss_modal_for_new(self) -> None:
+        self.pending_stoploss_edit_id = None
+        self.query_one("#stoploss-modal-title", Static).update("New Stop-Loss")
+        self.query_one("#place-confirm", Input).value = ""
+        self.query_one("#place-live", Button).label = "Create Paper Stop-Loss" if self.paper_mode_enabled else "Submit Live Stop-Loss"
+
+    def selected_stoploss_item(self) -> dict[str, Any]:
+        table = self.query_one("#stoploss-table", DataTable)
+        row_key = selected_table_row_key(table)
+        if row_key is None:
+            raise ValueError("Select a stop-loss row first.")
+        row_key_value = str(getattr(row_key, "value", row_key))
+        item = self.stoploss_items_by_row_key.get(row_key_value)
+        if not item:
+            raise ValueError("Selected row is not a stop-loss entry.")
+        return item
+
+    def open_stoploss_edit_modal(self) -> None:
+        item = self.selected_stoploss_item()
+        orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
+        trigger = item.get("trigger") if isinstance(item.get("trigger"), dict) else {}
+        order = item.get("order") if isinstance(item.get("order"), dict) else {}
+        order_book_id = str(orderbook.get("id", ""))
+        if not order_book_id:
+            raise ValueError("Selected stop-loss is missing order book id.")
+
+        self.pending_stoploss_edit_id = str(item.get("id", ""))
+        if not self.pending_stoploss_edit_id:
+            raise ValueError("Selected stop-loss is missing id.")
+
+        trigger_value_type = str(trigger.get("valueType", "") or "SEK")
+        order_price_type = str(order.get("priceType", "") or "SEK")
+        try:
+            trigger_value_type = parse_price_type(trigger_value_type)
+        except Exception:
+            trigger_value_type = "monetary"
+        try:
+            order_price_type = parse_price_type(order_price_type)
+        except Exception:
+            order_price_type = "monetary"
+
+        self.query_one("#stoploss-modal-title", Static).update(f"Edit Stop-Loss {self.pending_stoploss_edit_id}")
+        self.query_one("#instrument-select", Select).value = order_book_id
+        self.query_one("#volume", Input).value = str(order.get("volume", "") or "")
+        self.query_one("#trigger-type", Select).value = str(trigger.get("type", "") or "follow-upwards").lower().replace("_", "-")
+        self.query_one("#trigger-value", Input).value = str(trigger.get("value", "") or "")
+        self.query_one("#trigger-value-type", Select).value = trigger_value_type
+        self.query_one("#valid-until", Input).value = str(trigger.get("validUntil", "") or max_valid_until_date().isoformat())
+        self.query_one("#order-type", Select).value = str(order.get("type", "") or "sell").lower()
+        self.query_one("#order-price", Input).value = str(order.get("price", "") or "")
+        self.query_one("#order-price-type", Select).value = order_price_type
+        self.query_one("#order-valid-days", Input).value = str(order.get("validDays", STOPLOSS_ORDER_VALID_DAYS_DEFAULT) or STOPLOSS_ORDER_VALID_DAYS_DEFAULT)
+        self.query_one("#trigger-on-market-maker-quote", Switch).value = bool(trigger.get("triggerOnMarketMakerQuote", False))
+        self.query_one("#short-selling-allowed", Switch).value = bool(order.get("shortSellingAllowed", False))
+        self.query_one("#place-confirm", Input).value = ""
+        self.query_one("#place-live", Button).label = "Update Paper Stop-Loss" if self.paper_mode_enabled else "Update Live Stop-Loss"
+        self.query_one("#stoploss-modal").display = True
+        self.write_log(f"Editing stop-loss {self.pending_stoploss_edit_id} for {orderbook.get('name', order_book_id)}.")
 
     def refresh_accounts(self) -> None:
         avanza = self.require_connection()
@@ -4164,10 +4352,14 @@ class AvanzaTradingTui(App):
                 self.refresh_portfolio()
                 self.refresh_stoplosses()
             elif button_id == "open-stoploss-modal":
+                self.reset_stoploss_modal_for_new()
                 self.query_one("#stoploss-modal").display = True
+            elif button_id == "edit-stoploss":
+                self.open_stoploss_edit_modal()
             elif button_id == "open-order-modal":
                 self.query_one("#order-modal").display = True
             elif button_id == "close-stoploss-modal":
+                self.reset_stoploss_modal_for_new()
                 self.query_one("#stoploss-modal").display = False
             elif button_id == "close-order-modal":
                 self.query_one("#order-modal").display = False
@@ -4370,6 +4562,8 @@ class AvanzaTradingTui(App):
                 self.write_log(f"[yellow]No stock/order book results for '{query}'.[/yellow]")
 
     def handle_place_live(self) -> None:
+        is_edit = bool(self.pending_stoploss_edit_id)
+        action_label = "updated" if is_edit else "created"
         if self.paper_mode_enabled:
             _, _, preview = self.build_stop_loss_request()
             order_book_id = self.input_value("instrument-select")
@@ -4397,7 +4591,8 @@ class AvanzaTradingTui(App):
             append_paper_event(self.paper_session, "paper_stoploss_set_from_tui", {"id": paper_order["id"], "request": paper_order["request"]})
             self.save_paper_state()
             self.record_event("trading", "paper_stoploss_set_from_tui", {"order": paper_order})
-            self.write_log(f"[green]Paper stop-loss created:[/green] {paper_order['id']}")
+            self.write_log(f"[green]Paper stop-loss {action_label}:[/green] {paper_order['id']}")
+            self.reset_stoploss_modal_for_new()
             self.query_one("#stoploss-modal").display = False
             return
 
@@ -4410,14 +4605,31 @@ class AvanzaTradingTui(App):
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
 
-        result = avanza.place_stop_loss_order(
-            parent_stop_loss_id="0",
-            account_id=self.require_selected_account_id(),
-            order_book_id=self.input_value("instrument-select"),
-            stop_loss_trigger=trigger,
-            stop_loss_order_event=order_event,
-        )
-        self.record_event("trading", "live_stoploss_set_from_tui", {"request": preview, "result": result})
+        if is_edit:
+            edit_id = str(self.pending_stoploss_edit_id)
+            account_id = self.require_selected_account_id()
+            delete_result = avanza.delete_stop_loss_order(account_id, edit_id)
+            result = avanza.place_stop_loss_order(
+                parent_stop_loss_id="0",
+                account_id=account_id,
+                order_book_id=self.input_value("instrument-select"),
+                stop_loss_trigger=trigger,
+                stop_loss_order_event=order_event,
+            )
+            self.record_event(
+                "trading",
+                "live_stoploss_replace_from_tui",
+                {"stop_loss_id": edit_id, "delete_result": delete_result, "request": preview, "result": result},
+            )
+        else:
+            result = avanza.place_stop_loss_order(
+                parent_stop_loss_id="0",
+                account_id=self.require_selected_account_id(),
+                order_book_id=self.input_value("instrument-select"),
+                stop_loss_trigger=trigger,
+                stop_loss_order_event=order_event,
+            )
+            self.record_event("trading", "live_stoploss_set_from_tui", {"request": preview, "result": result})
         if isinstance(result, dict):
             status = result.get("status") or result.get("orderRequestStatus") or "response received"
             identifier = result.get("stoplossOrderId") or result.get("orderId") or ""
@@ -4425,6 +4637,7 @@ class AvanzaTradingTui(App):
             self.write_log(f"[green]Avanza status:[/green] {status}{suffix}")
         else:
             self.write_log("[green]Avanza accepted the request.[/green]")
+        self.reset_stoploss_modal_for_new()
         self.query_one("#stoploss-modal").display = False
         self.refresh_stoplosses()
 
@@ -4714,6 +4927,75 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
         stop_loss_order_event=order_event,
     )
     render_result("Place Stop-Loss Result", result)
+
+
+def cmd_stoploss_edit(args: argparse.Namespace) -> None:
+    trigger_type = enum_value(StopLossTriggerType, args.trigger_type)
+    trigger_value_type = enum_value(StopLossPriceType, args.trigger_value_type)
+    order_type = enum_value(OrderType, args.order_type)
+    order_price_type = enum_value(StopLossPriceType, args.order_price_type)
+
+    trigger = StopLossTrigger(
+        type=trigger_type,
+        value=args.trigger_value,
+        valid_until=args.valid_until,
+        value_type=trigger_value_type,
+        trigger_on_market_maker_quote=args.trigger_on_market_maker_quote,
+    )
+    order_event = StopLossOrderEvent(
+        type=order_type,
+        price=args.order_price,
+        volume=args.volume,
+        valid_days=args.order_valid_days,
+        price_type=order_price_type,
+        short_selling_allowed=args.short_selling_allowed,
+    )
+
+    request_preview = {
+        "stop_loss_id": args.stop_loss_id,
+        "parent_stop_loss_id": args.parent_stop_loss_id,
+        "account_id": args.account_id,
+        "order_book_id": args.order_book_id,
+        "stop_loss_trigger": {
+            "type": trigger.type.value,
+            "value": trigger.value,
+            "valid_until": trigger.valid_until.isoformat(),
+            "value_type": trigger.value_type.value,
+            "trigger_on_market_maker_quote": trigger.trigger_on_market_maker_quote,
+        },
+        "stop_loss_order_event": {
+            "type": order_event.type.value,
+            "price": order_event.price,
+            "volume": order_event.volume,
+            "valid_days": order_event.valid_days,
+            "price_type": order_event.price_type.value,
+            "short_selling_allowed": order_event.short_selling_allowed,
+        },
+    }
+
+    if not args.confirm:
+        render_message(
+            "Dry Run: add --confirm to update this stop-loss (delete + place replacement).",
+            [
+                f"Existing stop-loss ID: {args.stop_loss_id}",
+                *format_stop_loss_request(request_preview),
+            ],
+        )
+        return
+
+    avanza = connect(args)
+    delete_result = avanza.delete_stop_loss_order(args.account_id, args.stop_loss_id)
+    place_result = avanza.place_stop_loss_order(
+        parent_stop_loss_id=args.parent_stop_loss_id,
+        account_id=args.account_id,
+        order_book_id=args.order_book_id,
+        stop_loss_trigger=trigger,
+        stop_loss_order_event=order_event,
+    )
+    render_result(
+        "Update Stop-Loss Result",
+        {"updated": True, "deleted": delete_result, "placed": place_result},
+    )
 
 
 def cmd_orders_list(args: argparse.Namespace) -> None:
@@ -5014,6 +5296,7 @@ def build_parser() -> argparse.ArgumentParser:
               python avanza_cli.py stoploss list
               python avanza_cli.py stoploss set --help
               python avanza_cli.py stoploss delete --help
+              python avanza_cli.py stoploss edit --help
             """
         ),
     )
@@ -5132,6 +5415,62 @@ def build_parser() -> argparse.ArgumentParser:
     stoploss_set.add_argument("--short-selling-allowed", action="store_true", help="Allow short selling for the triggered order.")
     stoploss_set.add_argument("--confirm", action="store_true", help="Actually place the stop-loss. Omit for dry-run.")
     stoploss_set.set_defaults(func=cmd_stoploss_set)
+
+    stoploss_edit = stoploss_subparsers.add_parser(
+        "edit",
+        formatter_class=HELP_FORMATTER,
+        help="Update an existing stop-loss (replace workflow).",
+        description=textwrap.dedent(
+            """\
+            Update an existing stop-loss by deleting the old one and placing a replacement.
+
+            This command uses the same trigger/order fields as `stoploss set`, plus --stop-loss-id.
+            Without --confirm, it prints a dry-run summary.
+            """
+        ),
+    )
+    add_common_auth(stoploss_edit)
+    stoploss_edit.add_argument("--stop-loss-id", metavar="ID", required=True, help="Existing stop-loss id to update.")
+    stoploss_edit.add_argument("--account-id", metavar="ID", required=True, help="Avanza account id that owns the stop-loss.")
+    stoploss_edit.add_argument("--order-book-id", metavar="ID", required=True, help="Avanza order book id for the instrument.")
+    stoploss_edit.add_argument("--parent-stop-loss-id", metavar="ID", default="0", help="Parent stop-loss id. Default: 0.")
+    stoploss_edit.add_argument("--trigger-type", choices=TRIGGER_TYPE_CHOICES, required=True, help="Stop-loss trigger behavior.")
+    stoploss_edit.add_argument("--trigger-value", metavar="VALUE", required=True, type=float, help="Trigger value, interpreted with --trigger-value-type.")
+    stoploss_edit.add_argument(
+        "--trigger-value-type",
+        metavar="{SEK,%}",
+        type=parse_price_type,
+        default="monetary",
+        help="How to interpret --trigger-value. Use SEK or %%. Default: SEK.",
+    )
+    stoploss_edit.add_argument(
+        "--valid-until",
+        metavar="YYYY-MM-DD",
+        default=max_valid_until_date().isoformat(),
+        type=parse_date,
+        help=f"Last date the trigger remains valid. Default: max allowed ({VALID_UNTIL_MAX_DAYS} days from today).",
+    )
+    stoploss_edit.add_argument("--trigger-on-market-maker-quote", action="store_true", help="Allow market-maker quote to trigger the stop-loss.")
+    stoploss_edit.add_argument("--order-type", choices=ORDER_TYPE_CHOICES, default="sell", help="Order side after trigger. Default: sell.")
+    stoploss_edit.add_argument("--order-price", metavar="VALUE", required=True, type=float, help="Order price or offset, interpreted with --order-price-type.")
+    stoploss_edit.add_argument(
+        "--order-price-type",
+        metavar="{SEK,%}",
+        type=parse_price_type,
+        default="monetary",
+        help="How to interpret --order-price. Use SEK or %%. Default: SEK.",
+    )
+    stoploss_edit.add_argument("--volume", metavar="QTY", required=True, type=float, help="Number of shares/contracts to include in the triggered order.")
+    stoploss_edit.add_argument(
+        "--order-valid-days",
+        metavar="DAYS",
+        default=STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
+        type=int,
+        help=f"Triggered order validity in days. Default: {STOPLOSS_ORDER_VALID_DAYS_DEFAULT}.",
+    )
+    stoploss_edit.add_argument("--short-selling-allowed", action="store_true", help="Allow short selling for the triggered order.")
+    stoploss_edit.add_argument("--confirm", action="store_true", help="Actually update the stop-loss (delete + place replacement).")
+    stoploss_edit.set_defaults(func=cmd_stoploss_edit)
 
     return parser
 

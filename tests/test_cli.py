@@ -212,6 +212,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#mcp-log") is not None
             assert app.query_one("#order-ticket-resizer") is not None
             assert app.query_one("#stoploss-ticket-resizer") is not None
+            assert app.query_one("#activity-resizer") is not None
             resizer = app.query_one("#pane-resizer")
             assert resizer.renderable == "─"
             assert app.query_one("#stoploss-table") is not None
@@ -237,10 +238,18 @@ def test_tui_mounts_headless():
 
             resizer.on_mouse_down(FakeMouse(10))
             resizer.on_mouse_move(FakeMouse(12))
-            assert app.positions_pane_weight == 3.5
-            assert app.activity_pane_weight == 1.5
+            assert app.positions_pane_weight == 3.2
+            assert app.activity_pane_weight == 1.8
             resizer.on_mouse_up(FakeMouse(12))
             assert app.is_resizing_panes is False
+
+            activity_resizer = app.query_one("#activity-resizer")
+            activity_resizer.on_mouse_down(FakeMouse(20))
+            activity_resizer.on_mouse_move(FakeMouse(22))
+            assert app.activity_table_weight == 3.2
+            assert app.activity_logs_weight == 1
+            activity_resizer.on_mouse_up(FakeMouse(22))
+            assert app.is_resizing_activity is False
 
             side_resizer = app.query_one("#side-pane-resizer")
             side_resizer.on_mouse_down(FakeMouse(screen_x=100))
