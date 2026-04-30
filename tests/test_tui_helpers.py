@@ -1,6 +1,7 @@
 import io
 
 from avanza_cli import (
+    account_metric_values,
     account_display_name,
     account_row,
     account_rows_from_overview,
@@ -29,6 +30,7 @@ from avanza_cli import (
     position_row,
     position_trade_action_row,
     position_trade_target,
+    profit_metric_value_text,
     lookup_realtime_status,
     mcp_error,
     mcp_success,
@@ -198,6 +200,40 @@ def test_portfolio_day_summary_uses_daily_absolute_against_account_total():
     }
 
     assert portfolio_day_summary(positions, "acc-1", account) == (20.0, 0.4, "SEK")
+
+
+def test_profit_metric_value_text_supports_percent_only():
+    text = profit_metric_value_text(None, 1.25).plain
+    assert text == "+1.25%"
+
+
+def test_account_metric_values_week_falls_back_to_account_performance_map():
+    account = {
+        "id": "acc-1",
+        "totalValue": {"value": 5000, "unit": "SEK"},
+        "buyingPower": {"value": 1000, "unit": "SEK"},
+        "status": "ACTIVE",
+        "performance": {
+            "ONE_WEEK": {
+                "absolute": {"value": 250, "unit": "SEK"},
+                "relative": {"value": 5, "unit": "%"},
+            }
+        },
+    }
+    positions = {
+        "withOrderbook": [
+            {
+                "account": {"id": "acc-1"},
+                "value": {"value": 1100, "unit": "SEK"},
+                "acquiredValue": {"value": 1000, "unit": "SEK"},
+                "lastTradingDayPerformance": {"absolute": {"value": 25, "unit": "SEK"}},
+            }
+        ],
+        "withoutOrderbook": [],
+    }
+
+    metrics = account_metric_values(account, positions, "acc-1", "week")
+    assert metrics["profit"].plain == "+250.00 SEK  +5.00%"
 
 
 def test_matches_account_filters_by_nested_account_id():

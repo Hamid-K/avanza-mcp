@@ -80,6 +80,12 @@ WINDOW_PERFORMANCE_KEYS = {
     "month": ("lastTradingMonthPerformance", "monthPerformance", "oneMonthPerformance", "lastMonthPerformance"),
     "year": ("lastTradingYearPerformance", "yearPerformance", "oneYearPerformance", "lastYearPerformance"),
 }
+OVERVIEW_PERFORMANCE_KEYS = {
+    "day": ("TODAY", "DAY", "ONE_DAY"),
+    "week": ("ONE_WEEK", "WEEK", "LAST_TRADING_WEEK"),
+    "month": ("ONE_MONTH", "MONTH", "LAST_TRADING_MONTH"),
+    "year": ("ONE_YEAR", "YEAR", "THIS_YEAR", "LAST_TRADING_YEAR"),
+}
 REALTIME_KEYS = {
     "isRealTime",
     "isRealtime",
@@ -925,21 +931,55 @@ def profit_metric_label(mode: str) -> str:
 
 def profit_metric_value_text(amount_value: float | None, percent_value: float | None, unit: str = "SEK") -> Text:
     text = Text()
-    if amount_value is None:
+    if amount_value is None and percent_value is None:
         text.append("-", style="dim")
         return text
 
-    amount_style = metric_style(amount_value)
+    metric_basis = amount_value if amount_value is not None else percent_value
+    amount_style = metric_style(metric_basis)
     percent_style = (
-        POSITIVE_PERCENT_STYLE if amount_value > 0
-        else NEGATIVE_PERCENT_STYLE if amount_value < 0
+        POSITIVE_PERCENT_STYLE if (metric_basis or 0) > 0
+        else NEGATIVE_PERCENT_STYLE if (metric_basis or 0) < 0
         else "dim"
     )
-    text.append(money_text(amount_value, unit), style=amount_style)
+
+    if amount_value is not None:
+        text.append(money_text(amount_value, unit), style=amount_style)
     if percent_value is not None:
-        text.append("  ")
+        if amount_value is not None:
+            text.append("  ")
         text.append(percent_text(percent_value), style=percent_style)
     return text
+
+
+def account_performance_window_summary(
+    account: dict[str, Any] | None,
+    mode: str,
+) -> tuple[float | None, float | None, str]:
+    if not account:
+        return None, None, "SEK"
+
+    performance_map = account.get("performance")
+    if not isinstance(performance_map, dict):
+        return None, None, "SEK"
+
+    candidates = OVERVIEW_PERFORMANCE_KEYS.get(mode, ())
+    key_lookup = {str(key).upper(): key for key in performance_map.keys()}
+    selected = None
+    for candidate in candidates:
+        resolved_key = key_lookup.get(candidate.upper())
+        if resolved_key is not None:
+            value = performance_map.get(resolved_key)
+            if isinstance(value, dict):
+                selected = value
+                break
+    if not isinstance(selected, dict):
+        return None, None, "SEK"
+
+    amount_value = value_number(selected, "absolute")
+    percent_value = value_number(selected, "relative")
+    value_unit = str(nested_value(selected, "absolute", "unit") or nested_value(selected, "relative", "unit") or "SEK")
+    return amount_value, percent_value, value_unit
 
 
 def account_metric_values(
@@ -973,6 +1013,8 @@ def account_metric_values(
                 profit_mode,
                 account,
             )
+            if profit_amount is None and profit_percent is None:
+                profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
         else:
             profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
     return {
