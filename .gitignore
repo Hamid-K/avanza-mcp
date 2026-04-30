@@ -17,3 +17,6 @@ htmlcov/
 .avanza_*_session.json
 avanza-cli/logs/
 avanza-cli/backups/
+
+# Local assistant preferences and trading workflow notes
+INSTRUCTIONS.md
