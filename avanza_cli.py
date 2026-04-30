@@ -257,7 +257,15 @@ def create_session_log_path(kind: str) -> Path:
 
 
 def strip_markup(value: str) -> str:
-    return value.replace("[green]", "").replace("[/green]", "").replace("[yellow]", "").replace("[/yellow]", "").replace("[red]", "").replace("[/red]", "")
+    return (
+        value.replace("[green]", "").replace("[/green]", "")
+        .replace("[yellow]", "").replace("[/yellow]", "")
+        .replace("[red]", "").replace("[/red]", "")
+        .replace("[cyan]", "").replace("[/cyan]", "")
+        .replace("[magenta]", "").replace("[/magenta]", "")
+        .replace("[blue]", "").replace("[/blue]", "")
+        .replace("[bold]", "").replace("[/bold]", "")
+    )
 
 
 def summarize_mcp_result(result: Any) -> dict[str, Any]:
@@ -274,6 +282,81 @@ def summarize_mcp_result(result: Any) -> dict[str, Any]:
     if isinstance(result, list):
         return {"count": len(result)}
     return {"value": result}
+
+
+def mcp_stock_marker(arguments: dict[str, Any]) -> str:
+    for key in ("instrument", "stock", "ticker", "symbol"):
+        value = str(arguments.get(key, "")).strip()
+        if value:
+            return value
+    order_book_id = str(arguments.get("order_book_id", "")).strip()
+    if order_book_id:
+        return f"OB {order_book_id}"
+    query = str(arguments.get("query", "")).strip()
+    if query:
+        return query
+    return ""
+
+
+def mcp_side_badge(value: Any) -> str:
+    side = str(value or "").strip().lower()
+    if side == "buy":
+        return "[green]BUY[/green]"
+    if side == "sell":
+        return "[red]SELL[/red]"
+    return side.upper() if side else "-"
+
+
+def mcp_trade_detail(tool: str, arguments: dict[str, Any]) -> str:
+    if tool in {"avanza_order_set", "avanza_paper_order_set"}:
+        side = mcp_side_badge(arguments.get("order_type", "buy"))
+        volume = arguments.get("volume", "-")
+        price = arguments.get("price", "-")
+        return f"{side} [bold]{volume}[/bold] @ {price} SEK"
+
+    if tool == "avanza_order_edit":
+        volume = arguments.get("volume", "-")
+        price = arguments.get("price", "-")
+        return f"[magenta]EDIT[/magenta] [bold]{volume}[/bold] @ {price} SEK"
+
+    if tool == "avanza_order_delete":
+        return f"[red]DELETE[/red] {arguments.get('order_id', '-')}"
+
+    if tool in {"avanza_stoploss_set", "avanza_paper_stoploss_set", "avanza_stoploss_edit", "avanza_stoploss_replace"}:
+        side = mcp_side_badge(arguments.get("order_type", "sell"))
+        volume = arguments.get("volume", "-")
+        trigger_value = arguments.get("trigger_value", "-")
+        trigger_value_type = str(arguments.get("trigger_value_type", "%")).strip()
+        trigger_suffix = "%" if trigger_value_type in {"%", "percentage"} else " SEK"
+        return f"{side} [bold]{volume}[/bold] SL {trigger_value}{trigger_suffix}"
+
+    if tool == "avanza_stoploss_delete":
+        return f"[red]DELETE[/red] {arguments.get('stop_loss_id', '-')}"
+
+    return ""
+
+
+def mcp_call_log_line(tool: str, arguments: dict[str, Any]) -> str:
+    parts = [f"← {tool}"]
+    marker = mcp_stock_marker(arguments)
+    if marker:
+        parts.append(f"[cyan]{marker}[/cyan]")
+    detail = mcp_trade_detail(tool, arguments)
+    if detail:
+        parts.append(detail)
+    return "  ".join(parts)
+
+
+def mcp_result_log_suffix(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    if payload.get("paper"):
+        return " [blue]PAPER[/blue]"
+    if payload.get("dry_run") is True:
+        return " [yellow]DRY[/yellow]"
+    if payload.get("dry_run") is False:
+        return " [green]LIVE[/green]"
+    return ""
 
 
 def next_weekday_start(day: date) -> datetime:
@@ -3668,11 +3751,11 @@ class AvanzaTradingTui(App):
             raise PermissionError("TUI MCP mode is read-only. Enable R/W in the TUI for live mutations.")
 
     def handle_mcp_tool_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        self.write_mcp_log(f"← {tool}")
+        self.write_mcp_log(mcp_call_log_line(tool, arguments))
         self.record_event("mcp", "tool_call", {"tool": tool, "arguments": arguments})
         try:
             result = self.execute_mcp_tool(tool, arguments)
-            self.write_mcp_log(f"[green]✓[/green] {tool}")
+            self.write_mcp_log(f"[green]✓[/green] {tool}{mcp_result_log_suffix(result)}")
             self.record_event(
                 "mcp",
                 "tool_result",

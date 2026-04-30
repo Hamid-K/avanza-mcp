@@ -19,6 +19,8 @@ from avanza_cli import (
     holding_search_options,
     load_paper_session,
     market_clock_text,
+    mcp_call_log_line,
+    mcp_result_log_suffix,
     matches_account,
     pane_weights_after_drag,
     paper_orders,
@@ -106,6 +108,23 @@ def test_ticket_pane_width_after_drag_changes_width():
 def test_market_clock_text_counts_to_open_and_close():
     assert "OMXS closes in 07:30:00" in market_clock_text(__import__("datetime").datetime(2026, 4, 28, 10, 0, 0))
     assert "OMXS opens in 01:00:00" in market_clock_text(__import__("datetime").datetime(2026, 4, 28, 8, 0, 0))
+
+
+def test_mcp_call_log_line_includes_marker_and_trade_detail():
+    line = mcp_call_log_line(
+        "avanza_order_set",
+        {"instrument": "Broadcom", "order_type": "buy", "volume": 3, "price": 123.4},
+    )
+    assert "avanza_order_set" in line
+    assert "[cyan]Broadcom[/cyan]" in line
+    assert "[green]BUY[/green]" in line
+    assert "@ 123.4 SEK" in line
+
+
+def test_mcp_result_log_suffix_formats_mode():
+    assert mcp_result_log_suffix({"paper": True}) == " [blue]PAPER[/blue]"
+    assert mcp_result_log_suffix({"dry_run": True}) == " [yellow]DRY[/yellow]"
+    assert mcp_result_log_suffix({"dry_run": False}) == " [green]LIVE[/green]"
 
 
 def test_account_display_name_prefers_user_defined_name():
