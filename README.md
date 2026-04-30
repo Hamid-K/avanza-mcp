@@ -130,15 +130,43 @@ The TUI masks password and TOTP inputs, clears those fields after a successful l
 
 After login, the largest account by total value is selected by default. The top panel groups account metrics into colored cards, keeps action buttons together, and shows a live clock plus a weekday OMXS open/close countdown. The P/L metric cycles through `1D P/L`, `1W P/L`, `1M P/L`, `1Y P/L`, and `Total P/L`, with SEK and % values colored separately. The main table shows the selected account's stocks with day movement, profit state, a distinct header row, and a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. The order ticket searches as you type by stock name, ticker, or ISIN, so it supports opening new positions as well as trading current holdings. The lower table shows stop-losses and open orders for the selected account, with trigger and price values labeled as `SEK` or `%`; its cancel column opens a guarded cancellation ticket. Buy/sell side cells are color-coded green/red. Click any table column header to sort by that column; click the same header again to reverse the order. Drag the horizontal divider between tables, the vertical divider beside Active Trades, or the left edge of the order/stop-loss ticket to resize panes. Position and order state refreshes live every 5 seconds.
 
-The TUI also has an MCP mode. Log in through the TUI, enable the green/red `MCP` tick box, then configure Codex or another MCP client to run:
+## MCP Server Registration & Run
+
+This project exposes MCP through `python avanza_cli.py mcp` (stdio transport).
+
+### 1) Start and authenticate the TUI
+
+```bash
+python avanza_cli.py tui
+```
+
+Log in, then enable the `MCP` tick box in the TUI. This starts the localhost bridge and writes `.avanza_mcp_session.json`.
+
+### 2) Register the MCP server in Codex/Codex CLI
+
+Add this to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.avanza-mcp]
+command = "python"
+args = ["/ABSOLUTE/PATH/TO/avanza_cli.py", "mcp"]
+```
+
+Use the absolute path to your local `avanza_cli.py`.
+
+### 3) Run from your MCP client
+
+After registration, start/reload Codex or Codex CLI. It will launch:
 
 ```bash
 python avanza_cli.py mcp
 ```
 
-The MCP proxy forwards tool calls to the authenticated TUI session through a localhost bridge. MCP mode starts read-only. The `Live R/W` tick box enables live mutations, and live stop-loss/order placement, edit, replace, or deletion still requires the MCP tool call to include `confirm: true`. MCP activity is shown in the lower-right log console.
+The MCP proxy forwards tool calls to the authenticated TUI session through the localhost bridge. MCP starts read-only. Enable `Live R/W` in the TUI for live mutations; live stop-loss/order placement, edit, replace, or deletion still requires MCP arguments to include `confirm: true`. MCP activity is shown in the lower-right log console.
 
-Codex and Codex CLI can use the local stdio command above. ChatGPT developer mode currently expects remote MCP apps/connectors over SSE or streaming HTTP, so it cannot directly register this local stdio proxy.
+### 4) ChatGPT desktop note
+
+ChatGPT developer mode currently expects remote MCP apps/connectors over SSE or streaming HTTP, so it cannot directly register this local stdio proxy.
 
 For auto-trading experiments, use `avanza_live_snapshot` as the polling tool. It returns a decision-ready account snapshot and is safe to call every 5 seconds. Paper trading is available in read-only MCP mode through `avanza_paper_stoploss_set`, `avanza_paper_order_set`, `avanza_paper_orders`, and `avanza_paper_cancel`; paper state is stored in `.avanza_paper_session.json` and never places an Avanza order. The TUI's `Paper` tick box is on by default; while it is on, the order and stop-loss form submit buttons create local paper orders. Turn `Paper` off only when you intend to use live Avanza placement, which still requires typing `PLACE`. Regular live buy/sell orders are also exposed through `avanza_order_set` and `avanza_order_delete`, gated by MCP R/W mode and `confirm: true`.
 

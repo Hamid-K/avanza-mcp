@@ -95,15 +95,25 @@ python avanza_cli.py orders delete \
 
 ## MCP Mode
 
-Start the TUI and log in first:
+### Register and run the MCP server
+
+1. Start the TUI and log in:
 
 ```bash
 python avanza_cli.py tui
 ```
 
-Enable the green/red `MCP` tick box in the TUI. This starts a localhost bridge that reuses the TUI's authenticated Avanza client and writes a local `.avanza_mcp_session.json` file. The file contains only localhost connection details and an ephemeral token; it is ignored by git.
+2. Enable the `MCP` tick box in the TUI. This starts a localhost bridge that reuses the authenticated Avanza client and writes `.avanza_mcp_session.json`. The file contains localhost connection details and an ephemeral token (ignored by git).
 
-Configure Codex or another MCP client to run:
+3. Register the MCP server in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.avanza-mcp]
+command = "python"
+args = ["/ABSOLUTE/PATH/TO/avanza_cli.py", "mcp"]
+```
+
+4. Start/reload Codex or Codex CLI. It should run:
 
 ```bash
 python avanza_cli.py mcp
