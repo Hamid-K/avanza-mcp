@@ -178,6 +178,29 @@ python avanza_cli.py mcp
 
 The MCP proxy forwards tool calls to the authenticated TUI session through the localhost bridge. MCP starts read-only. Enable `Live R/W` in the TUI for live mutations; live stop-loss/order placement, edit, replace, or deletion still requires MCP arguments to include `confirm: true`. MCP activity is shown in the lower-right log console.
 
+### Available MCP Tools
+
+| Tool | Purpose |
+|---|---|
+| `avanza_status` | MCP bridge status, safety mode, and selected account. |
+| `avanza_accounts` | List available Avanza accounts in the active TUI session. |
+| `avanza_portfolio` | Portfolio positions for selected or specified account. |
+| `avanza_stoplosses` | Stop-loss orders for selected or specified account. |
+| `avanza_live_snapshot` | Full polling snapshot (positions, orders, stop-losses, paper state). |
+| `avanza_realtime_quotes` | Real-time quote snapshot for current holdings. |
+| `avanza_search_stock` | Search stocks/order books by name, ticker, or ISIN. |
+| `avanza_paper_stoploss_set` | Create paper stop-loss (no live Avanza mutation). |
+| `avanza_paper_order_set` | Create paper buy/sell order (no live Avanza mutation). |
+| `avanza_paper_orders` | List paper orders/events for selected or specified account. |
+| `avanza_paper_cancel` | Cancel a paper order (local only). |
+| `avanza_stoploss_set` | Dry-run or place stop-loss. |
+| `avanza_stoploss_edit` | Dry-run or edit/replace stop-loss (delete + place). |
+| `avanza_stoploss_replace` | Dry-run or replace stop-loss (delete + place). |
+| `avanza_stoploss_delete` | Dry-run or delete stop-loss. |
+| `avanza_order_set` | Dry-run or place regular buy/sell order. |
+| `avanza_order_edit` | Dry-run or edit regular order. |
+| `avanza_order_delete` | Dry-run or delete regular order. |
+
 ### 4) ChatGPT desktop note
 
 ChatGPT developer mode currently expects remote MCP apps/connectors over SSE or streaming HTTP, so it cannot directly register this local stdio proxy.

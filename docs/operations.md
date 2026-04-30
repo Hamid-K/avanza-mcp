@@ -124,6 +124,29 @@ python avanza_cli.py mcp
 
 The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, paper-trading, and stock-search tools. MCP starts read-only. To allow live order or stop-loss placement/deletion, enable the TUI `Live R/W` tick box and require the MCP tool call to include `confirm: true`. Dry-run previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
 
+### Available MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `avanza_status` | MCP bridge status, safety mode, and selected account. |
+| `avanza_accounts` | List accounts visible in the active TUI session. |
+| `avanza_portfolio` | Portfolio positions for selected/specified account. |
+| `avanza_stoplosses` | Stop-loss list for selected/specified account. |
+| `avanza_live_snapshot` | Full polling snapshot for trading loops. |
+| `avanza_realtime_quotes` | Real-time quote snapshot for holdings. |
+| `avanza_search_stock` | Search stocks/order books by name, ticker, or ISIN. |
+| `avanza_paper_stoploss_set` | Create paper stop-loss order. |
+| `avanza_paper_order_set` | Create paper regular order. |
+| `avanza_paper_orders` | List paper orders and events. |
+| `avanza_paper_cancel` | Cancel paper order. |
+| `avanza_stoploss_set` | Dry-run or place stop-loss. |
+| `avanza_stoploss_edit` | Dry-run or edit/replace stop-loss. |
+| `avanza_stoploss_replace` | Dry-run or replace stop-loss. |
+| `avanza_stoploss_delete` | Dry-run or delete stop-loss. |
+| `avanza_order_set` | Dry-run or place regular order. |
+| `avanza_order_edit` | Dry-run or edit regular order. |
+| `avanza_order_delete` | Dry-run or delete regular order. |
+
 Codex and Codex CLI can run this local stdio MCP command from `~/.codex/config.toml`. ChatGPT developer mode supports remote MCP apps/connectors over SSE or streaming HTTP; it does not currently connect directly to local stdio MCP servers. To use this from ChatGPT, expose a remote streaming HTTP/SSE MCP server with appropriate authentication instead of the local `python avanza_cli.py mcp` proxy.
 
 For live monitoring loops, poll `avanza_live_snapshot` no faster than the TUI refresh interval. The snapshot includes positions, stop-losses, open orders, paper orders, safety mode, and `poll_interval_seconds`. MCP does not push unsolicited events to Codex; polling keeps sequencing explicit and auditable.
