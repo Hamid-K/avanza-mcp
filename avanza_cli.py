@@ -2617,6 +2617,8 @@ class AvanzaTradingTui(App):
 
     #activity-logs-section {
         height: 1fr;
+        layout: vertical;
+        align-vertical: top;
     }
 
     #activity-resizer {
@@ -2723,15 +2725,18 @@ class AvanzaTradingTui(App):
 
     #console-row {
         height: 1fr;
+        align-vertical: top;
     }
 
     #log {
         width: 1fr;
+        height: 1fr;
         border: solid $primary;
     }
 
     #mcp-log {
         width: 1fr;
+        height: 1fr;
         border: solid $warning;
     }
 
