@@ -150,6 +150,8 @@ This uses the unofficial `avanza-api` package. Start with `stoploss list` and dr
 
 ## Credits
 
+Creators: **Hamid Kashfi** and **Codex (OpenAI)**.
+
 This project builds on the Python `avanza-api` library by fama93:
 
 - PyPI: [avanza-api](https://pypi.org/project/avanza-api/)
