@@ -113,6 +113,10 @@ def test_parser_includes_portfolio_commands():
     mcp_args = parser.parse_args(["mcp"])
     assert mcp_args.command == "mcp"
 
+    transactions_args = parser.parse_args(["transactions", "list"])
+    assert transactions_args.command == "transactions"
+    assert transactions_args.transactions_command == "list"
+
 
 def test_connect_rejects_conflicting_auth_sources():
     args = argparse.Namespace(username="alice", onepassword_item="Avanza", onepassword_vault=None)
@@ -347,6 +351,22 @@ def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("avanza_cli.secrets.token_urlsafe", lambda _n: "token")
+
+    class FakeMcpServer:
+        def __init__(self, server_address, _handler, _app, _token):
+            self.server_address = ("127.0.0.1", 62001)
+
+        def serve_forever(self):
+            return
+
+        def shutdown(self):
+            return
+
+        def server_close(self):
+            return
+
+    monkeypatch.setattr("avanza_cli.AvanzaMcpHttpServer", FakeMcpServer)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -367,6 +387,22 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("avanza_cli.secrets.token_urlsafe", lambda _n: "token")
+
+    class FakeMcpServer:
+        def __init__(self, server_address, _handler, _app, _token):
+            self.server_address = ("127.0.0.1", 62002)
+
+        def serve_forever(self):
+            return
+
+        def shutdown(self):
+            return
+
+        def server_close(self):
+            return
+
+    monkeypatch.setattr("avanza_cli.AvanzaMcpHttpServer", FakeMcpServer)
 
     class FakeAvanza:
         def __init__(self, credentials):
@@ -471,6 +507,43 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
         def delete_stop_loss_order(self, account_id, stop_loss_id):
             return {"deleted": True, "account_id": account_id, "stop_loss_id": stop_loss_id}
 
+        def get_transactions_details(
+            self,
+            transaction_details_types=None,
+            transactions_from=None,
+            transactions_to=None,
+            isin=None,
+            max_elements=1000,
+        ):
+            _ = (transaction_details_types, transactions_from, transactions_to, isin, max_elements)
+            return {
+                "firstTransactionDate": "2024-01-01",
+                "transactions": [
+                    {
+                        "tradeDate": "2026-04-30",
+                        "account": {"id": "acc-2", "name": "Trading"},
+                        "instrumentName": "Example AB",
+                        "type": "BUY",
+                        "volume": {"value": 10, "unit": "st"},
+                        "priceInTransactionCurrency": {"value": 100, "unit": "SEK"},
+                        "amount": {"value": 1000, "unit": "SEK"},
+                        "commission": {"value": 1, "unit": "SEK"},
+                        "result": {"value": 5, "unit": "SEK"},
+                        "isin": "SE0000000001",
+                        "description": "Filled order",
+                    },
+                    {
+                        "tradeDate": "2026-04-29",
+                        "account": {"id": "acc-2", "name": "Trading"},
+                        "instrumentName": "Dividend Item",
+                        "type": "DIVIDEND",
+                        "amount": {"value": 25, "unit": "SEK"},
+                        "isin": "SE0000000001",
+                        "description": "Dividend",
+                    },
+                ],
+            }
+
     monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
 
     async def run_app() -> None:
@@ -514,6 +587,15 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert app.execute_mcp_tool("avanza_status", {})["read_write"] is False
             accounts = app.execute_mcp_tool("avanza_accounts", {})
             assert accounts[1]["Name"] == "Trading"
+            transactions = app.execute_mcp_tool("avanza_transactions", {"account_id": "acc-2"})
+            assert transactions["first_available_date"] == "2024-01-01"
+            assert len(transactions["transactions"]) == 1
+            assert transactions["transactions"][0]["Type"] == "BUY"
+            transactions_all_types = app.execute_mcp_tool(
+                "avanza_transactions",
+                {"account_id": "acc-2", "types": ["BUY", "DIVIDEND"], "executed_only": False},
+            )
+            assert len(transactions_all_types["transactions"]) == 2
             portfolio = app.execute_mcp_tool("avanza_portfolio", {})
             assert portfolio["positions"][0]["Real-time"] == "Unknown"
             dry_run = app.execute_mcp_tool(
@@ -696,9 +778,9 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert "deprecated" in stoploss_replace_alias.get("warning", "").lower()
             app.start_mcp_bridge()
             session = load_mcp_session(tmp_path / "mcp-session.json")
-            bridge_status = await asyncio.to_thread(call_mcp_bridge, session, "avanza_status", {})
-            assert bridge_status["ok"] is True
-            assert bridge_status["result"]["enabled"] is True
+            assert session["url"] == "http://127.0.0.1:62002"
+            assert session["token"] == "token"
+            assert app.mcp_status_payload()["enabled"] is True
             app.stop_mcp_bridge()
 
     asyncio.run(run_app())

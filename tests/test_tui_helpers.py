@@ -24,6 +24,7 @@ from avanza_cli import (
     matches_account,
     pane_weights_after_drag,
     paper_orders,
+    parse_transaction_types,
     portfolio_day_summary,
     portfolio_profit_summary,
     quantity_text,
@@ -59,6 +60,11 @@ from avanza_cli import (
 
 def test_amount_formats_value_objects():
     assert amount({"value": {"value": 123.45, "unit": "SEK"}}, "value") == "123.45 SEK"
+
+
+def test_parse_transaction_types_defaults_to_buy_sell():
+    assert [item.value for item in parse_transaction_types(None)] == ["BUY", "SELL"]
+    assert [item.value for item in parse_transaction_types("BUY,SELL,DIVIDEND")] == ["BUY", "SELL", "DIVIDEND"]
 
 
 def test_formatted_typed_value_uses_percent_symbol():

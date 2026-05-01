@@ -17,7 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from avanza import Avanza
-from avanza.constants import Condition, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType
+from avanza.constants import Condition, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType, TransactionsDetailsType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
 from rich.panel import Panel
@@ -55,6 +55,7 @@ PRICE_TYPE_ALIASES = {
 PRICE_TYPE_SELECT_OPTIONS = [("SEK", "monetary"), ("%", "percentage")]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
 ORDER_CONDITION_CHOICES = ["normal", "fill-or-kill", "fill-and-kill"]
+TRANSACTION_TYPE_CHOICES = [item.value for item in TransactionsDetailsType]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
@@ -332,6 +333,11 @@ def mcp_trade_detail(tool: str, arguments: dict[str, Any]) -> str:
 
     if tool == "avanza_stoploss_delete":
         return f"[red]DELETE[/red] {arguments.get('stop_loss_id', '-')}"
+
+    if tool == "avanza_transactions":
+        from_date = str(arguments.get("transactions_from", "")).strip() or "..."
+        to_date = str(arguments.get("transactions_to", "")).strip() or "today"
+        return f"[blue]HISTORY[/blue] {from_date}→{to_date}"
 
     return ""
 
@@ -1715,6 +1721,109 @@ def render_orders(orders: Any) -> None:
     )
 
 
+def parse_transaction_types(values: Any) -> list[TransactionsDetailsType]:
+    if values in (None, "", []):
+        return [TransactionsDetailsType.BUY, TransactionsDetailsType.SELL]
+
+    raw_values: list[str]
+    if isinstance(values, str):
+        raw_values = [chunk.strip() for chunk in values.split(",") if chunk.strip()]
+    elif isinstance(values, (list, tuple, set)):
+        raw_values = [str(value).strip() for value in values if str(value).strip()]
+    else:
+        raise ValueError("transaction types must be a comma-separated string or a list.")
+
+    if not raw_values:
+        return [TransactionsDetailsType.BUY, TransactionsDetailsType.SELL]
+    return [enum_value(TransactionsDetailsType, value) for value in raw_values]
+
+
+def transactions_items(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
+    if hasattr(payload, "model_dump"):
+        try:
+            payload = payload.model_dump()
+        except Exception:
+            pass
+    if isinstance(payload, dict):
+        raw_items = payload.get("transactions") or payload.get("items") or []
+        first_date = str(payload.get("firstTransactionDate") or "") or None
+    elif isinstance(payload, list):
+        raw_items = payload
+        first_date = None
+    else:
+        raw_items = []
+        first_date = None
+    return [item for item in raw_items if isinstance(item, dict)], first_date
+
+
+def transaction_matches_filters(item: dict[str, Any], account_id: str | None, executed_only: bool) -> bool:
+    if account_id and order_account_id(item, None) != account_id:
+        return False
+    if not executed_only:
+        return True
+    return str(item.get("type", "")).upper() in {"BUY", "SELL"}
+
+
+def transaction_history_row(item: dict[str, Any]) -> tuple[Any, ...]:
+    orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
+    side = str(item.get("type", "")).upper()
+    side_cell = side_badge(side.lower()) if side in {"BUY", "SELL"} else side
+    return (
+        str(item.get("tradeDate") or item.get("date") or ""),
+        str(nested_value(item, "account", "name") or ""),
+        str(item.get("instrumentName") or orderbook.get("name") or item.get("description") or ""),
+        side_cell,
+        amount(item, "volume"),
+        amount(item, "priceInTransactionCurrency") or amount(item, "priceInTradedCurrency"),
+        amount(item, "amount"),
+        amount(item, "commission"),
+        amount(item, "result"),
+    )
+
+
+def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
+    orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
+    return {
+        "Trade Date": str(item.get("tradeDate") or item.get("date") or ""),
+        "Account": str(nested_value(item, "account", "name") or ""),
+        "Stock": str(item.get("instrumentName") or orderbook.get("name") or item.get("description") or ""),
+        "Type": str(item.get("type", "")).upper(),
+        "Volume": amount(item, "volume"),
+        "Price": amount(item, "priceInTransactionCurrency") or amount(item, "priceInTradedCurrency"),
+        "Amount": amount(item, "amount"),
+        "Commission": amount(item, "commission"),
+        "Result": amount(item, "result"),
+        "ISIN": str(item.get("isin") or orderbook.get("isin") or ""),
+        "Description": str(item.get("description") or ""),
+    }
+
+
+def render_transactions_history(
+    payload: Any,
+    account_id: str | None = None,
+    executed_only: bool = True,
+) -> None:
+    items, first_date = transactions_items(payload)
+    rows = [
+        transaction_history_row(item)
+        for item in items
+        if transaction_matches_filters(item, account_id, executed_only)
+    ]
+    if not rows:
+        render_message("Transaction History", ["No matching transactions found."])
+        return
+
+    heading = "Executed Orders History" if executed_only else "Transaction History"
+    if first_date:
+        heading = f"{heading} (first available: {first_date})"
+
+    render_table(
+        heading,
+        ["Trade Date", "Account", "Stock", "Type", "Volume", "Price", "Amount", "Commission", "Result"],
+        rows,
+    )
+
+
 def empty_paper_session() -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
     return {
@@ -2057,6 +2166,26 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_transactions",
+        "description": "List executed orders/history (BUY/SELL by default) with optional account/date/type filters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "transactions_from": {"type": "string"},
+                "transactions_to": {"type": "string"},
+                "types": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": TRANSACTION_TYPE_CHOICES},
+                },
+                "isin": {"type": "string"},
+                "max_elements": {"type": "integer", "minimum": 1, "maximum": 20000, "default": 1000},
+                "executed_only": {"type": "boolean", "default": True},
+            },
             "additionalProperties": False,
         },
     },
@@ -3795,6 +3924,38 @@ class AvanzaTradingTui(App):
         if tool == "avanza_stoplosses":
             return self.stoploss_snapshot(avanza, account_id)
 
+        if tool == "avanza_transactions":
+            transactions_from_raw = arguments.get("transactions_from")
+            transactions_to_raw = arguments.get("transactions_to")
+            transactions_from = date.fromisoformat(str(transactions_from_raw)) if transactions_from_raw else None
+            transactions_to = date.fromisoformat(str(transactions_to_raw)) if transactions_to_raw else None
+            transaction_types = parse_transaction_types(arguments.get("types"))
+            isin = str(arguments.get("isin", "") or "") or None
+            max_elements = int(arguments.get("max_elements", 1000))
+            executed_only = bool(arguments.get("executed_only", True))
+            payload = avanza.get_transactions_details(
+                transaction_details_types=transaction_types,
+                transactions_from=transactions_from,
+                transactions_to=transactions_to,
+                isin=isin,
+                max_elements=max_elements,
+            )
+            items, first_date = transactions_items(payload)
+            rows = [
+                transaction_history_dict_row(item)
+                for item in items
+                if transaction_matches_filters(item, account_id or None, executed_only)
+            ]
+            return {
+                "account_id": account_id or None,
+                "executed_only": executed_only,
+                "types": [item.value for item in transaction_types],
+                "transactions_from": transactions_from.isoformat() if transactions_from else None,
+                "transactions_to": transactions_to.isoformat() if transactions_to else None,
+                "first_available_date": first_date,
+                "transactions": rows,
+            }
+
         if tool == "avanza_live_snapshot":
             account_id = account_id or self.require_selected_account_id()
             realtime_quotes = self.realtime_quotes_snapshot(account_id)
@@ -5145,6 +5306,29 @@ def cmd_orders_list(args: argparse.Namespace) -> None:
     render_orders(avanza.get_orders())
 
 
+def cmd_transactions_list(args: argparse.Namespace) -> None:
+    avanza = connect(args)
+    if args.max_elements < 1:
+        raise ValueError("--max-elements must be >= 1.")
+    transaction_types = parse_transaction_types(args.types)
+    transactions_from = None if args.all else args.transactions_from
+    transactions_to = None if args.all else args.transactions_to
+    if transactions_from and transactions_to and transactions_from > transactions_to:
+        raise ValueError("--from cannot be after --to.")
+    payload = avanza.get_transactions_details(
+        transaction_details_types=transaction_types,
+        transactions_from=transactions_from,
+        transactions_to=transactions_to,
+        isin=args.isin,
+        max_elements=args.max_elements,
+    )
+    render_transactions_history(
+        payload,
+        account_id=args.account_id,
+        executed_only=not args.include_non_executed,
+    )
+
+
 def cmd_order_delete(args: argparse.Namespace) -> None:
     if not args.confirm:
         render_message(
@@ -5226,6 +5410,7 @@ def build_parser() -> argparse.ArgumentParser:
               python avanza_cli.py portfolio summary
               python avanza_cli.py portfolio positions
               python avanza_cli.py search-stock "VOLV B"
+              python avanza_cli.py transactions list
               python avanza_cli.py orders list
               python avanza_cli.py stoploss list
 
@@ -5336,6 +5521,71 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of search results to request. Default: 10.",
     )
     search.set_defaults(func=cmd_search)
+
+    transactions = subparsers.add_parser(
+        "transactions",
+        formatter_class=HELP_FORMATTER,
+        help="View transaction history / executed orders.",
+        description="List transaction history. Defaults to executed orders (BUY/SELL).",
+        epilog=textwrap.dedent(
+            """\
+            Examples:
+              python avanza_cli.py transactions list
+              python avanza_cli.py transactions list --account-id ACCOUNT_ID --max-elements 5000
+              python avanza_cli.py transactions list --all
+              python avanza_cli.py transactions list --types BUY,SELL,DIVIDEND --from 2026-01-01 --to 2026-05-01
+            """
+        ),
+    )
+    transactions_subparsers = transactions.add_subparsers(dest="transactions_command", required=True)
+
+    transactions_list = transactions_subparsers.add_parser(
+        "list",
+        formatter_class=HELP_FORMATTER,
+        help="List transaction history entries.",
+        description="List transaction history entries with account/date/type filters.",
+    )
+    add_common_auth(transactions_list)
+    transactions_list.add_argument("--account-id", metavar="ID", help="Optional Avanza account id filter.")
+    transactions_list.add_argument(
+        "--from",
+        dest="transactions_from",
+        metavar="YYYY-MM-DD",
+        type=parse_date,
+        help="Start date filter (inclusive).",
+    )
+    transactions_list.add_argument(
+        "--to",
+        dest="transactions_to",
+        metavar="YYYY-MM-DD",
+        type=parse_date,
+        help="End date filter (inclusive).",
+    )
+    transactions_list.add_argument(
+        "--types",
+        metavar="CSV",
+        default="BUY,SELL",
+        help="Comma-separated transaction types. Default: BUY,SELL.",
+    )
+    transactions_list.add_argument("--isin", metavar="ISIN", help="Optional ISIN filter.")
+    transactions_list.add_argument(
+        "--max-elements",
+        metavar="N",
+        type=int,
+        default=1000,
+        help="Maximum number of transactions to request. Default: 1000.",
+    )
+    transactions_list.add_argument(
+        "--include-non-executed",
+        action="store_true",
+        help="Include non-executed types (deposits/dividends/withdrawals) in output.",
+    )
+    transactions_list.add_argument(
+        "--all",
+        action="store_true",
+        help="Request practically all available history by removing date filters.",
+    )
+    transactions_list.set_defaults(func=cmd_transactions_list)
 
     orders = subparsers.add_parser(
         "orders",

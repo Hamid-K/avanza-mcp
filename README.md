@@ -64,6 +64,18 @@ Show detailed portfolio positions:
 python avanza_cli.py portfolio positions
 ```
 
+Show transaction history (executed orders by default):
+
+```bash
+python avanza_cli.py transactions list
+```
+
+Pull broader history:
+
+```bash
+python avanza_cli.py transactions list --all --max-elements 5000
+```
+
 Search for a stock/order book:
 
 ```bash
@@ -186,6 +198,7 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_accounts` | List available Avanza accounts in the active TUI session. |
 | `avanza_portfolio` | Portfolio positions for selected or specified account. |
 | `avanza_stoplosses` | Stop-loss orders for selected or specified account. |
+| `avanza_transactions` | Executed order/transaction history with account/date/type filters. |
 | `avanza_live_snapshot` | Full polling snapshot (positions, orders, stop-losses, paper state). |
 | `avanza_realtime_quotes` | Real-time quote snapshot for current holdings. |
 | `avanza_search_stock` | Search stocks/order books by name, ticker, or ISIN. |

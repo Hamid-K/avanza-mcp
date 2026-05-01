@@ -96,6 +96,30 @@ python avanza_cli.py orders delete \
   --order-id ORDER_ID
 ```
 
+## Transactions History
+
+List executed orders history (BUY/SELL default):
+
+```bash
+python avanza_cli.py transactions list
+```
+
+Pull broader history:
+
+```bash
+python avanza_cli.py transactions list --all --max-elements 5000
+```
+
+Filter by account/date/types:
+
+```bash
+python avanza_cli.py transactions list \
+  --account-id ACCOUNT_ID \
+  --from 2026-01-01 \
+  --to 2026-05-01 \
+  --types BUY,SELL,DIVIDEND
+```
+
 ## MCP Mode
 
 ### Register and run the MCP server
@@ -132,6 +156,7 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_accounts` | List accounts visible in the active TUI session. |
 | `avanza_portfolio` | Portfolio positions for selected/specified account. |
 | `avanza_stoplosses` | Stop-loss list for selected/specified account. |
+| `avanza_transactions` | Executed order/transaction history with account/date/type filters. |
 | `avanza_live_snapshot` | Full polling snapshot for trading loops. |
 | `avanza_realtime_quotes` | Real-time quote snapshot for holdings. |
 | `avanza_search_stock` | Search stocks/order books by name, ticker, or ISIN. |
