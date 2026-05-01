@@ -213,6 +213,19 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_order_edit` | Dry-run or edit regular order. |
 | `avanza_order_delete` | Dry-run or delete regular order. |
 
+### MCP Transaction History Quick Use
+
+Use `avanza_transactions` to retrieve executed order history (BUY/SELL by default).
+
+- Most recent 15 rows:
+  - `{"maxElements": 15}`
+- Include dividends and interest:
+  - `{"types": ["BUY", "SELL", "DIVIDEND", "INTEREST"], "maxElements": 200}`
+- Full export window:
+  - `{"fromDate": "2026-01-01", "toDate": "2026-12-31", "allTransactions": true, "maxElements": 5000}`
+
+`avanza_transactions` is read-only and works while MCP remains read-only.
+
 ### 4) ChatGPT desktop note
 
 ChatGPT developer mode currently expects remote MCP apps/connectors over SSE or streaming HTTP, so it cannot directly register this local stdio proxy.

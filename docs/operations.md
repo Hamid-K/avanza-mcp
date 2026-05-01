@@ -171,6 +171,28 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_order_edit` | Dry-run or edit regular order. |
 | `avanza_order_delete` | Dry-run or delete regular order. |
 
+### MCP transaction history examples
+
+Most recent 15 executed rows:
+
+```json
+{"tool":"avanza_transactions","arguments":{"maxElements":15}}
+```
+
+Include additional transaction types:
+
+```json
+{"tool":"avanza_transactions","arguments":{"types":["BUY","SELL","DIVIDEND","INTEREST"],"maxElements":200}}
+```
+
+Longer period export:
+
+```json
+{"tool":"avanza_transactions","arguments":{"fromDate":"2026-01-01","toDate":"2026-12-31","allTransactions":true,"maxElements":5000}}
+```
+
+`avanza_transactions` is read-only and can run with MCP `read_only=true`.
+
 Codex and Codex CLI can run this local stdio MCP command from `~/.codex/config.toml`. ChatGPT developer mode supports remote MCP apps/connectors over SSE or streaming HTTP; it does not currently connect directly to local stdio MCP servers. To use this from ChatGPT, expose a remote streaming HTTP/SSE MCP server with appropriate authentication instead of the local `python avanza_cli.py mcp` proxy.
 
 For live monitoring loops, poll `avanza_live_snapshot` no faster than the TUI refresh interval. The snapshot includes positions, stop-losses, open orders, paper orders, safety mode, and `poll_interval_seconds`. MCP does not push unsolicited events to Codex; polling keeps sequencing explicit and auditable.

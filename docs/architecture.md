@@ -9,6 +9,8 @@ This project is intentionally small and explicit.
 
 The console and TUI surfaces call `avanza-api` directly. MCP uses the TUI-owned authenticated client through a local bridge so credentials and TOTP remain handled by the TUI.
 
+Transaction history retrieval (`avanza_transactions`) is exposed on CLI and MCP as a read-only path for audit/review workflows (executed orders by default, optional broader transaction types and date filters).
+
 ## Credentials
 
 Credentials are entered at runtime. Password and TOTP fields are masked and must not be committed or pasted into issue logs, transcripts, or documentation.
