@@ -342,9 +342,9 @@ def mcp_trade_detail(tool: str, arguments: dict[str, Any]) -> str:
     return ""
 
 
-def mcp_call_log_line(tool: str, arguments: dict[str, Any]) -> str:
+def mcp_call_log_line(tool: str, arguments: dict[str, Any], marker_override: str | None = None) -> str:
     parts = [f"← {tool}"]
-    marker = mcp_stock_marker(arguments)
+    marker = marker_override or mcp_stock_marker(arguments)
     if marker:
         parts.append(f"[cyan]{marker}[/cyan]")
     detail = mcp_trade_detail(tool, arguments)
@@ -362,6 +362,51 @@ def mcp_result_log_suffix(payload: Any) -> str:
         return " [yellow]DRY[/yellow]"
     if payload.get("dry_run") is False:
         return " [green]LIVE[/green]"
+    return ""
+
+
+def mcp_result_log_detail(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+
+    counts: list[str] = []
+    for key, label in (
+        ("positions", "pos"),
+        ("stoplosses", "sl"),
+        ("orders", "ord"),
+        ("transactions", "txn"),
+        ("quotes", "qt"),
+        ("events", "evt"),
+    ):
+        value = payload.get(key)
+        if isinstance(value, list):
+            counts.append(f"{label}:{len(value)}")
+    if counts:
+        return " [dim]" + " ".join(counts) + "[/dim]"
+
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+
+    if order:
+        identifier = str(order.get("id", "")).strip()
+        if identifier:
+            return f" [dim]id:{identifier}[/dim]"
+
+    for candidate in (
+        result.get("orderId"),
+        result.get("stoplossOrderId"),
+        result.get("stopLossOrderId"),
+        result.get("id"),
+    ):
+        token = str(candidate or "").strip()
+        if token:
+            return f" [dim]id:{token}[/dim]"
+
+    for candidate in (request.get("order_id"), request.get("stop_loss_id")):
+        token = str(candidate or "").strip()
+        if token:
+            return f" [dim]id:{token}[/dim]"
     return ""
 
 
@@ -2823,7 +2868,12 @@ class AvanzaTradingTui(App):
     #activity-logs-section {
         height: 1fr;
         layout: vertical;
-        align-vertical: top;
+    }
+
+    #activity-controls {
+        height: 1;
+        margin: 0;
+        padding: 0;
     }
 
     #activity-resizer {
@@ -2929,19 +2979,20 @@ class AvanzaTradingTui(App):
     }
 
     #console-row {
+        width: 1fr;
         height: 1fr;
-        align-vertical: top;
+        min-height: 6;
     }
 
     #log {
         width: 1fr;
-        height: 1fr;
+        height: 100%;
         border: solid $primary;
     }
 
     #mcp-log {
         width: 1fr;
-        height: 1fr;
+        height: 100%;
         border: solid $warning;
     }
 
@@ -3136,7 +3187,7 @@ class AvanzaTradingTui(App):
                             yield DataTable(id="stoploss-table")
                         yield ActivityPaneResizer()
                         with Vertical(id="activity-logs-section"):
-                            with Horizontal():
+                            with Horizontal(id="activity-controls"):
                                 yield Button("Refresh Account", id="refresh-account", variant="primary")
                                 yield Button("Edit Stop-Loss", id="edit-stoploss", variant="primary")
                                 yield Button("Clear Log", id="clear-log")
@@ -3336,7 +3387,12 @@ class AvanzaTradingTui(App):
         self.activity_logs_weight = logs_weight
         self.query_one("#activity-table-section").styles.height = f"{table_weight}fr"
         self.query_one("#activity-logs-section").styles.height = f"{logs_weight}fr"
+        self.query_one("#console-row").styles.height = "1fr"
         self.query_one("#activity-panel").refresh(layout=True)
+        self.query_one("#activity-logs-section").refresh(layout=True)
+        self.query_one("#console-row").refresh(layout=True)
+        self.query_one("#log").refresh(layout=True)
+        self.query_one("#mcp-log").refresh(layout=True)
 
     def apply_ticket_pane_width(self, width: int) -> None:
         self.ticket_pane_width = width
@@ -3633,6 +3689,49 @@ class AvanzaTradingTui(App):
             raise RuntimeError("Select an account first.")
         return self.selected_account_id
 
+    def stock_name_for_order_book(self, order_book_id: str) -> str:
+        token = str(order_book_id or "").strip()
+        if not token:
+            return ""
+        cached = str(self.holding_labels_by_order_book.get(token, "")).strip()
+        if cached:
+            return cached
+        cached = str(self.order_search_labels_by_order_book.get(token, "")).strip()
+        if cached:
+            return cached
+        data = self.latest_portfolio_data
+        if isinstance(data, dict):
+            for section in ("withOrderbook", "withoutOrderbook"):
+                for item in data.get(section, []):
+                    if not isinstance(item, dict):
+                        continue
+                    if position_order_book_id(item) == token:
+                        return str(nested_value(item, "instrument", "name") or "").strip()
+        return ""
+
+    def mcp_stock_marker_for_call(self, arguments: dict[str, Any]) -> str:
+        marker = mcp_stock_marker(arguments)
+        if marker and not marker.startswith("OB "):
+            return marker
+
+        order_book_id = str(arguments.get("order_book_id", "")).strip()
+        if order_book_id:
+            return self.stock_name_for_order_book(order_book_id) or f"OB {order_book_id}"
+
+        stop_loss_id = str(arguments.get("stop_loss_id", "")).strip()
+        if stop_loss_id:
+            for item in self.latest_stoploss_items:
+                if str(item.get("id", "")).strip() == stop_loss_id:
+                    return order_stock_name(item) or marker
+
+        order_id = str(arguments.get("order_id", "")).strip()
+        if order_id:
+            for item in self.latest_open_order_items:
+                current = str(item.get("id", "") or item.get("orderId", "")).strip()
+                if current == order_id:
+                    return order_stock_name(item) or marker
+        return marker
+
     def update_selected_account_summary(self, portfolio_data: dict[str, Any] | None = None) -> None:
         portfolio_data = portfolio_data or self.latest_portfolio_data
         account = self.account_by_id(self.selected_account_id) if self.selected_account_id else None
@@ -3880,11 +3979,12 @@ class AvanzaTradingTui(App):
             raise PermissionError("TUI MCP mode is read-only. Enable R/W in the TUI for live mutations.")
 
     def handle_mcp_tool_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        self.write_mcp_log(mcp_call_log_line(tool, arguments))
+        marker = self.mcp_stock_marker_for_call(arguments)
+        self.write_mcp_log(mcp_call_log_line(tool, arguments, marker_override=marker))
         self.record_event("mcp", "tool_call", {"tool": tool, "arguments": arguments})
         try:
             result = self.execute_mcp_tool(tool, arguments)
-            self.write_mcp_log(f"[green]✓[/green] {tool}{mcp_result_log_suffix(result)}")
+            self.write_mcp_log(f"[green]✓[/green] {tool}{mcp_result_log_suffix(result)}{mcp_result_log_detail(result)}")
             self.record_event(
                 "mcp",
                 "tool_result",

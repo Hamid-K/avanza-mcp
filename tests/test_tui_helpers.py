@@ -20,6 +20,7 @@ from avanza_cli import (
     load_paper_session,
     market_clock_text,
     mcp_call_log_line,
+    mcp_result_log_detail,
     mcp_result_log_suffix,
     matches_account,
     pane_weights_after_drag,
@@ -131,6 +132,11 @@ def test_mcp_result_log_suffix_formats_mode():
     assert mcp_result_log_suffix({"paper": True}) == " [blue]PAPER[/blue]"
     assert mcp_result_log_suffix({"dry_run": True}) == " [yellow]DRY[/yellow]"
     assert mcp_result_log_suffix({"dry_run": False}) == " [green]LIVE[/green]"
+
+
+def test_mcp_result_log_detail_formats_counts_and_ids():
+    assert mcp_result_log_detail({"transactions": [{}, {}]}) == " [dim]txn:2[/dim]"
+    assert mcp_result_log_detail({"result": {"orderId": "A1"}}) == " [dim]id:A1[/dim]"
 
 
 def test_account_display_name_prefers_user_defined_name():

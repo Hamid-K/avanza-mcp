@@ -88,6 +88,17 @@ def test_enum_value_accepts_hyphenated_names():
 
 def test_parse_price_type_accepts_percent_symbol():
     assert parse_price_type("%") == "percentage"
+
+
+def test_tui_resolves_mcp_stock_marker_from_cached_data():
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.holding_labels_by_order_book["529720"] = "Advanced Micro Devices"
+    assert app.mcp_stock_marker_for_call({"order_book_id": "529720"}) == "Advanced Micro Devices"
+
+    app.latest_stoploss_items = [{"id": "sl-1", "orderbook": {"name": "Broadcom"}}]
+    assert app.mcp_stock_marker_for_call({"stop_loss_id": "sl-1"}) == "Broadcom"
     assert parse_price_type("SEK") == "monetary"
 
 
