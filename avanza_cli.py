@@ -2900,9 +2900,11 @@ class AvanzaTradingTui(App):
 
     .view-tab {
         min-width: 10;
+        height: 1;
+        padding: 0 1;
         background: #0f3f73;
         color: #ffffff;
-        border: solid #1f8bff;
+        border: none;
         text-style: bold;
     }
 
