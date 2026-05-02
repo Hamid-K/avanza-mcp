@@ -2895,14 +2895,15 @@ class AvanzaTradingTui(App):
     }
 
     .view-tab {
-        background: $surface-darken-1;
-        color: $primary-lighten-2;
+        background: $primary-darken-3;
+        color: $text;
+        border: solid $primary;
         border-bottom: solid $primary;
         text-style: bold;
     }
 
     .view-tab:hover {
-        background: $primary-darken-3;
+        background: $accent-darken-2;
         color: $text;
     }
 
