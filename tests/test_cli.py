@@ -70,6 +70,10 @@ def test_position_state_row_with_quote_preserves_snapshot_values():
             "relative": {"value": 1, "unit": "%"},
             "absolute": {"value": 10, "unit": "SEK"},
         },
+        "profit": {
+            "absolute": {"value": 100.0, "unit": "SEK"},
+            "relative": {"value": 11.11, "unit": "%"},
+        },
     }
     quote = {"quote": {"last": 110, "changePercent": 2.5}}
     row = position_state_row_with_quote(item, quote, "Real-time")
@@ -454,6 +458,16 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                         "type": "ISK",
                         "totalValue": {"value": 1000, "unit": "SEK"},
                         "buyingPower": {"value": 250, "unit": "SEK"},
+                        "profit": {
+                            "absolute": {"value": 0, "unit": "SEK"},
+                            "relative": {"value": 0, "unit": "%"},
+                        },
+                        "performance": {
+                            "ONE_DAY": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
+                            "ONE_WEEK": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
+                            "ONE_MONTH": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
+                            "ONE_YEAR": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
+                        },
                         "status": "ACTIVE",
                     },
                     {
@@ -462,6 +476,16 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                         "type": "ISK",
                         "totalValue": {"value": 5000, "unit": "SEK"},
                         "buyingPower": {"value": 750, "unit": "SEK"},
+                        "profit": {
+                            "absolute": {"value": 100, "unit": "SEK"},
+                            "relative": {"value": 2, "unit": "%"},
+                        },
+                        "performance": {
+                            "ONE_DAY": {"absolute": {"value": 10, "unit": "SEK"}, "relative": {"value": 0.2, "unit": "%"}},
+                            "ONE_WEEK": {"absolute": {"value": 20, "unit": "SEK"}, "relative": {"value": 0.4, "unit": "%"}},
+                            "ONE_MONTH": {"absolute": {"value": 30, "unit": "SEK"}, "relative": {"value": 0.6, "unit": "%"}},
+                            "ONE_YEAR": {"absolute": {"value": 40, "unit": "SEK"}, "relative": {"value": 0.8, "unit": "%"}},
+                        },
                         "status": "ACTIVE",
                     }
                 ]

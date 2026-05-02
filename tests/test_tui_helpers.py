@@ -224,6 +224,10 @@ def test_account_stats_text_includes_profit_summary():
         "type": "ISK",
         "totalValue": {"value": 1100, "unit": "SEK"},
         "buyingPower": {"value": 100, "unit": "SEK"},
+        "profit": {
+            "absolute": {"value": 100.0, "unit": "SEK"},
+            "relative": {"value": 10.0, "unit": "%"},
+        },
         "status": "ACTIVE",
     }
     positions = {
@@ -372,6 +376,10 @@ def test_position_state_row_includes_day_and_profit_state():
                 "relative": {"value": 1.25, "unit": "%"},
                 "absolute": {"value": 13.75, "unit": "SEK"},
             },
+            "profit": {
+                "absolute": {"value": 200.0, "unit": "SEK"},
+                "relative": {"value": 22.22, "unit": "%"},
+            },
         }
     )
 
@@ -390,7 +398,7 @@ def test_position_state_row_includes_day_and_profit_state():
     assert str(row[9].style) == "#7fbf8f"
 
 
-def test_position_state_row_uses_absolute_acquired_value_for_profit_percent():
+def test_position_state_row_uses_avanza_profit_fields_only():
     row = position_state_row(
         {
             "account": {"name": "ISK", "id": "acc-1"},
@@ -406,11 +414,38 @@ def test_position_state_row_uses_absolute_acquired_value_for_profit_percent():
                 "relative": {"value": 1.25, "unit": "%"},
                 "absolute": {"value": 13.75, "unit": "SEK"},
             },
+            "profit": {
+                "absolute": {"value": -25.0, "unit": "SEK"},
+                "relative": {"value": -2.27, "unit": "%"},
+            },
         }
     )
 
-    assert row[7] == "+22.22%"
-    assert row[8] == "+200.00 SEK"
+    assert row[7] == "-2.27%"
+    assert row[8] == "-25.00 SEK"
+
+
+def test_position_state_row_leaves_profit_blank_when_avanza_profit_is_missing():
+    row = position_state_row(
+        {
+            "account": {"name": "ISK", "id": "acc-1"},
+            "instrument": {
+                "name": "Example AB",
+                "orderbook": {"id": "ob-1"},
+            },
+            "volume": {"value": 10, "unit": "st"},
+            "value": {"value": 1100, "unit": "SEK"},
+            "averageAcquiredPrice": {"value": 90, "unit": "SEK"},
+            "acquiredValue": {"value": 900, "unit": "SEK"},
+            "lastTradingDayPerformance": {
+                "relative": {"value": 1.25, "unit": "%"},
+                "absolute": {"value": 13.75, "unit": "SEK"},
+            },
+        }
+    )
+
+    assert row[7] == ""
+    assert row[8] == ""
 
 
 def test_position_trade_action_row_adds_buy_sell_actions():

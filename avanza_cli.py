@@ -970,6 +970,53 @@ def acquired_cost_basis(value: float | None) -> float | None:
     return abs(value)
 
 
+def first_value_number(data: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> float | None:
+    for path in paths:
+        candidate = value_number(data, *path)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def first_unit_text(data: dict[str, Any], paths: tuple[tuple[str, ...], ...], default: str = "SEK") -> str:
+    for path in paths:
+        unit_value = nested_value(data, *path, "unit")
+        if unit_value:
+            return str(unit_value)
+    return default
+
+
+def account_profit_summary_from_avanza(account: dict[str, Any] | None) -> tuple[float | None, float | None, str]:
+    if not isinstance(account, dict):
+        return None, None, "SEK"
+    amount_value = value_number(account, "profit", "absolute")
+    percent_value = value_number(account, "profit", "relative")
+    value_unit = str(nested_value(account, "profit", "absolute", "unit") or "SEK")
+    return amount_value, percent_value, value_unit
+
+
+def position_profit_summary_from_avanza(item: dict[str, Any]) -> tuple[float | None, float | None, str]:
+    amount_paths = (
+        ("profit", "absolute"),
+        ("development", "absolute"),
+        ("performanceSincePurchase", "absolute"),
+        ("performanceSinceAcquired", "absolute"),
+        ("outcome", "development"),
+    )
+    percent_paths = (
+        ("profit", "relative"),
+        ("development", "relative"),
+        ("performanceSincePurchase", "relative"),
+        ("performanceSinceAcquired", "relative"),
+        ("outcome", "totalDevelopmentInPercent"),
+        ("totalDevelopmentInPercent",),
+    )
+    profit_amount = first_value_number(item, amount_paths)
+    profit_percent = first_value_number(item, percent_paths)
+    value_unit = first_unit_text(item, amount_paths, str(nested_value(item, "value", "unit") or "SEK"))
+    return profit_amount, profit_percent, value_unit
+
+
 def metric_style(value: float | None) -> str:
     if value is None:
         return "dim"
@@ -1125,13 +1172,15 @@ def account_stats_text(
     text.append(buying_power)
 
     if portfolio_data is not None:
-        profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
-        if profit_amount is not None:
-            style = metric_style(profit_amount)
+        profit_amount, profit_percent, value_unit = account_profit_summary_from_avanza(account)
+        if profit_amount is not None or profit_percent is not None:
+            style = metric_style(profit_amount if profit_amount is not None else profit_percent)
             text.append("  Profit ", style="dim")
-            text.append(money_text(profit_amount, value_unit), style=style)
+            if profit_amount is not None:
+                text.append(money_text(profit_amount, value_unit), style=style)
             if profit_percent is not None:
-                text.append(" ")
+                if profit_amount is not None:
+                    text.append(" ")
                 text.append(f"({percent_text(profit_percent)})", style=style)
 
     if account_status:
@@ -1235,18 +1284,9 @@ def account_metric_values(
     value_unit = "SEK"
     if portfolio_data is not None:
         if profit_mode == "total":
-            profit_amount, profit_percent, value_unit = portfolio_profit_summary(portfolio_data, account_id)
-        elif profit_mode in WINDOW_PERFORMANCE_KEYS:
-            profit_amount, profit_percent, value_unit = portfolio_window_summary(
-                portfolio_data,
-                account_id,
-                profit_mode,
-                account,
-            )
-            if profit_amount is None and profit_percent is None:
-                profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
+            profit_amount, profit_percent, value_unit = account_profit_summary_from_avanza(account)
         else:
-            profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
+            profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
     return {
         "total": account_metric_text("Total", total, "bold"),
         "buying": account_metric_text("Buying", buying_power, "bold"),
@@ -1260,14 +1300,7 @@ def position_state_row(item: dict[str, Any], realtime_override: str | None = Non
     instrument = item.get("instrument") or {}
     orderbook = instrument.get("orderbook") or {}
     performance = item.get("lastTradingDayPerformance") or {}
-    current_value = value_number(item, "value")
-    acquired_value = acquired_cost_basis(value_number(item, "acquiredValue"))
-    profit_amount = None
-    profit_percent = None
-    if current_value is not None and acquired_value not in (None, 0):
-        profit_amount = current_value - acquired_value
-        profit_percent = (profit_amount / acquired_value) * 100
-
+    profit_amount, profit_percent, profit_unit = position_profit_summary_from_avanza(item)
     value_unit = nested_value(item, "value", "unit") or "SEK"
     return (
         str(instrument.get("name", "")),
@@ -1278,7 +1311,7 @@ def position_state_row(item: dict[str, Any], realtime_override: str | None = Non
         percent_text(value_number(performance, "relative")),
         money_text(value_number(performance, "absolute"), str(value_unit)),
         percent_text(profit_percent),
-        money_text(profit_amount, str(value_unit)),
+        money_text(profit_amount, profit_unit),
         realtime_status_badge(realtime_override or realtime_status(item)),
     )
 
