@@ -688,11 +688,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 },
             )
             assert paper_regular["order"]["kind"] == "Order"
-            cancel_target = next(
-                target
-                for target in app.cancel_targets_by_row_key.values()
-                if target["id"] == paper_regular["order"]["id"]
-            )
+            cancel_target = app.paper_cancel_target(paper_regular["order"])
             app.open_cancel_modal(cancel_target)
             assert app.query_one("#cancel-modal").display is True
             app.handle_cancel_review()

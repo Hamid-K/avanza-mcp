@@ -618,7 +618,7 @@ def test_stop_loss_activity_row_labels_order_price_type():
     assert row[6] == "1%"
 
 
-def test_open_order_activity_row_aligns_with_stop_loss_table_columns():
+def test_open_order_activity_row_aligns_with_ongoing_orders_table_columns():
     row = open_order_activity_row(
         {
             "id": "order-1",
@@ -632,11 +632,10 @@ def test_open_order_activity_row_aligns_with_stop_loss_table_columns():
         }
     )
 
-    assert len(row) == 9
-    assert row[3] == "-"
-    assert row[4] == side_badge("buy")
-    assert row[6] == "123 SEK"
-    assert row[8] == cancel_badge()
+    assert len(row) == 8
+    assert row[3] == side_badge("buy")
+    assert row[5] == "123 SEK"
+    assert row[7] == cancel_badge()
 
 
 def test_paper_session_round_trip_and_active_row(tmp_path):

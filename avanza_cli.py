@@ -1451,7 +1451,7 @@ def open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
 
 def open_order_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
     row = open_order_row(item)
-    return (*row[:3], "-", *row[3:], cancel_badge())
+    return (*row, cancel_badge())
 
 
 def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
@@ -3337,7 +3337,7 @@ class AvanzaTradingTui(App):
                         yield DataTable(id="portfolio-table")
                     yield PaneResizer()
                     with Vertical(id="activity-panel"):
-                        yield Static("Stop-Losses and Open Orders", classes="panel")
+                        yield Static("Ongoing Orders", classes="panel")
                         with Vertical(id="activity-table-section"):
                             yield DataTable(id="stoploss-table")
                         yield ActivityPaneResizer()
@@ -3351,7 +3351,7 @@ class AvanzaTradingTui(App):
                                 yield RichLog(id="mcp-log", highlight=True, markup=True)
                 yield SidePaneResizer()
                 with Vertical(id="active-trades-panel"):
-                    yield Static("Active Trades", classes="panel")
+                    yield Static("Active Stop-Losses", classes="panel")
                     yield DataTable(id="active-trades-table")
                 with Horizontal(id="stoploss-modal"):
                     yield TicketPaneResizer("stoploss")
@@ -3461,7 +3461,6 @@ class AvanzaTradingTui(App):
             "Kind",
             "Status",
             "Stock",
-            "Trigger",
             "Side",
             "Volume",
             "Price",
@@ -3944,7 +3943,6 @@ class AvanzaTradingTui(App):
             for key, value in self.cancel_targets_by_row_key.items()
             if not key.startswith(("stoploss-", "order-", "active-"))
         }
-        visible_count = 0
         self.latest_stoploss_items = []
         if isinstance(stoplosses, list):
             for item in stoplosses:
@@ -3952,11 +3950,6 @@ class AvanzaTradingTui(App):
                     if not matches_account(item, self.selected_account_id):
                         continue
                     self.latest_stoploss_items.append(item)
-                    row_key = f"stoploss-{item.get('id', visible_count)}"
-                    table.add_row(*stop_loss_activity_row(item), key=row_key)
-                    self.stoploss_items_by_row_key[row_key] = item
-                    self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Stop-loss", item)
-                    visible_count += 1
         else:
             self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(stoplosses).__name__}")
 
@@ -3977,7 +3970,7 @@ class AvanzaTradingTui(App):
         restore_table_row_selection(table, selected_row_key)
         self.update_active_trades_table()
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
-        self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
+        self.write_log(f"Loaded {len(self.latest_stoploss_items)} active stop-loss order(s) and {order_count} ongoing open order(s){suffix}.")
 
     def complete_login(self, avanza: Avanza, overview: dict[str, Any], portfolio: dict[str, Any], stoplosses: Any, orders: Any) -> None:
         self.avanza = avanza
@@ -4199,17 +4192,20 @@ class AvanzaTradingTui(App):
     def active_trade_rows(self) -> list[tuple[Any, ...]]:
         rows: list[tuple[Any, ...]] = []
         rows.extend(active_stop_loss_row(item) for item in self.latest_stoploss_items)
-        rows.extend(active_open_order_row(item) for item in self.latest_open_order_items)
-        rows.extend(active_paper_order_row(item) for item in paper_orders(self.paper_session, self.selected_account_id, active_only=True))
+        rows.extend(
+            active_paper_order_row(item)
+            for item in paper_orders(self.paper_session, self.selected_account_id, active_only=True)
+            if str(item.get("kind", "")) == "Stop-loss"
+        )
         return rows
 
     def active_trade_entries(self) -> list[tuple[tuple[Any, ...], dict[str, str]]]:
         entries: list[tuple[tuple[Any, ...], dict[str, str]]] = []
         entries.extend((active_stop_loss_row(item), self.live_cancel_target("Stop-loss", item)) for item in self.latest_stoploss_items)
-        entries.extend((active_open_order_row(item), self.live_cancel_target("Order", item)) for item in self.latest_open_order_items)
         entries.extend(
             (active_paper_order_row(item), self.paper_cancel_target(item))
             for item in paper_orders(self.paper_session, self.selected_account_id, active_only=True)
+            if str(item.get("kind", "")) == "Stop-loss"
         )
         return entries
 
@@ -4813,14 +4809,18 @@ class AvanzaTradingTui(App):
         self.query_one("#place-live", Button).label = "Create Paper Stop-Loss" if self.paper_mode_enabled else "Submit Live Stop-Loss"
 
     def selected_stoploss_item(self) -> dict[str, Any]:
-        table = self.query_one("#stoploss-table", DataTable)
+        table = self.query_one("#active-trades-table", DataTable)
         row_key = selected_table_row_key(table)
         if row_key is None:
-            raise ValueError("Select a stop-loss row first.")
+            raise ValueError("Select a stop-loss row in Active Stop-Losses first.")
         row_key_value = str(getattr(row_key, "value", row_key))
-        item = self.stoploss_items_by_row_key.get(row_key_value)
-        if not item:
-            raise ValueError("Selected row is not a stop-loss entry.")
+        target = self.cancel_targets_by_row_key.get(row_key_value, {})
+        if str(target.get("kind", "")).lower() != "stop-loss":
+            raise ValueError("Selected active row is not a stop-loss entry.")
+        target_id = str(target.get("id", ""))
+        item = next((entry for entry in self.latest_stoploss_items if str(entry.get("id", "")) == target_id), None)
+        if item is None:
+            raise ValueError("Could not resolve selected stop-loss entry.")
         return item
 
     def open_stoploss_edit_modal(self) -> None:
