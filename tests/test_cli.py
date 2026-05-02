@@ -220,6 +220,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#side-pane-resizer") is not None
             assert app.query_one("#order-modal").display is False
             assert app.query_one("#orders-overlay").display is False
+            assert app.query_one("#transactions-overlay").display is False
             assert isinstance(app.query_one("#paper-mode-toggle"), Button)
             assert app.query_one("#paper-mode-label").renderable == "Paper"
             assert isinstance(app.query_one("#mcp-toggle"), Button)
@@ -927,6 +928,49 @@ def test_orders_overlay_loads_completed_buy_sell_history():
             assert app.query_one("#orders-overlay").display is True
             assert table.row_count == 1
             assert table.get_row_at(0)[2] == "Broadcom"
+
+    asyncio.run(run_app())
+
+
+def test_transactions_overlay_loads_account_transactions():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_transactions_details(self, **_kwargs):
+            return {
+                "transactions": [
+                    {
+                        "tradeDate": "2026-05-01",
+                        "type": "DEPOSIT",
+                        "description": "Deposit",
+                        "amount": {"value": 100000, "unit": "SEK"},
+                        "account": {"id": "acc-1", "name": "Trading"},
+                    },
+                    {
+                        "tradeDate": "2026-05-01",
+                        "type": "SELL",
+                        "instrumentName": "Apple",
+                        "volume": {"value": 2, "unit": "st"},
+                        "priceInTransactionCurrency": {"value": 270, "unit": "USD"},
+                        "amount": {"value": 540, "unit": "USD"},
+                        "result": {"value": 25, "unit": "SEK"},
+                        "isin": "US0378331005",
+                        "account": {"id": "acc-1", "name": "Trading"},
+                    },
+                ]
+            }
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.avanza = FakeAvanza()
+            app.selected_account_id = "acc-1"
+            app.open_transactions_overlay()
+            await pilot.pause()
+            table = app.query_one("#transactions-history-table", DataTable)
+            assert app.query_one("#transactions-overlay").display is True
+            assert table.row_count == 2
+            assert table.get_row_at(0)[2] in {"DEPOSIT", "SELL"}
 
     asyncio.run(run_app())
 

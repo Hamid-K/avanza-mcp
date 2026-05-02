@@ -1920,6 +1920,21 @@ def transaction_order_history_row(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def transaction_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
+    account = item.get("account") if isinstance(item.get("account"), dict) else {}
+    return (
+        str(item.get("tradeDate", "")),
+        str(account.get("name", "")),
+        str(item.get("type", "")),
+        str(item.get("instrumentName", "") or item.get("description", "")),
+        quantity_text(nested_value(item, "volume", "value")),
+        amount(item, "priceInTransactionCurrency"),
+        amount(item, "amount"),
+        amount(item, "result"),
+        str(item.get("isin", "")),
+    )
+
+
 def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
     orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
     return {
@@ -3360,6 +3375,7 @@ class AvanzaTradingTui(App):
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
                         yield Button("Orders", id="open-orders-overlay", variant="primary")
+                        yield Button("Transactions", id="open-transactions-overlay", variant="primary")
                     with Horizontal(id="toggle-controls"):
                         with Horizontal(classes="toggle-control"):
                             yield Button("✓", id="paper-mode-toggle", classes="mode-toggle-box enabled")
@@ -3500,6 +3516,13 @@ class AvanzaTradingTui(App):
                     yield Button("Refresh", id="refresh-orders-overlay", variant="primary")
                 yield Static("Completed buy/sell orders for the selected account.", id="orders-overlay-note")
                 yield DataTable(id="orders-history-table")
+            with Vertical(id="transactions-overlay"):
+                with Horizontal(classes="modal-header"):
+                    yield Button("X", id="close-transactions-overlay", classes="modal-close")
+                    yield Static("Transactions", classes="modal-title")
+                    yield Button("Refresh", id="refresh-transactions-overlay", variant="primary")
+                yield Static("Executed orders and account transactions for the selected account.", id="transactions-overlay-note")
+                yield DataTable(id="transactions-history-table")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -3563,6 +3586,21 @@ class AvanzaTradingTui(App):
         )
         orders_history_table.cursor_type = "row"
         orders_history_table.zebra_stripes = True
+
+        transactions_history_table = self.query_one("#transactions-history-table", DataTable)
+        transactions_history_table.add_columns(
+            "Date",
+            "Account",
+            "Type",
+            "Description",
+            "Qty",
+            "Price",
+            "Amount",
+            "Result",
+            "ISIN",
+        )
+        transactions_history_table.cursor_type = "row"
+        transactions_history_table.zebra_stripes = True
 
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
@@ -4892,6 +4930,35 @@ class AvanzaTradingTui(App):
     def close_orders_overlay(self) -> None:
         self.query_one("#orders-overlay").display = False
 
+    def refresh_transactions_overlay(self) -> None:
+        avanza = self.require_connection()
+        table = self.query_one("#transactions-history-table", DataTable)
+        selected_row_key = selected_table_row_key(table)
+        table.clear()
+
+        payload = avanza.get_transactions_details(
+            transaction_details_types=list(TransactionsDetailsType),
+            max_elements=5000,
+        )
+        items, _first_date = transactions_items(payload)
+        rows = [
+            transaction_activity_row(item)
+            for item in items
+            if transaction_matches_filters(item, self.selected_account_id, executed_only=False)
+        ]
+        for index, row in enumerate(rows):
+            table.add_row(*row, key=f"transactions-history-{index}")
+        restore_table_row_selection(table, selected_row_key)
+        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
+        self.write_log(f"Loaded {len(rows)} transaction row(s){suffix}.")
+
+    def open_transactions_overlay(self) -> None:
+        self.refresh_transactions_overlay()
+        self.query_one("#transactions-overlay").display = True
+
+    def close_transactions_overlay(self) -> None:
+        self.query_one("#transactions-overlay").display = False
+
     def reset_stoploss_modal_for_new(self) -> None:
         self.pending_stoploss_edit_id = None
         self.query_one("#stoploss-modal-title", Static).update("New Stop-Loss")
@@ -5102,6 +5169,8 @@ class AvanzaTradingTui(App):
                 self.query_one("#order-modal").display = True
             elif button_id == "open-orders-overlay":
                 self.open_orders_overlay()
+            elif button_id == "open-transactions-overlay":
+                self.open_transactions_overlay()
             elif button_id == "close-stoploss-modal":
                 self.reset_stoploss_modal_for_new()
                 self.query_one("#stoploss-modal").display = False
@@ -5111,6 +5180,10 @@ class AvanzaTradingTui(App):
                 self.close_orders_overlay()
             elif button_id == "refresh-orders-overlay":
                 self.refresh_orders_overlay()
+            elif button_id == "close-transactions-overlay":
+                self.close_transactions_overlay()
+            elif button_id == "refresh-transactions-overlay":
+                self.refresh_transactions_overlay()
             elif button_id == "close-cancel-modal":
                 self.close_cancel_modal()
             elif button_id == "clear-log":
