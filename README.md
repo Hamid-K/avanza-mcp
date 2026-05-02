@@ -1,3 +1,4 @@
+
 # Avanza-MCP
 
 > [!WARNING]
@@ -18,6 +19,12 @@ Credentials are prompted at runtime:
 Alternatively, pass `--onepassword-item ITEM` and optional `--onepassword-vault VAULT` to read the Avanza username, password, and current TOTP code through the 1Password CLI (`op`). The TUI has a matching `Login with 1Password` path. The tool does not store these secrets; `op` will ask you to authorize access through the local 1Password app.
 
 The current TOTP code is passed to `avanza-api` as `totpToken`, which is the field name expected by the installed library version.
+
+**TUI Demo:**
+
+<img width="2935" height="1507" alt="TUI" src="https://github.com/user-attachments/assets/c905313c-d719-4c42-b546-78d116cfda2d" />
+
+
 
 ## Setup
 
