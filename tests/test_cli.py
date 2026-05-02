@@ -1248,6 +1248,37 @@ def test_table_selection_can_be_restored_after_rebuild():
     asyncio.run(run_app())
 
 
+def test_live_refresh_runs_in_background_thread():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            time.sleep(0.2)
+            return {"withOrderbook": [], "withoutOrderbook": []}
+
+        def get_all_stop_losses(self):
+            time.sleep(0.1)
+            return []
+
+        def get_orders(self):
+            time.sleep(0.1)
+            return []
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.avanza = FakeAvanza()
+            app.selected_account_id = "acc-1"
+            started = time.perf_counter()
+            app.refresh_selected_account_live()
+            elapsed = time.perf_counter() - started
+            assert elapsed < 0.05
+            await pilot.pause(0.6)
+            assert app.live_refresh_inflight is False
+
+    asyncio.run(run_app())
+
+
 def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 

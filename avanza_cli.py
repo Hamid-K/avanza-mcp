@@ -62,6 +62,7 @@ ORDER_CONDITION_CHOICES = ["normal", "fill-or-kill", "fill-and-kill"]
 TRANSACTION_TYPE_CHOICES = [item.value for item in TransactionsDetailsType]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
+QUOTE_CACHE_SECONDS = 8.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
 LOGIN_PROGRESS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 LOGIN_PROGRESS_ROTATE_TICKS = 10
@@ -3330,6 +3331,12 @@ class AvanzaTradingTui(App):
         self.table_sort_state: dict[str, tuple[Any, bool]] = {}
         self.realtime_status_by_order_book: dict[str, str] = {}
         self.realtime_status_checked_at: dict[str, datetime] = {}
+        self.quote_payload_by_order_book: dict[str, dict[str, Any]] = {}
+        self.quote_payload_checked_at: dict[str, datetime] = {}
+        self.live_refresh_thread: threading.Thread | None = None
+        self.live_refresh_inflight = False
+        self.live_refresh_pending = False
+        self.live_refresh_lock = threading.Lock()
         self.mcp_server: AvanzaMcpHttpServer | None = None
         self.mcp_thread: threading.Thread | None = None
         self.mcp_token: str | None = None
@@ -4015,7 +4022,14 @@ class AvanzaTradingTui(App):
                 self.set_selected_account(selected)
                 account_select.value = self.selected_account_id
 
-    def apply_portfolio_data(self, data: dict[str, Any], fetch_quotes: bool = True) -> None:
+    def apply_portfolio_data(
+        self,
+        data: dict[str, Any],
+        fetch_quotes: bool = True,
+        quote_payloads: dict[str, dict[str, Any] | None] | None = None,
+        realtime_statuses: dict[str, str] | None = None,
+        allow_status_lookup: bool = True,
+    ) -> None:
         table = self.query_one("#portfolio-table", DataTable)
         selected_row_key = selected_table_row_key(table)
         table.clear()
@@ -4061,11 +4075,24 @@ class AvanzaTradingTui(App):
                     row_key = str(item.get("id", f"{section}-{count}"))
                     if fetch_quotes:
                         order_book_id = position_order_book_id(item)
-                        quote_payload = self.quote_payload_for_order_book(order_book_id)
+                        quote_payload = None
+                        if quote_payloads is not None:
+                            quote_payload = quote_payloads.get(order_book_id)
+                        if quote_payload is None:
+                            quote_payload = self.quote_payload_for_order_book(order_book_id)
+                        realtime_status = None
+                        if realtime_statuses is not None and order_book_id:
+                            realtime_status = realtime_statuses.get(order_book_id)
+                        if realtime_status is None:
+                            realtime_status = self.realtime_status_for_position(
+                                item,
+                                quote_payload,
+                                allow_lookup=allow_status_lookup,
+                            )
                         current_row = position_state_row_with_quote(
                             item,
                             quote_payload,
-                            self.realtime_status_for_position(item, quote_payload),
+                            realtime_status,
                         )
                     else:
                         current_row = position_state_row(item, "Unknown")
@@ -4836,15 +4863,26 @@ class AvanzaTradingTui(App):
 
         raise ValueError(f"Unknown MCP tool: {tool}")
 
-    def quote_payload_for_order_book(self, order_book_id: str) -> dict[str, Any] | None:
+    def quote_payload_for_order_book(self, order_book_id: str, refresh: bool = True) -> dict[str, Any] | None:
         if not order_book_id:
             return None
+        cached = self.quote_payload_by_order_book.get(order_book_id)
+        cached_at = self.quote_payload_checked_at.get(order_book_id)
+        if (
+            not refresh
+            and cached is not None
+            and cached_at is not None
+            and datetime.now() - cached_at < timedelta(seconds=QUOTE_CACHE_SECONDS)
+        ):
+            return cached
         avanza = self.require_connection()
         try:
             payload = avanza.get_market_data(order_book_id)
         except Exception:
             return None
         if isinstance(payload, dict):
+            self.quote_payload_by_order_book[order_book_id] = payload
+            self.quote_payload_checked_at[order_book_id] = datetime.now()
             return payload
         if hasattr(payload, "model_dump"):
             try:
@@ -4852,6 +4890,8 @@ class AvanzaTradingTui(App):
             except Exception:
                 dumped = None
             if isinstance(dumped, dict):
+                self.quote_payload_by_order_book[order_book_id] = dumped
+                self.quote_payload_checked_at[order_book_id] = datetime.now()
                 return dumped
         if hasattr(payload, "dict"):
             try:
@@ -4859,6 +4899,8 @@ class AvanzaTradingTui(App):
             except Exception:
                 dumped = None
             if isinstance(dumped, dict):
+                self.quote_payload_by_order_book[order_book_id] = dumped
+                self.quote_payload_checked_at[order_book_id] = datetime.now()
                 return dumped
         return None
 
@@ -4895,7 +4937,12 @@ class AvanzaTradingTui(App):
                 )
         return rows
 
-    def realtime_status_for_position(self, item: dict[str, Any], quote_payload: dict[str, Any] | None = None) -> str:
+    def realtime_status_for_position(
+        self,
+        item: dict[str, Any],
+        quote_payload: dict[str, Any] | None = None,
+        allow_lookup: bool = True,
+    ) -> str:
         direct_status = first_known_realtime_status(item, quote_payload or {})
         order_book_id = position_order_book_id(item)
         if not order_book_id:
@@ -4911,6 +4958,9 @@ class AvanzaTradingTui(App):
         if cached_status and checked_at and datetime.now() - checked_at < timedelta(seconds=REALTIME_STATUS_REFRESH_SECONDS):
             return cached_status
 
+        if not allow_lookup:
+            return cached_status or "Unknown"
+
         try:
             status = lookup_realtime_status(self.require_connection(), item)
         except Exception:
@@ -4918,6 +4968,32 @@ class AvanzaTradingTui(App):
         self.realtime_status_by_order_book[order_book_id] = status
         self.realtime_status_checked_at[order_book_id] = datetime.now()
         return status
+
+    def prefetch_quote_and_status_by_order_book(
+        self,
+        data: dict[str, Any],
+        account_id: str | None,
+        allow_status_lookup: bool = False,
+    ) -> tuple[dict[str, dict[str, Any] | None], dict[str, str]]:
+        quote_payloads: dict[str, dict[str, Any] | None] = {}
+        realtime_statuses: dict[str, str] = {}
+        seen: set[str] = set()
+        for section in ("withOrderbook", "withoutOrderbook"):
+            for item in data.get(section, []):
+                if not isinstance(item, dict) or not matches_account(item, account_id):
+                    continue
+                order_book_id = position_order_book_id(item)
+                if not order_book_id or order_book_id in seen:
+                    continue
+                seen.add(order_book_id)
+                quote_payload = self.quote_payload_for_order_book(order_book_id, refresh=True)
+                quote_payloads[order_book_id] = quote_payload
+                realtime_statuses[order_book_id] = self.realtime_status_for_position(
+                    item,
+                    quote_payload,
+                    allow_lookup=allow_status_lookup,
+                )
+        return quote_payloads, realtime_statuses
 
     def set_selected_account(self, account: dict[str, Any]) -> None:
         account_id = str(account.get("id", ""))
@@ -5144,7 +5220,7 @@ class AvanzaTradingTui(App):
         if not isinstance(data, dict):
             self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
-        self.apply_portfolio_data(data, fetch_quotes=True)
+        self.apply_portfolio_data(data, fetch_quotes=True, allow_status_lookup=False)
 
     def refresh_portfolio(self) -> None:
         self.run_profiled("refresh_portfolio", self._refresh_portfolio_impl)
@@ -5161,17 +5237,85 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
-    def _refresh_selected_account_live_impl(self) -> None:
+    def _refresh_selected_account_live_worker(self) -> None:
+        started = time.perf_counter()
         if not self.avanza or not self.selected_account_id:
+            self.call_from_thread(self._finish_live_refresh_cycle)
             return
+
         try:
-            self.refresh_portfolio()
-            self.refresh_stoplosses()
+            avanza = self.require_connection()
+            selected_account_id = self.selected_account_id
+            data = avanza.get_accounts_positions()
+            if not isinstance(data, dict):
+                raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
+            quote_payloads, realtime_statuses = self.prefetch_quote_and_status_by_order_book(
+                data,
+                selected_account_id,
+                allow_status_lookup=False,
+            )
+            stoplosses = avanza.get_all_stop_losses()
+            try:
+                orders = avanza.get_orders()
+            except Exception:
+                orders = []
+            elapsed = time.perf_counter() - started
+            self.call_from_thread(
+                self._apply_live_refresh_payload,
+                data,
+                quote_payloads,
+                realtime_statuses,
+                stoplosses,
+                orders,
+                elapsed,
+            )
         except Exception as exc:
-            self.write_log(f"[red]Live refresh failed:[/red] {exc}")
+            self.call_from_thread(self.write_log, f"[red]Live refresh failed:[/red] {exc}")
+            self.call_from_thread(self._finish_live_refresh_cycle)
+
+    def _apply_live_refresh_payload(
+        self,
+        data: dict[str, Any],
+        quote_payloads: dict[str, dict[str, Any] | None],
+        realtime_statuses: dict[str, str],
+        stoplosses: Any,
+        orders: Any,
+        elapsed: float,
+    ) -> None:
+        self.apply_portfolio_data(
+            data,
+            fetch_quotes=True,
+            quote_payloads=quote_payloads,
+            realtime_statuses=realtime_statuses,
+            allow_status_lookup=False,
+        )
+        self.apply_stoploss_orders_data(stoplosses, orders)
+        if self.debug_mode:
+            self.debug_log(f"refresh_selected_account_live(background): {elapsed:.3f}s")
+        self._finish_live_refresh_cycle()
+
+    def _finish_live_refresh_cycle(self) -> None:
+        with self.live_refresh_lock:
+            had_pending = self.live_refresh_pending
+            self.live_refresh_inflight = False
+            self.live_refresh_pending = False
+        if had_pending:
+            self.refresh_selected_account_live()
 
     def refresh_selected_account_live(self) -> None:
-        self.run_profiled("refresh_selected_account_live", self._refresh_selected_account_live_impl)
+        if not self.avanza or not self.selected_account_id:
+            return
+        with self.live_refresh_lock:
+            if self.live_refresh_inflight:
+                self.live_refresh_pending = True
+                return
+            self.live_refresh_inflight = True
+        self.live_refresh_thread = threading.Thread(
+            target=self._refresh_selected_account_live_worker,
+            daemon=True,
+            name="avanza-live-refresh",
+        )
+        self.live_refresh_thread.start()
 
     def start_live_refresh(self) -> None:
         if self.live_refresh_timer is None:
@@ -5194,8 +5338,7 @@ class AvanzaTradingTui(App):
             raise ValueError(f"Unknown account id: {account_id}")
         self.set_selected_account(account)
         self.position_row_cache = {}
-        self.refresh_portfolio()
-        self.refresh_stoplosses()
+        self.refresh_selected_account_live()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "account-select" and event.value:
