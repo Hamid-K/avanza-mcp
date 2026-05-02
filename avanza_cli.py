@@ -2798,6 +2798,7 @@ class AvanzaTradingTui(App):
         width: 74;
         min-width: 74;
         height: 8;
+        padding: 0 1;
     }
 
     #account-row {
@@ -2867,57 +2868,61 @@ class AvanzaTradingTui(App):
 
     #clock-status {
         height: 2;
-        content-align: right middle;
+        content-align: center middle;
         color: $accent;
         text-style: bold;
     }
 
     #button-controls {
         height: 2;
-        align: right middle;
+        align: center middle;
+        margin-bottom: 0;
     }
 
     #view-controls {
         height: 2;
-        align: right middle;
+        align: center middle;
+        margin-top: 0;
     }
 
     #view-label {
         width: auto;
-        margin-right: 1;
+        margin-right: 2;
         color: $text-muted;
         text-style: bold;
     }
 
     #controls-separator {
         height: 1;
+        margin: 0 1;
         border-top: solid $primary-darken-3;
     }
 
     .view-tab {
-        background: $primary-darken-3;
-        color: $text;
-        border: solid $primary;
-        border-bottom: solid $primary;
+        min-width: 10;
+        background: #0f3f73;
+        color: #ffffff;
+        border: solid #1f8bff;
         text-style: bold;
     }
 
     .view-tab:hover {
-        background: $accent-darken-2;
-        color: $text;
+        background: #1662ad;
+        color: #ffffff;
     }
 
     #open-orders-overlay {
-        min-width: 9;
+        min-width: 10;
     }
 
     #open-transactions-overlay {
-        min-width: 15;
+        min-width: 14;
     }
 
     #toggle-controls {
         height: 2;
-        align: right middle;
+        align: center middle;
+        margin-top: 0;
     }
 
     .toggle-control {
@@ -2929,6 +2934,7 @@ class AvanzaTradingTui(App):
 
     #live-status {
         width: 9;
+        margin-right: 2;
         color: $success;
     }
 
