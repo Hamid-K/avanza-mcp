@@ -2794,7 +2794,8 @@ class AvanzaTradingTui(App):
     }
 
     #right-controls {
-        width: 65;
+        width: 74;
+        min-width: 74;
         height: 8;
     }
 
@@ -2873,6 +2874,43 @@ class AvanzaTradingTui(App):
     #button-controls {
         height: 2;
         align: right middle;
+    }
+
+    #view-controls {
+        height: 2;
+        align: right middle;
+    }
+
+    #view-label {
+        width: auto;
+        margin-right: 1;
+        color: $text-muted;
+        text-style: bold;
+    }
+
+    #controls-separator {
+        height: 1;
+        border-top: solid $primary-darken-3;
+    }
+
+    .view-tab {
+        background: $surface-darken-1;
+        color: $primary-lighten-2;
+        border-bottom: solid $primary;
+        text-style: bold;
+    }
+
+    .view-tab:hover {
+        background: $primary-darken-3;
+        color: $text;
+    }
+
+    #open-orders-overlay {
+        min-width: 9;
+    }
+
+    #open-transactions-overlay {
+        min-width: 15;
     }
 
     #toggle-controls {
@@ -3387,8 +3425,11 @@ class AvanzaTradingTui(App):
                         yield Button("Refresh", id="refresh-all", variant="primary")
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
-                        yield Button("Orders", id="open-orders-overlay", variant="primary")
-                        yield Button("Transactions", id="open-transactions-overlay", variant="primary")
+                    yield Static("", id="controls-separator")
+                    with Horizontal(id="view-controls"):
+                        yield Static("Views", id="view-label")
+                        yield Button("Orders", id="open-orders-overlay", classes="view-tab")
+                        yield Button("Transactions", id="open-transactions-overlay", classes="view-tab")
                     with Horizontal(id="toggle-controls"):
                         with Horizontal(classes="toggle-control"):
                             yield Button("✓", id="paper-mode-toggle", classes="mode-toggle-box enabled")
