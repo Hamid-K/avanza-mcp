@@ -23,6 +23,7 @@ from avanza_cli import (
     mcp_result_log_detail,
     mcp_result_log_suffix,
     matches_account,
+    open_order_items,
     pane_weights_after_drag,
     paper_orders,
     parse_transaction_types,
@@ -161,6 +162,37 @@ def test_account_row_formats_overview_account():
     )
 
     assert row == ("acc-1", "ISK", "ISK", "10000 SEK", "2500 SEK", "ACTIVE")
+
+
+def test_matches_account_accepts_account_id_field_shapes():
+    assert matches_account({"account": {"id": "7616265"}}, "7616265") is True
+    assert matches_account({"accountId": "7616265"}, "7616265") is True
+    assert matches_account({"account_id": "7616265"}, "7616265") is True
+    assert matches_account({"account": {"id": "x"}}, "7616265") is False
+
+
+def test_open_order_items_extracts_account_grouped_payload():
+    payload = {
+        "accounts": [
+            {
+                "id": "7616265",
+                "orders": [
+                    {
+                        "orderId": "o-1",
+                        "status": "ACTIVE",
+                        "type": "BUY",
+                        "orderbook": {"name": "Broadcom"},
+                        "price": 100,
+                        "volume": 1,
+                    }
+                ],
+            }
+        ]
+    }
+    items = open_order_items(payload)
+    assert len(items) == 1
+    assert items[0]["orderId"] == "o-1"
+    assert items[0]["accountId"] == "7616265"
 
 
 def test_account_rows_from_overview_uses_accounts_list():

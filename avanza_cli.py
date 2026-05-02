@@ -698,11 +698,91 @@ def default_account(accounts: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def account_id_for_item(item: dict[str, Any]) -> str:
-    return str(nested_value(item, "account", "id"))
+    return str(
+        nested_value(item, "account", "id")
+        or nested_value(item, "accountId")
+        or nested_value(item, "account_id")
+        or nested_value(item, "account", "accountId")
+        or ""
+    )
 
 
 def matches_account(item: dict[str, Any], account_id: str | None) -> bool:
     return not account_id or account_id_for_item(item) == account_id
+
+
+def looks_like_open_order(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not item:
+        return False
+    keys = {
+        "status",
+        "type",
+        "orderType",
+        "orderbook",
+        "instrument",
+        "validUntil",
+        "orderId",
+        "price",
+        "volume",
+        "account",
+        "accountId",
+        "account_id",
+    }
+    return any(key in item for key in keys)
+
+
+def open_order_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if looks_like_open_order(item)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    collected: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def push(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not looks_like_open_order(item):
+                continue
+            identifier = str(item.get("id") or item.get("orderId") or id(item))
+            if identifier in seen_ids:
+                continue
+            seen_ids.add(identifier)
+            collected.append(item)
+
+    # Common shapes.
+    for key in ("orders", "items", "openOrders", "buyOrders", "sellOrders"):
+        push(payload.get(key))
+
+    # Account-grouped shapes: {"accounts":[{"id":"...","orders":[...]}]}
+    accounts = payload.get("accounts")
+    if isinstance(accounts, list):
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            account_id = str(account.get("id", ""))
+            for key in ("orders", "items", "openOrders", "buyOrders", "sellOrders"):
+                entries = account.get(key)
+                if not isinstance(entries, list):
+                    continue
+                for item in entries:
+                    if not isinstance(item, dict) or not looks_like_open_order(item):
+                        continue
+                    if account_id and not account_id_for_item(item):
+                        item = dict(item)
+                        item["accountId"] = account_id
+                    identifier = str(item.get("id") or item.get("orderId") or id(item))
+                    if identifier in seen_ids:
+                        continue
+                    seen_ids.add(identifier)
+                    collected.append(item)
+
+    return collected
 
 
 def recursive_flag(data: Any, keys: set[str]) -> bool | None:
@@ -1749,12 +1829,7 @@ def render_stoplosses(stoplosses: Any) -> None:
 
 
 def render_orders(orders: Any) -> None:
-    if isinstance(orders, dict):
-        items = orders.get("orders") or orders.get("items") or []
-    elif isinstance(orders, list):
-        items = orders
-    else:
-        items = []
+    items = open_order_items(orders)
     rows = [open_order_row(item) for item in items if isinstance(item, dict)]
     if not rows:
         render_message("Open Orders", ["No open orders found."])
@@ -3896,12 +3971,7 @@ class AvanzaTradingTui(App):
             data = avanza.get_orders()
         except Exception:
             data = []
-        if isinstance(data, dict):
-            items = data.get("orders") or data.get("items") or []
-        elif isinstance(data, list):
-            items = data
-        else:
-            items = []
+        items = open_order_items(data)
         rows = [open_order_row(item) for item in items if isinstance(item, dict) and matches_account(item, account_id or None)]
         return {
             "account_id": account_id or None,
@@ -4448,12 +4518,7 @@ class AvanzaTradingTui(App):
             self.write_log(f"[yellow]Could not load open orders:[/yellow] {exc}")
             orders = []
 
-        if isinstance(orders, dict):
-            order_items = orders.get("orders") or orders.get("items") or []
-        elif isinstance(orders, list):
-            order_items = orders
-        else:
-            order_items = []
+        order_items = open_order_items(orders)
 
         self.latest_open_order_items = []
         for item in order_items:
