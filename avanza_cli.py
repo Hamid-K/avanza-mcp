@@ -161,7 +161,7 @@ def onepassword_command(args: list[str]) -> str:
             check=True,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=int(os.getenv("AVANZA_OP_TIMEOUT_SECONDS", "120")),
         )
     except FileNotFoundError as exc:
         raise RuntimeError("1Password CLI 'op' is not installed or is not on PATH.") from exc
@@ -5523,31 +5523,69 @@ class AvanzaTradingTui(App):
         self.login_thread = worker
         worker.start()
 
+    def run_login_stage_call(self, stage_message: str, stage_index: int, callback: Callable[..., Any], *args: Any) -> Any:
+        self.call_from_thread(self.set_login_stage, stage_message, stage_index)
+        done = threading.Event()
+        started = time.perf_counter()
+
+        def pulse() -> None:
+            while not done.wait(1.0):
+                elapsed = int(time.perf_counter() - started)
+                try:
+                    self.call_from_thread(
+                        self.set_login_stage,
+                        f"{stage_message} ({elapsed}s)",
+                        stage_index,
+                    )
+                except RuntimeError:
+                    break
+
+        pulse_thread = threading.Thread(target=pulse, daemon=True, name="avanza-login-stage-pulse")
+        pulse_thread.start()
+        try:
+            return callback(*args)
+        finally:
+            done.set()
+            pulse_thread.join(timeout=0.2)
+
     def login_worker_with_credentials(self, credentials: dict[str, str]) -> None:
         self.perform_login(credentials, connect_stage_index=0)
 
     def login_worker_with_1password(self, item: str, vault: str | None) -> None:
-        self.call_from_thread(self.set_login_stage, "Reading credentials from 1Password...", 1)
-        credentials = onepassword_credentials(item, vault)
+        credentials = self.run_login_stage_call(
+            "Reading credentials from 1Password...",
+            1,
+            onepassword_credentials,
+            item,
+            vault,
+        )
         self.perform_login(credentials, connect_stage_index=2)
 
     def perform_login(self, credentials: dict[str, str], connect_stage_index: int) -> None:
         try:
-            self.call_from_thread(self.set_login_stage, "Connecting to Avanza...", connect_stage_index)
-            avanza = Avanza(credentials)
+            avanza = self.run_login_stage_call("Connecting to Avanza...", connect_stage_index, Avanza, credentials)
 
-            self.call_from_thread(self.set_login_stage, "Loading account overview...", connect_stage_index + 1)
-            overview = avanza.get_overview()
+            overview = self.run_login_stage_call(
+                "Loading account overview...",
+                connect_stage_index + 1,
+                avanza.get_overview,
+            )
             if not isinstance(overview, dict):
                 raise RuntimeError(f"Unexpected account overview response type: {type(overview).__name__}")
 
-            self.call_from_thread(self.set_login_stage, "Loading portfolio...", connect_stage_index + 2)
-            portfolio = avanza.get_accounts_positions()
+            portfolio = self.run_login_stage_call(
+                "Loading portfolio...",
+                connect_stage_index + 2,
+                avanza.get_accounts_positions,
+            )
             if not isinstance(portfolio, dict):
                 raise RuntimeError(f"Unexpected portfolio response type: {type(portfolio).__name__}")
 
-            self.call_from_thread(self.set_login_stage, "Loading stop-losses and open orders...", connect_stage_index + 3)
-            stoplosses = avanza.get_all_stop_losses()
+            stoplosses = self.run_login_stage_call(
+                "Loading stop-losses and open orders...",
+                connect_stage_index + 3,
+                avanza.get_all_stop_losses,
+            )
             try:
                 orders = avanza.get_orders()
             except Exception:
