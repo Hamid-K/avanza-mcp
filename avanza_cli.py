@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import argparse
+import cProfile
 import getpass
+import io
 import json
 import os
+import pstats
 import re
 import secrets
 import subprocess
 import sys
 import threading
+import time
 import textwrap
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -61,6 +65,7 @@ REALTIME_STATUS_REFRESH_SECONDS = 300.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
 LOGIN_PROGRESS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 LOGIN_PROGRESS_ROTATE_TICKS = 10
+DEBUG_PROFILE_TOP_DEFAULT = 25
 CHANGED_CELL_STYLE = "#d7ba7d"
 POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
@@ -3258,8 +3263,12 @@ class AvanzaTradingTui(App):
         ("p", "refresh_portfolio", "Refresh Portfolio"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, debug: bool = False, debug_profile_top: int = DEBUG_PROFILE_TOP_DEFAULT) -> None:
         super().__init__()
+        self.debug_mode = bool(debug)
+        self.debug_profile_top = max(5, int(debug_profile_top))
+        self.debug_profile_depth = 0
+        self.debug_session_log_path = create_session_log_path("debug") if self.debug_mode else None
         self.avanza: Avanza | None = None
         self.accounts: list[dict[str, Any]] = []
         self.selected_account_id: str | None = None
@@ -3327,8 +3336,12 @@ class AvanzaTradingTui(App):
             {
                 "session_log": str(self.session_log_path),
                 "paper_session_file": str(self.paper_session_path),
+                "debug_mode": self.debug_mode,
+                "debug_session_log": str(self.debug_session_log_path) if self.debug_session_log_path else "",
             },
         )
+        if self.debug_mode:
+            self.debug_log("Debug mode enabled.")
 
     def compose(self) -> ComposeResult:
         default_valid_until = max_valid_until_date().isoformat()
@@ -3603,6 +3616,8 @@ class AvanzaTradingTui(App):
         transactions_history_table.zebra_stripes = True
 
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
+        if self.debug_mode and self.debug_session_log_path is not None:
+            self.write_log(f"[yellow]Debug profiling enabled:[/yellow] {self.debug_session_log_path}")
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
         self.update_clock_status()
         self.start_clock()
@@ -4093,6 +4108,49 @@ class AvanzaTradingTui(App):
         category_file = LOG_CATEGORY_FILES.get(category)
         if category_file:
             append_jsonl(LOG_DIR / category_file, record)
+
+    def debug_log(self, message: str) -> None:
+        if not self.debug_mode or self.debug_session_log_path is None:
+            return
+        append_jsonl(
+            self.debug_session_log_path,
+            {
+                "timestamp": timestamp(),
+                "kind": "debug",
+                "message": message,
+            },
+        )
+
+    def run_profiled(self, label: str, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        if not self.debug_mode or self.debug_profile_depth > 0:
+            return callback(*args, **kwargs)
+
+        profiler = cProfile.Profile()
+        started = time.perf_counter()
+        self.debug_profile_depth += 1
+        try:
+            profiler.enable()
+            return callback(*args, **kwargs)
+        finally:
+            profiler.disable()
+            elapsed = time.perf_counter() - started
+            self.debug_profile_depth = max(0, self.debug_profile_depth - 1)
+            if self.debug_session_log_path is None:
+                return
+
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "_", label)
+            prof_path = self.debug_session_log_path.with_name(f"profile-{safe_label}-{stamp}.prof")
+            profiler.dump_stats(str(prof_path))
+            self.debug_log(f"{label}: {elapsed:.3f}s -> {prof_path.name}")
+
+            stream = io.StringIO()
+            stats = pstats.Stats(profiler, stream=stream).strip_dirs().sort_stats("cumtime")
+            stats.print_stats(self.debug_profile_top)
+            for line in stream.getvalue().splitlines():
+                line = line.rstrip()
+                if line:
+                    self.debug_log(f"{label}: {line}")
 
     def write_log(self, message: str) -> None:
         stamped = f"{timestamp()} {message}"
@@ -4892,7 +4950,7 @@ class AvanzaTradingTui(App):
             }
         )
 
-    def refresh_stoplosses(self) -> None:
+    def _refresh_stoplosses_impl(self) -> None:
         avanza = self.require_connection()
         try:
             orders = avanza.get_orders()
@@ -4901,7 +4959,10 @@ class AvanzaTradingTui(App):
             orders = []
         self.apply_stoploss_orders_data(avanza.get_all_stop_losses(), orders)
 
-    def refresh_orders_overlay(self) -> None:
+    def refresh_stoplosses(self) -> None:
+        self.run_profiled("refresh_stoplosses", self._refresh_stoplosses_impl)
+
+    def _refresh_orders_overlay_impl(self) -> None:
         avanza = self.require_connection()
         table = self.query_one("#orders-history-table", DataTable)
         selected_row_key = selected_table_row_key(table)
@@ -4923,6 +4984,9 @@ class AvanzaTradingTui(App):
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {len(rows)} completed order row(s){suffix}.")
 
+    def refresh_orders_overlay(self) -> None:
+        self.run_profiled("refresh_orders_overlay", self._refresh_orders_overlay_impl)
+
     def open_orders_overlay(self) -> None:
         self.refresh_orders_overlay()
         self.query_one("#orders-overlay").display = True
@@ -4930,7 +4994,7 @@ class AvanzaTradingTui(App):
     def close_orders_overlay(self) -> None:
         self.query_one("#orders-overlay").display = False
 
-    def refresh_transactions_overlay(self) -> None:
+    def _refresh_transactions_overlay_impl(self) -> None:
         avanza = self.require_connection()
         table = self.query_one("#transactions-history-table", DataTable)
         selected_row_key = selected_table_row_key(table)
@@ -4951,6 +5015,9 @@ class AvanzaTradingTui(App):
         restore_table_row_selection(table, selected_row_key)
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {len(rows)} transaction row(s){suffix}.")
+
+    def refresh_transactions_overlay(self) -> None:
+        self.run_profiled("refresh_transactions_overlay", self._refresh_transactions_overlay_impl)
 
     def open_transactions_overlay(self) -> None:
         self.refresh_transactions_overlay()
@@ -5030,13 +5097,16 @@ class AvanzaTradingTui(App):
             return
         self.apply_accounts_overview(overview, announce=True)
 
-    def refresh_portfolio(self) -> None:
+    def _refresh_portfolio_impl(self) -> None:
         avanza = self.require_connection()
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
             self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
         self.apply_portfolio_data(data, fetch_quotes=True)
+
+    def refresh_portfolio(self) -> None:
+        self.run_profiled("refresh_portfolio", self._refresh_portfolio_impl)
 
     def action_refresh_stoplosses(self) -> None:
         try:
@@ -5050,7 +5120,7 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
-    def refresh_selected_account_live(self) -> None:
+    def _refresh_selected_account_live_impl(self) -> None:
         if not self.avanza or not self.selected_account_id:
             return
         try:
@@ -5058,6 +5128,9 @@ class AvanzaTradingTui(App):
             self.refresh_stoplosses()
         except Exception as exc:
             self.write_log(f"[red]Live refresh failed:[/red] {exc}")
+
+    def refresh_selected_account_live(self) -> None:
+        self.run_profiled("refresh_selected_account_live", self._refresh_selected_account_live_impl)
 
     def start_live_refresh(self) -> None:
         if self.live_refresh_timer is None:
@@ -5717,8 +5790,11 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
             write_mcp_message(output_stream, mcp_error(message_id, -32000, str(exc)))
 
 
-def cmd_tui(_args: argparse.Namespace) -> None:
-    AvanzaTradingTui().run()
+def cmd_tui(args: argparse.Namespace) -> None:
+    AvanzaTradingTui(
+        debug=bool(getattr(args, "debug", False)),
+        debug_profile_top=int(getattr(args, "debug_profile_top", DEBUG_PROFILE_TOP_DEFAULT)),
+    ).run()
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -6026,6 +6102,18 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=HELP_FORMATTER,
         help="Launch the interactive Textual terminal UI.",
         description="Launch the interactive terminal UI for account switching, portfolio viewing, and stop-loss management.",
+    )
+    tui.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug profiling mode. Writes timing/profile logs under avanza-cli/logs/.",
+    )
+    tui.add_argument(
+        "--debug-profile-top",
+        metavar="N",
+        type=int,
+        default=DEBUG_PROFILE_TOP_DEFAULT,
+        help=f"How many top functions to include per profile sample in --debug mode. Default: {DEBUG_PROFILE_TOP_DEFAULT}.",
     )
     tui.set_defaults(func=cmd_tui)
 

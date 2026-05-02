@@ -10,6 +10,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
+*.egg-info/
 
 # Avanza local runtime state (can contain account/order/session metadata)
 .avanza_mcp_session.json

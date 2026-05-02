@@ -103,6 +103,24 @@ def test_tui_resolves_mcp_stock_marker_from_cached_data():
     assert parse_price_type("SEK") == "monetary"
 
 
+def test_tui_debug_mode_writes_profile_artifacts():
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui(debug=True, debug_profile_top=5)
+
+    result = app.run_profiled("unit_test_profile", lambda: sum(range(10)))
+
+    assert result == 45
+    assert app.debug_session_log_path is not None
+    assert app.debug_session_log_path.exists()
+
+    log_lines = app.debug_session_log_path.read_text(encoding="utf-8").splitlines()
+    assert any("unit_test_profile:" in line for line in log_lines)
+
+    prof_files = sorted(app.debug_session_log_path.parent.glob("profile-unit_test_profile-*.prof"))
+    assert prof_files
+
+
 def test_parser_includes_portfolio_commands():
     parser = build_parser()
     args = parser.parse_args(["portfolio", "positions", "--username", "alice"])
@@ -128,6 +146,11 @@ def test_parser_includes_portfolio_commands():
     transactions_args = parser.parse_args(["transactions", "list"])
     assert transactions_args.command == "transactions"
     assert transactions_args.transactions_command == "list"
+
+    tui_args = parser.parse_args(["tui", "--debug", "--debug-profile-top", "40"])
+    assert tui_args.command == "tui"
+    assert tui_args.debug is True
+    assert tui_args.debug_profile_top == 40
 
 
 def test_connect_rejects_conflicting_auth_sources():
