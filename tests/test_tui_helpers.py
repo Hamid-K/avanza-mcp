@@ -425,7 +425,7 @@ def test_position_state_row_uses_avanza_profit_fields_only():
     assert row[8] == "-25.00 SEK"
 
 
-def test_position_state_row_leaves_profit_blank_when_avanza_profit_is_missing():
+def test_position_state_row_falls_back_to_avanza_value_and_acquired_value_when_profit_is_missing():
     row = position_state_row(
         {
             "account": {"name": "ISK", "id": "acc-1"},
@@ -444,8 +444,8 @@ def test_position_state_row_leaves_profit_blank_when_avanza_profit_is_missing():
         }
     )
 
-    assert row[7] == ""
-    assert row[8] == ""
+    assert row[7] == "+22.22%"
+    assert row[8] == "+200.00 SEK"
 
 
 def test_position_trade_action_row_adds_buy_sell_actions():

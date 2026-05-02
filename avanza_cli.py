@@ -1014,6 +1014,13 @@ def position_profit_summary_from_avanza(item: dict[str, Any]) -> tuple[float | N
     profit_amount = first_value_number(item, amount_paths)
     profit_percent = first_value_number(item, percent_paths)
     value_unit = first_unit_text(item, amount_paths, str(nested_value(item, "value", "unit") or "SEK"))
+    if profit_amount is None and profit_percent is None:
+        current_value = value_number(item, "value")
+        acquired_value = acquired_cost_basis(value_number(item, "acquiredValue"))
+        if current_value is not None and acquired_value not in (None, 0):
+            profit_amount = current_value - acquired_value
+            profit_percent = (profit_amount / acquired_value) * 100
+            value_unit = str(nested_value(item, "value", "unit") or value_unit)
     return profit_amount, profit_percent, value_unit
 
 
