@@ -59,7 +59,7 @@ def test_parse_date_rejects_too_far_future_date():
         parse_date(far_future)
 
 
-def test_position_state_row_with_quote_overrides_snapshot_values():
+def test_position_state_row_with_quote_preserves_snapshot_values():
     item = {
         "instrument": {"name": "Example AB", "orderbook": {"id": "ob-1"}},
         "volume": {"value": 10, "unit": "st"},
@@ -75,9 +75,9 @@ def test_position_state_row_with_quote_overrides_snapshot_values():
     row = position_state_row_with_quote(item, quote, "Real-time")
 
     assert row[0] == "Example AB"
-    assert "1,100.00 SEK" in row[3] or "1100.00 SEK" in row[3]
-    assert row[5] == "+2.50%"
-    assert "22.22%" in row[7]
+    assert row[3] == "1000 SEK"
+    assert row[5] == "+1.00%"
+    assert "11.11%" in row[7]
     assert isinstance(row[9], Text)
     assert "●" in row[9].plain
 

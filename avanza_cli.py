@@ -964,6 +964,12 @@ def money_text(value: float | None, unit: str = "SEK") -> str:
     return f"{sign}{value:,.2f} {unit}"
 
 
+def acquired_cost_basis(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return abs(value)
+
+
 def metric_style(value: float | None) -> str:
     if value is None:
         return "dim"
@@ -985,7 +991,7 @@ def portfolio_profit_summary(data: dict[str, Any], account_id: str | None) -> tu
             if not isinstance(item, dict) or not matches_account(item, account_id):
                 continue
             current_value = value_number(item, "value")
-            acquired_value = value_number(item, "acquiredValue")
+            acquired_value = acquired_cost_basis(value_number(item, "acquiredValue"))
             if current_value is None or acquired_value is None:
                 continue
             current_total += current_value
@@ -1255,7 +1261,7 @@ def position_state_row(item: dict[str, Any], realtime_override: str | None = Non
     orderbook = instrument.get("orderbook") or {}
     performance = item.get("lastTradingDayPerformance") or {}
     current_value = value_number(item, "value")
-    acquired_value = value_number(item, "acquiredValue")
+    acquired_value = acquired_cost_basis(value_number(item, "acquiredValue"))
     profit_amount = None
     profit_percent = None
     if current_value is not None and acquired_value not in (None, 0):
@@ -1282,29 +1288,9 @@ def position_state_row_with_quote(
     quote: dict[str, Any] | None,
     realtime_override: str | None = None,
 ) -> tuple[str, ...]:
-    base = list(position_state_row(item, realtime_override))
-    if not quote:
-        return tuple(base)
-
-    last_price = market_quote_last(quote)
-    change_percent = market_quote_change_percent(quote)
-    volume = value_number(item, "volume")
-    acquired_value = value_number(item, "acquiredValue")
-    value_unit = str(nested_value(item, "value", "unit") or "SEK")
-    if last_price is None or volume is None:
-        return tuple(base)
-
-    current_value = last_price * volume
-    day_absolute = current_value * (change_percent / 100.0) if change_percent is not None else None
-    profit_amount = (current_value - acquired_value) if acquired_value is not None else None
-    profit_percent = ((profit_amount / acquired_value) * 100.0) if (profit_amount is not None and acquired_value) else None
-
-    base[3] = money_text(current_value, value_unit)
-    base[5] = percent_text(change_percent)
-    base[6] = money_text(day_absolute, value_unit)
-    base[7] = percent_text(profit_percent)
-    base[8] = money_text(profit_amount, value_unit)
-    return tuple(base)
+    # Keep financial values from account-position payload to avoid currency/FX
+    # mismatches when quote feeds return instrument-currency prices.
+    return position_state_row(item, realtime_override)
 
 
 def position_trade_action_row(item: dict[str, Any], realtime_override: str | None = None) -> tuple[Any, ...]:
