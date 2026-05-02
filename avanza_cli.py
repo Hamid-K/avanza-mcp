@@ -1905,6 +1905,21 @@ def transaction_history_row(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def transaction_order_history_row(item: dict[str, Any]) -> tuple[Any, ...]:
+    orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
+    account = item.get("account") if isinstance(item.get("account"), dict) else {}
+    return (
+        str(item.get("tradeDate", "")),
+        side_badge(str(item.get("type", "")).lower()),
+        str(item.get("instrumentName", "") or orderbook.get("name", "")),
+        quantity_text(nested_value(item, "volume", "value")),
+        amount(item, "priceInTransactionCurrency"),
+        amount(item, "amount"),
+        amount(item, "result"),
+        str(account.get("name", "")),
+    )
+
+
 def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
     orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
     return {
@@ -3059,6 +3074,30 @@ class AvanzaTradingTui(App):
         background: $panel;
     }
 
+    #orders-overlay,
+    #transactions-overlay {
+        display: none;
+        dock: top;
+        width: 1fr;
+        height: 1fr;
+        margin: 0;
+        padding: 1;
+        border: tall $primary;
+        background: $surface;
+    }
+
+    #orders-overlay-note,
+    #transactions-overlay-note {
+        height: 1;
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+
+    #orders-history-table,
+    #transactions-history-table {
+        height: 1fr;
+    }
+
     .ticket-resizer {
         width: 1;
         height: 1fr;
@@ -3320,6 +3359,7 @@ class AvanzaTradingTui(App):
                         yield Button("Refresh", id="refresh-all", variant="primary")
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
+                        yield Button("Orders", id="open-orders-overlay", variant="primary")
                     with Horizontal(id="toggle-controls"):
                         with Horizontal(classes="toggle-control"):
                             yield Button("✓", id="paper-mode-toggle", classes="mode-toggle-box enabled")
@@ -3453,6 +3493,13 @@ class AvanzaTradingTui(App):
                     with Horizontal():
                         yield Button("Review Only", id="cancel-review", variant="default")
                         yield Button("Cancel Order", id="cancel-confirm-button", variant="error")
+            with Vertical(id="orders-overlay"):
+                with Horizontal(classes="modal-header"):
+                    yield Button("X", id="close-orders-overlay", classes="modal-close")
+                    yield Static("Orders", classes="modal-title")
+                    yield Button("Refresh", id="refresh-orders-overlay", variant="primary")
+                yield Static("Completed buy/sell orders for the selected account.", id="orders-overlay-note")
+                yield DataTable(id="orders-history-table")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -3502,6 +3549,20 @@ class AvanzaTradingTui(App):
         )
         active_table.cursor_type = "cell"
         active_table.zebra_stripes = True
+
+        orders_history_table = self.query_one("#orders-history-table", DataTable)
+        orders_history_table.add_columns(
+            "Date",
+            "Side",
+            "Stock",
+            "Qty",
+            "Price",
+            "Amount",
+            "Result",
+            "Account",
+        )
+        orders_history_table.cursor_type = "row"
+        orders_history_table.zebra_stripes = True
 
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
@@ -4802,6 +4863,35 @@ class AvanzaTradingTui(App):
             orders = []
         self.apply_stoploss_orders_data(avanza.get_all_stop_losses(), orders)
 
+    def refresh_orders_overlay(self) -> None:
+        avanza = self.require_connection()
+        table = self.query_one("#orders-history-table", DataTable)
+        selected_row_key = selected_table_row_key(table)
+        table.clear()
+
+        payload = avanza.get_transactions_details(
+            transaction_details_types=[TransactionsDetailsType.BUY, TransactionsDetailsType.SELL],
+            max_elements=5000,
+        )
+        items, _first_date = transactions_items(payload)
+        rows = [
+            transaction_order_history_row(item)
+            for item in items
+            if transaction_matches_filters(item, self.selected_account_id, executed_only=True)
+        ]
+        for index, row in enumerate(rows):
+            table.add_row(*row, key=f"orders-history-{index}")
+        restore_table_row_selection(table, selected_row_key)
+        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
+        self.write_log(f"Loaded {len(rows)} completed order row(s){suffix}.")
+
+    def open_orders_overlay(self) -> None:
+        self.refresh_orders_overlay()
+        self.query_one("#orders-overlay").display = True
+
+    def close_orders_overlay(self) -> None:
+        self.query_one("#orders-overlay").display = False
+
     def reset_stoploss_modal_for_new(self) -> None:
         self.pending_stoploss_edit_id = None
         self.query_one("#stoploss-modal-title", Static).update("New Stop-Loss")
@@ -5010,11 +5100,17 @@ class AvanzaTradingTui(App):
                 self.open_stoploss_edit_modal()
             elif button_id == "open-order-modal":
                 self.query_one("#order-modal").display = True
+            elif button_id == "open-orders-overlay":
+                self.open_orders_overlay()
             elif button_id == "close-stoploss-modal":
                 self.reset_stoploss_modal_for_new()
                 self.query_one("#stoploss-modal").display = False
             elif button_id == "close-order-modal":
                 self.query_one("#order-modal").display = False
+            elif button_id == "close-orders-overlay":
+                self.close_orders_overlay()
+            elif button_id == "refresh-orders-overlay":
+                self.refresh_orders_overlay()
             elif button_id == "close-cancel-modal":
                 self.close_cancel_modal()
             elif button_id == "clear-log":

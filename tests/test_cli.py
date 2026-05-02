@@ -219,6 +219,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#active-trades-table") is not None
             assert app.query_one("#side-pane-resizer") is not None
             assert app.query_one("#order-modal").display is False
+            assert app.query_one("#orders-overlay").display is False
             assert isinstance(app.query_one("#paper-mode-toggle"), Button)
             assert app.query_one("#paper-mode-label").renderable == "Paper"
             assert isinstance(app.query_one("#mcp-toggle"), Button)
@@ -885,6 +886,47 @@ def test_tui_tracks_terminal_resize():
             await pilot.pause()
 
             assert app.last_resize == (120, 40)
+
+    asyncio.run(run_app())
+
+
+def test_orders_overlay_loads_completed_buy_sell_history():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_transactions_details(self, **_kwargs):
+            return {
+                "transactions": [
+                    {
+                        "tradeDate": "2026-05-01",
+                        "type": "BUY",
+                        "instrumentName": "Broadcom",
+                        "volume": {"value": 4, "unit": "st"},
+                        "priceInTransactionCurrency": {"value": 200, "unit": "USD"},
+                        "amount": {"value": 800, "unit": "USD"},
+                        "result": {"value": 12, "unit": "SEK"},
+                        "account": {"id": "acc-1", "name": "Trading"},
+                    },
+                    {
+                        "tradeDate": "2026-05-01",
+                        "type": "DIVIDEND",
+                        "instrumentName": "Broadcom",
+                        "account": {"id": "acc-1", "name": "Trading"},
+                    },
+                ]
+            }
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.avanza = FakeAvanza()
+            app.selected_account_id = "acc-1"
+            app.open_orders_overlay()
+            await pilot.pause()
+            table = app.query_one("#orders-history-table", DataTable)
+            assert app.query_one("#orders-overlay").display is True
+            assert table.row_count == 1
+            assert table.get_row_at(0)[2] == "Broadcom"
 
     asyncio.run(run_app())
 
