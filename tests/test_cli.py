@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -814,6 +815,66 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert session["token"] == "token"
             assert app.mcp_status_payload()["enabled"] is True
             app.stop_mcp_bridge()
+
+    asyncio.run(run_app())
+
+
+def test_tui_login_shows_progress_while_authenticating(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class SlowAvanza:
+        def __init__(self, _credentials):
+            time.sleep(0.15)
+
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {
+                        "id": "acc-1",
+                        "name": {"defaultName": "ISK"},
+                        "type": "ISK",
+                        "totalValue": {"value": 100, "unit": "SEK"},
+                        "buyingPower": {"value": 10, "unit": "SEK"},
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": [], "cashPositions": []}
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    monkeypatch.setattr("avanza_cli.Avanza", SlowAvanza)
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            app.query_one("#username").value = "alice"
+            app.query_one("#password").value = "secret"
+            app.query_one("#totp").value = "123456"
+            app.handle_login()
+            await pilot.pause()
+            if app.login_busy:
+                assert app.query_one("#login-progress").display is True
+                assert app.query_one("#login", Button).disabled is True
+
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if app.query_one("#workspace").display is True:
+                    break
+
+            for _ in range(10):
+                await pilot.pause(0.02)
+                if not app.login_busy:
+                    break
+
+            assert app.query_one("#workspace").display is True
+            assert app.query_one("#login-screen").display is False
 
     asyncio.run(run_app())
 

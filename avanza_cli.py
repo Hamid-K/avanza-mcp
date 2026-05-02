@@ -12,7 +12,7 @@ import textwrap
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -59,6 +59,8 @@ TRANSACTION_TYPE_CHOICES = [item.value for item in TransactionsDetailsType]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
+LOGIN_PROGRESS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+LOGIN_PROGRESS_ROTATE_TICKS = 10
 CHANGED_CELL_STYLE = "#d7ba7d"
 POSITIVE_CELL_STYLE = "#7fbf8f"
 NEGATIVE_CELL_STYLE = "#d98f8f"
@@ -2721,6 +2723,20 @@ class AvanzaTradingTui(App):
         margin-bottom: 1;
     }
 
+    #login-progress {
+        display: none;
+        height: 1;
+        margin-top: 1;
+        color: $accent;
+        text-style: bold;
+    }
+
+    #login-progress-detail {
+        display: none;
+        height: 1;
+        color: $text-muted;
+    }
+
     #workspace {
         display: none;
         height: 1fr;
@@ -3197,6 +3213,14 @@ class AvanzaTradingTui(App):
         self.clock_timer = None
         self.mcp_health_timer = None
         self.order_search_timer = None
+        self.login_progress_timer = None
+        self.login_thread: threading.Thread | None = None
+        self.login_busy = False
+        self.login_spinner_index = 0
+        self.login_progress_tick = 0
+        self.login_progress_messages: tuple[str, ...] = ()
+        self.login_progress_index = 0
+        self.login_stage_message = ""
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
@@ -3273,6 +3297,8 @@ class AvanzaTradingTui(App):
                 yield Input(placeholder="1Password item name or ID", id="onepassword-item")
                 yield Input(placeholder="1Password vault (optional)", id="onepassword-vault")
                 yield Button("Login with 1Password", id="onepassword-login", variant="primary")
+                yield Static("", id="login-progress")
+                yield Static("", id="login-progress-detail")
 
         with Vertical(id="workspace"):
             with Horizontal(id="topbar"):
@@ -3735,15 +3761,233 @@ class AvanzaTradingTui(App):
         self.query_one("#password", Input).value = ""
         self.query_one("#totp", Input).value = ""
 
-    def complete_login(self, credentials: dict[str, str]) -> None:
-        self.avanza = Avanza(credentials)
+    def set_login_controls_enabled(self, enabled: bool) -> None:
+        for widget_id in ("username", "password", "totp", "onepassword-item", "onepassword-vault"):
+            try:
+                self.query_one(f"#{widget_id}", Input).disabled = not enabled
+            except Exception:
+                pass
+        for widget_id in ("login", "onepassword-login"):
+            try:
+                self.query_one(f"#{widget_id}", Button).disabled = not enabled
+            except Exception:
+                pass
+
+    def render_login_progress(self) -> None:
+        spinner = LOGIN_PROGRESS_FRAMES[self.login_spinner_index % len(LOGIN_PROGRESS_FRAMES)]
+        if self.login_stage_message:
+            message = self.login_stage_message
+        elif self.login_progress_messages:
+            message = self.login_progress_messages[self.login_progress_index % len(self.login_progress_messages)]
+        else:
+            message = "Working..."
+        detail = f"Step {self.login_progress_index + 1}/{max(1, len(self.login_progress_messages))}" if self.login_progress_messages else ""
+        try:
+            self.query_one("#login-progress", Static).update(f"{spinner} {message}")
+            self.query_one("#login-progress-detail", Static).update(detail)
+        except Exception:
+            pass
+
+    def advance_login_progress(self) -> None:
+        if not self.login_busy:
+            return
+        self.login_spinner_index = (self.login_spinner_index + 1) % len(LOGIN_PROGRESS_FRAMES)
+        self.login_progress_tick += 1
+        if not self.login_stage_message and self.login_progress_messages and self.login_progress_tick % LOGIN_PROGRESS_ROTATE_TICKS == 0:
+            self.login_progress_index = (self.login_progress_index + 1) % len(self.login_progress_messages)
+        self.render_login_progress()
+
+    def set_login_stage(self, message: str, index: int | None = None) -> None:
+        if index is not None:
+            if self.login_progress_messages:
+                self.login_progress_index = int(clamp(index, 0, len(self.login_progress_messages) - 1))
+            else:
+                self.login_progress_index = max(0, index)
+        self.login_stage_message = message
+        self.render_login_progress()
+
+    def start_login_progress(self, messages: tuple[str, ...], initial_message: str) -> None:
+        self.login_busy = True
+        self.login_spinner_index = 0
+        self.login_progress_tick = 0
+        self.login_progress_messages = messages
+        self.login_progress_index = 0
+        self.login_stage_message = initial_message
+        self.set_login_controls_enabled(False)
+        try:
+            progress = self.query_one("#login-progress", Static)
+            detail = self.query_one("#login-progress-detail", Static)
+            progress.display = True
+            detail.display = True
+        except Exception:
+            pass
+        if self.login_progress_timer is not None:
+            self.login_progress_timer.stop()
+        self.login_progress_timer = self.set_interval(0.12, self.advance_login_progress, pause=False)
+        self.render_login_progress()
+
+    def stop_login_progress(self) -> None:
+        self.login_busy = False
+        if self.login_progress_timer is not None:
+            self.login_progress_timer.stop()
+            self.login_progress_timer = None
+        self.login_stage_message = ""
+        self.login_progress_messages = ()
+        try:
+            self.query_one("#login-progress", Static).display = False
+            self.query_one("#login-progress-detail", Static).display = False
+        except Exception:
+            pass
+        self.set_login_controls_enabled(True)
+
+    def apply_accounts_overview(self, overview: dict[str, Any], announce: bool = True) -> None:
+        self.accounts = account_rows_from_overview(overview)
+        account_options = [
+            (
+                f"{account_display_name(account)} ({account.get('type', '')}) - {amount(account, 'totalValue')}",
+                str(account.get("id", "")),
+            )
+            for account in self.accounts
+        ]
+        account_select = self.query_one("#account-select", Select)
+        account_select.set_options(account_options)
+        if announce:
+            self.write_log(f"Loaded {len(self.accounts)} account(s).")
+        if self.accounts:
+            selected = next((a for a in self.accounts if str(a.get("id", "")) == self.selected_account_id), None)
+            if selected is None:
+                selected = default_account(self.accounts)
+            if selected is not None:
+                self.set_selected_account(selected)
+                account_select.value = self.selected_account_id
+
+    def apply_portfolio_data(self, data: dict[str, Any], fetch_quotes: bool = True) -> None:
+        table = self.query_one("#portfolio-table", DataTable)
+        selected_row_key = selected_table_row_key(table)
+        table.clear()
+        self.latest_portfolio_data = data
+        self.update_selected_account_summary(data)
+
+        holding_options = stoploss_holding_options(data, self.selected_account_id)
+        holding_select = self.query_one("#instrument-select", Select)
+        order_holding_select = self.query_one("#order-instrument-select", Select)
+        previous_holding = self.input_value("instrument-select")
+        previous_order_holding = self.input_value("order-instrument-select")
+        order_search_query = self.input_value("order-search")
+        holding_select.set_options(holding_options)
+        if not order_search_query:
+            order_holding_select.set_options(holding_options)
+        if previous_holding and previous_holding in {value for _, value in holding_options}:
+            holding_select.value = previous_holding
+        elif holding_options:
+            holding_select.value = holding_options[0][1]
+        if not order_search_query:
+            if previous_order_holding and previous_order_holding in {value for _, value in holding_options}:
+                order_holding_select.value = previous_order_holding
+            elif holding_options:
+                order_holding_select.value = holding_options[0][1]
+        self.holding_volumes_by_order_book = stoploss_volume_by_order_book(data, self.selected_account_id)
+        self.holding_labels_by_order_book = {
+            value: label.split(" - owned", 1)[0]
+            for label, value in holding_options
+        }
+        selected_holding = self.input_value("instrument-select")
+        volume_input = self.query_one("#volume", Input)
+        if selected_holding and not volume_input.value.strip():
+            volume_input.value = self.holding_volumes_by_order_book.get(selected_holding, "")
+
+        count = 0
+        next_cache: dict[str, tuple[str, ...]] = {}
+        self.portfolio_trade_targets_by_row_key = {}
+        for section in ("withOrderbook", "withoutOrderbook"):
+            for item in data.get(section, []):
+                if isinstance(item, dict):
+                    if not matches_account(item, self.selected_account_id):
+                        continue
+                    row_key = str(item.get("id", f"{section}-{count}"))
+                    if fetch_quotes:
+                        order_book_id = position_order_book_id(item)
+                        quote_payload = self.quote_payload_for_order_book(order_book_id)
+                        current_row = position_state_row_with_quote(
+                            item,
+                            quote_payload,
+                            self.realtime_status_for_position(item, quote_payload),
+                        )
+                    else:
+                        current_row = position_state_row(item, "Unknown")
+                    previous_row = self.position_row_cache.get(row_key)
+                    changed_row = changed_position_row(current_row, previous_row)
+                    table.add_row(
+                        changed_row[0],
+                        trade_action_badge("buy"),
+                        trade_action_badge("sell"),
+                        *changed_row[1:],
+                        key=row_key,
+                    )
+                    next_cache[row_key] = current_row
+                    self.portfolio_trade_targets_by_row_key[row_key] = position_trade_target(item)
+                    count += 1
+
+        self.position_row_cache = next_cache
+        self.reapply_table_sort(table)
+        restore_table_row_selection(table, selected_row_key)
+        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
+        self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
+
+    def apply_stoploss_orders_data(self, stoplosses: Any, orders: Any) -> None:
+        table = self.query_one("#stoploss-table", DataTable)
+        selected_row_key = selected_table_row_key(table)
+        table.clear()
+        self.stoploss_items_by_row_key = {}
+        self.cancel_targets_by_row_key = {
+            key: value
+            for key, value in self.cancel_targets_by_row_key.items()
+            if not key.startswith(("stoploss-", "order-", "active-"))
+        }
+        visible_count = 0
+        self.latest_stoploss_items = []
+        if isinstance(stoplosses, list):
+            for item in stoplosses:
+                if isinstance(item, dict):
+                    if not matches_account(item, self.selected_account_id):
+                        continue
+                    self.latest_stoploss_items.append(item)
+                    row_key = f"stoploss-{item.get('id', visible_count)}"
+                    table.add_row(*stop_loss_activity_row(item), key=row_key)
+                    self.stoploss_items_by_row_key[row_key] = item
+                    self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Stop-loss", item)
+                    visible_count += 1
+        else:
+            self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(stoplosses).__name__}")
+
+        order_items = open_order_items(orders)
+        order_count = 0
+        self.latest_open_order_items = []
+        for item in order_items:
+            if isinstance(item, dict):
+                if not matches_account(item, self.selected_account_id):
+                    continue
+                self.latest_open_order_items.append(item)
+                row_key = f"order-{item.get('id', '') or item.get('orderId', '') or order_count}"
+                table.add_row(*open_order_activity_row(item), key=row_key)
+                self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Order", item)
+                order_count += 1
+
+        self.reapply_table_sort(table)
+        restore_table_row_selection(table, selected_row_key)
+        self.update_active_trades_table()
+        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
+        self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
+
+    def complete_login(self, avanza: Avanza, overview: dict[str, Any], portfolio: dict[str, Any], stoplosses: Any, orders: Any) -> None:
+        self.avanza = avanza
         self.clear_secret_inputs()
         self.query_one("#login-screen").display = False
         self.query_one("#workspace").display = True
         self.write_log("[green]Logged in. Secret fields cleared.[/green]")
-        self.refresh_accounts()
-        self.refresh_portfolio()
-        self.refresh_stoplosses()
+        self.apply_accounts_overview(overview, announce=True)
+        self.apply_portfolio_data(portfolio, fetch_quotes=False)
+        self.apply_stoploss_orders_data(stoplosses, orders)
         self.start_live_refresh()
 
     def record_event(self, category: str, event: str, details: dict[str, Any] | None = None) -> None:
@@ -4082,6 +4326,7 @@ class AvanzaTradingTui(App):
             self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
 
     def on_unmount(self) -> None:
+        self.stop_login_progress()
         if self.order_search_timer is not None:
             self.order_search_timer.stop()
             self.order_search_timer = None
@@ -4554,58 +4799,12 @@ class AvanzaTradingTui(App):
 
     def refresh_stoplosses(self) -> None:
         avanza = self.require_connection()
-        table = self.query_one("#stoploss-table", DataTable)
-        selected_row_key = selected_table_row_key(table)
-        table.clear()
-        self.stoploss_items_by_row_key = {}
-        self.cancel_targets_by_row_key = {
-            key: value
-            for key, value in self.cancel_targets_by_row_key.items()
-            if not key.startswith(("stoploss-", "order-", "active-"))
-        }
-
-        visible_count = 0
-        self.latest_stoploss_items = []
-        data = avanza.get_all_stop_losses()
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    if not matches_account(item, self.selected_account_id):
-                        continue
-                    self.latest_stoploss_items.append(item)
-                    row_key = f"stoploss-{item.get('id', visible_count)}"
-                    table.add_row(*stop_loss_activity_row(item), key=row_key)
-                    self.stoploss_items_by_row_key[row_key] = item
-                    self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Stop-loss", item)
-                    visible_count += 1
-        else:
-            self.write_log(f"[yellow]Unexpected stop-loss response type:[/yellow] {type(data).__name__}")
-
-        order_count = 0
         try:
             orders = avanza.get_orders()
         except Exception as exc:
             self.write_log(f"[yellow]Could not load open orders:[/yellow] {exc}")
             orders = []
-
-        order_items = open_order_items(orders)
-
-        self.latest_open_order_items = []
-        for item in order_items:
-            if isinstance(item, dict):
-                if not matches_account(item, self.selected_account_id):
-                    continue
-                self.latest_open_order_items.append(item)
-                row_key = f"order-{item.get('id', '') or item.get('orderId', '') or order_count}"
-                table.add_row(*open_order_activity_row(item), key=row_key)
-                self.cancel_targets_by_row_key[row_key] = self.live_cancel_target("Order", item)
-                order_count += 1
-
-        self.reapply_table_sort(table)
-        restore_table_row_selection(table, selected_row_key)
-        self.update_active_trades_table()
-        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
-        self.write_log(f"Loaded {visible_count} stop-loss order(s) and {order_count} open order(s){suffix}.")
+        self.apply_stoploss_orders_data(avanza.get_all_stop_losses(), orders)
 
     def reset_stoploss_modal_for_new(self) -> None:
         self.pending_stoploss_edit_id = None
@@ -4672,100 +4871,15 @@ class AvanzaTradingTui(App):
         if not isinstance(overview, dict):
             self.write_log(f"[yellow]Unexpected account overview response type:[/yellow] {type(overview).__name__}")
             return
-
-        self.accounts = account_rows_from_overview(overview)
-        account_options = [
-            (
-                f"{account_display_name(account)} ({account.get('type', '')}) - {amount(account, 'totalValue')}",
-                str(account.get("id", "")),
-            )
-            for account in self.accounts
-        ]
-        account_select = self.query_one("#account-select", Select)
-        account_select.set_options(account_options)
-
-        self.write_log(f"Loaded {len(self.accounts)} account(s).")
-        if self.accounts and not self.selected_account_id:
-            selected_account = default_account(self.accounts)
-            if selected_account is not None:
-                self.set_selected_account(selected_account)
-            account_select.value = self.selected_account_id
+        self.apply_accounts_overview(overview, announce=True)
 
     def refresh_portfolio(self) -> None:
         avanza = self.require_connection()
-        table = self.query_one("#portfolio-table", DataTable)
-        selected_row_key = selected_table_row_key(table)
-        table.clear()
-
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
             self.write_log(f"[yellow]Unexpected portfolio response type:[/yellow] {type(data).__name__}")
             return
-        self.latest_portfolio_data = data
-        self.update_selected_account_summary(data)
-
-        holding_options = stoploss_holding_options(data, self.selected_account_id)
-        holding_select = self.query_one("#instrument-select", Select)
-        order_holding_select = self.query_one("#order-instrument-select", Select)
-        previous_holding = self.input_value("instrument-select")
-        previous_order_holding = self.input_value("order-instrument-select")
-        order_search_query = self.input_value("order-search")
-        holding_select.set_options(holding_options)
-        if not order_search_query:
-            order_holding_select.set_options(holding_options)
-        if previous_holding and previous_holding in {value for _, value in holding_options}:
-            holding_select.value = previous_holding
-        elif holding_options:
-            holding_select.value = holding_options[0][1]
-        if not order_search_query:
-            if previous_order_holding and previous_order_holding in {value for _, value in holding_options}:
-                order_holding_select.value = previous_order_holding
-            elif holding_options:
-                order_holding_select.value = holding_options[0][1]
-        self.holding_volumes_by_order_book = stoploss_volume_by_order_book(data, self.selected_account_id)
-        self.holding_labels_by_order_book = {
-            value: label.split(" - owned", 1)[0]
-            for label, value in holding_options
-        }
-        selected_holding = self.input_value("instrument-select")
-        volume_input = self.query_one("#volume", Input)
-        if selected_holding and not volume_input.value.strip():
-            volume_input.value = self.holding_volumes_by_order_book.get(selected_holding, "")
-
-        count = 0
-        next_cache: dict[str, tuple[str, ...]] = {}
-        self.portfolio_trade_targets_by_row_key = {}
-        for section in ("withOrderbook", "withoutOrderbook"):
-            for item in data.get(section, []):
-                if isinstance(item, dict):
-                    if not matches_account(item, self.selected_account_id):
-                        continue
-                    row_key = str(item.get("id", f"{section}-{count}"))
-                    order_book_id = position_order_book_id(item)
-                    quote_payload = self.quote_payload_for_order_book(order_book_id)
-                    current_row = position_state_row_with_quote(
-                        item,
-                        quote_payload,
-                        self.realtime_status_for_position(item, quote_payload),
-                    )
-                    previous_row = self.position_row_cache.get(row_key)
-                    changed_row = changed_position_row(current_row, previous_row)
-                    table.add_row(
-                        changed_row[0],
-                        trade_action_badge("buy"),
-                        trade_action_badge("sell"),
-                        *changed_row[1:],
-                        key=row_key,
-                    )
-                    next_cache[row_key] = current_row
-                    self.portfolio_trade_targets_by_row_key[row_key] = position_trade_target(item)
-                    count += 1
-
-        self.position_row_cache = next_cache
-        self.reapply_table_sort(table)
-        restore_table_row_selection(table, selected_row_key)
-        suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
-        self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
+        self.apply_portfolio_data(data, fetch_quotes=True)
 
     def action_refresh_stoplosses(self) -> None:
         try:
@@ -4930,7 +5044,20 @@ class AvanzaTradingTui(App):
             raise ValueError("Username, password, and TOTP are required.")
 
         self.write_log("Logging in...")
-        self.complete_login({"username": username, "password": password, "totpToken": totp})
+        self.start_login_worker(
+            self.login_worker_with_credentials,
+            (
+                {"username": username, "password": password, "totpToken": totp},
+            ),
+            (
+                "Connecting to Avanza...",
+                "Loading account overview...",
+                "Loading portfolio...",
+                "Loading stop-losses and open orders...",
+                "Building workspace...",
+            ),
+            "Connecting to Avanza...",
+        )
 
     def handle_1password_login(self) -> None:
         item = self.input_value("onepassword-item")
@@ -4939,7 +5066,72 @@ class AvanzaTradingTui(App):
             raise ValueError("1Password item name or ID is required.")
 
         self.write_log("Requesting Avanza credentials from 1Password CLI...")
-        self.complete_login(onepassword_credentials(item, vault))
+        self.start_login_worker(
+            self.login_worker_with_1password,
+            (item, vault),
+            (
+                "Waiting for 1Password approval...",
+                "Reading credentials from 1Password...",
+                "Connecting to Avanza...",
+                "Loading account overview...",
+                "Loading portfolio...",
+                "Loading stop-losses and open orders...",
+                "Building workspace...",
+            ),
+            "Waiting for 1Password approval...",
+        )
+
+    def start_login_worker(
+        self,
+        target: Callable[..., None],
+        args: tuple[Any, ...],
+        progress_messages: tuple[str, ...],
+        initial_message: str,
+    ) -> None:
+        if self.login_busy:
+            self.write_log("[yellow]Login already in progress...[/yellow]")
+            return
+        self.start_login_progress(progress_messages, initial_message)
+        worker = threading.Thread(target=target, args=args, daemon=True, name="avanza-login-worker")
+        self.login_thread = worker
+        worker.start()
+
+    def login_worker_with_credentials(self, credentials: dict[str, str]) -> None:
+        self.perform_login(credentials, connect_stage_index=0)
+
+    def login_worker_with_1password(self, item: str, vault: str | None) -> None:
+        self.call_from_thread(self.set_login_stage, "Reading credentials from 1Password...", 1)
+        credentials = onepassword_credentials(item, vault)
+        self.perform_login(credentials, connect_stage_index=2)
+
+    def perform_login(self, credentials: dict[str, str], connect_stage_index: int) -> None:
+        try:
+            self.call_from_thread(self.set_login_stage, "Connecting to Avanza...", connect_stage_index)
+            avanza = Avanza(credentials)
+
+            self.call_from_thread(self.set_login_stage, "Loading account overview...", connect_stage_index + 1)
+            overview = avanza.get_overview()
+            if not isinstance(overview, dict):
+                raise RuntimeError(f"Unexpected account overview response type: {type(overview).__name__}")
+
+            self.call_from_thread(self.set_login_stage, "Loading portfolio...", connect_stage_index + 2)
+            portfolio = avanza.get_accounts_positions()
+            if not isinstance(portfolio, dict):
+                raise RuntimeError(f"Unexpected portfolio response type: {type(portfolio).__name__}")
+
+            self.call_from_thread(self.set_login_stage, "Loading stop-losses and open orders...", connect_stage_index + 3)
+            stoplosses = avanza.get_all_stop_losses()
+            try:
+                orders = avanza.get_orders()
+            except Exception:
+                orders = []
+
+            self.call_from_thread(self.set_login_stage, "Building workspace...", connect_stage_index + 4)
+            self.call_from_thread(self.complete_login, avanza, overview, portfolio, stoplosses, orders)
+            self.call_from_thread(self.stop_login_progress)
+        except Exception as exc:
+            self.call_from_thread(self.stop_login_progress)
+            self.call_from_thread(self.write_log, f"[red]Login failed:[/red] {exc}")
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
