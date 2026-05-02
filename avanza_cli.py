@@ -315,12 +315,12 @@ def mcp_trade_detail(tool: str, arguments: dict[str, Any]) -> str:
         price = arguments.get("price", "-")
         return f"{side} [bold]{volume}[/bold] @ {price} SEK"
 
-    if tool == "avanza_order_edit":
+    if tool in {"avanza_order_edit", "avanza_open_order_edit"}:
         volume = arguments.get("volume", "-")
         price = arguments.get("price", "-")
         return f"[magenta]EDIT[/magenta] [bold]{volume}[/bold] @ {price} SEK"
 
-    if tool == "avanza_order_delete":
+    if tool in {"avanza_order_delete", "avanza_open_order_cancel"}:
         return f"[red]DELETE[/red] {arguments.get('order_id', '-')}"
 
     if tool in {"avanza_stoploss_set", "avanza_paper_stoploss_set", "avanza_stoploss_edit", "avanza_stoploss_replace"}:
@@ -374,6 +374,8 @@ def mcp_result_log_detail(payload: Any) -> str:
         ("positions", "pos"),
         ("stoplosses", "sl"),
         ("orders", "ord"),
+        ("open_orders", "ord"),
+        ("paper_orders", "paper"),
         ("transactions", "txn"),
         ("quotes", "qt"),
         ("events", "evt"),
@@ -2290,6 +2292,27 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_open_orders",
+        "description": "List live open/pending regular orders for the selected account, or a supplied account_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_ongoing_orders",
+        "description": "List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "include_paper": {"type": "boolean", "default": True},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_transactions",
         "description": "List executed orders/history (BUY/SELL by default) with optional account/date/type filters.",
         "inputSchema": {
@@ -2480,8 +2503,39 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_open_order_edit",
+        "description": "Dry-run or update an existing open/pending regular order (alias of avanza_order_edit). Live update requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_id": {"type": "string"},
+                "price": {"type": "number"},
+                "valid_until": {"type": "string"},
+                "volume": {"type": "integer"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "order_id", "price", "valid_until", "volume"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_order_delete",
         "description": "Dry-run or delete a regular open order. Live deletion requires TUI R/W mode and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "order_id": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "order_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_open_order_cancel",
+        "description": "Dry-run or cancel an existing open/pending regular order (alias of avanza_order_delete). Live cancellation requires TUI R/W mode and confirm=true.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -4094,6 +4148,22 @@ class AvanzaTradingTui(App):
         if tool == "avanza_stoplosses":
             return self.stoploss_snapshot(avanza, account_id)
 
+        if tool == "avanza_open_orders":
+            return self.open_orders_snapshot(avanza, account_id)
+
+        if tool == "avanza_ongoing_orders":
+            include_paper = bool(arguments.get("include_paper", True))
+            return {
+                "account_id": account_id or None,
+                "stoplosses": self.stoploss_snapshot(avanza, account_id)["stoplosses"],
+                "open_orders": self.open_orders_snapshot(avanza, account_id)["orders"],
+                "paper_orders": (
+                    paper_orders(self.paper_session, account_id or None, active_only=True)
+                    if include_paper
+                    else []
+                ),
+            }
+
         if tool == "avanza_transactions":
             transactions_from_raw = arguments.get("transactions_from")
             transactions_to_raw = arguments.get("transactions_to")
@@ -4201,7 +4271,7 @@ class AvanzaTradingTui(App):
             self.record_event("trading", "live_order_set", {"request": preview, "result": result})
             return {"dry_run": False, "request": preview, "result": result}
 
-        if tool == "avanza_order_edit":
+        if tool in {"avanza_order_edit", "avanza_open_order_edit"}:
             confirmed = bool(arguments.get("confirm", False))
             self.require_mcp_write(confirmed)
             valid_until = arguments.get("valid_until")
@@ -4261,7 +4331,7 @@ class AvanzaTradingTui(App):
             self.record_event("trading", "paper_order_cancel", {"order": paper_order})
             return {"paper": True, "order": paper_order}
 
-        if tool == "avanza_order_delete":
+        if tool in {"avanza_order_delete", "avanza_open_order_cancel"}:
             confirmed = bool(arguments.get("confirm", False))
             self.require_mcp_write(confirmed)
             request = {

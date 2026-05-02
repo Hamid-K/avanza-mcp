@@ -602,6 +602,11 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert transactions["first_available_date"] == "2024-01-01"
             assert len(transactions["transactions"]) == 1
             assert transactions["transactions"][0]["Type"] == "BUY"
+            open_orders = app.execute_mcp_tool("avanza_open_orders", {"account_id": "acc-2"})
+            assert open_orders["orders"] == []
+            ongoing_orders = app.execute_mcp_tool("avanza_ongoing_orders", {"account_id": "acc-2"})
+            assert ongoing_orders["open_orders"] == []
+            assert ongoing_orders["stoplosses"] == []
             transactions_all_types = app.execute_mcp_tool(
                 "avanza_transactions",
                 {"account_id": "acc-2", "types": ["BUY", "DIVIDEND"], "executed_only": False},
@@ -750,6 +755,22 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 },
             )
             assert stoploss_edit_dry["dry_run"] is True
+            open_order_edit_dry = app.execute_mcp_tool(
+                "avanza_open_order_edit",
+                {
+                    "account_id": "acc-2",
+                    "order_id": "ord-1",
+                    "price": 101,
+                    "valid_until": "2026-05-28",
+                    "volume": 2,
+                },
+            )
+            assert open_order_edit_dry["dry_run"] is True
+            open_order_cancel_dry = app.execute_mcp_tool(
+                "avanza_open_order_cancel",
+                {"account_id": "acc-2", "order_id": "ord-1"},
+            )
+            assert open_order_cancel_dry["dry_run"] is True
             stoploss_edit = app.execute_mcp_tool(
                 "avanza_stoploss_edit",
                 {
@@ -866,9 +887,13 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     assert initialize["result"]["serverInfo"]["name"] == "avanza_cli"
     assert any(tool["name"] == "avanza_status" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_ongoing_orders" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_paper_stoploss_set" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_paper_order_set" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_order_set" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_open_order_edit" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_open_order_cancel" for tool in tools["result"]["tools"])
 
 
 def test_tui_sorts_table_when_header_is_clicked():

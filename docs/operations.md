@@ -156,6 +156,8 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_accounts` | List accounts visible in the active TUI session. |
 | `avanza_portfolio` | Portfolio positions for selected/specified account. |
 | `avanza_stoplosses` | Stop-loss list for selected/specified account. |
+| `avanza_open_orders` | Live open/pending regular orders for selected/specified account. |
+| `avanza_ongoing_orders` | Ongoing orders view: live stop-losses + live open orders (+ optional paper active orders). |
 | `avanza_transactions` | Executed order/transaction history with account/date/type filters. |
 | `avanza_live_snapshot` | Full polling snapshot for trading loops. |
 | `avanza_realtime_quotes` | Real-time quote snapshot for holdings. |
@@ -170,6 +172,8 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_order_set` | Dry-run or place regular order. |
 | `avanza_order_edit` | Dry-run or edit regular order. |
 | `avanza_order_delete` | Dry-run or delete regular order. |
+| `avanza_open_order_edit` | Dry-run or edit an existing open/pending regular order (alias of `avanza_order_edit`). |
+| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order (alias of `avanza_order_delete`). |
 
 ### MCP transaction history examples
 
