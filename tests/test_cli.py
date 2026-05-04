@@ -1205,15 +1205,37 @@ def test_mcp_account_performance_uses_selected_account_and_period_mapping():
         def get_account_performance_chart_data(self, url_parameters_ids, time_period):
             self.calls.append((url_parameters_ids, time_period))
             return {
-                "development": {
-                    "absolute": {"value": 819745, "unit": "SEK"},
-                    "relative": {"value": 15.15, "unit": "%"},
-                },
-                "chartData": [
-                    {"date": "2026-01-01", "value": {"value": 1000, "unit": "SEK"}},
-                    {"date": "2026-01-02", "value": {"value": 1100, "unit": "SEK"}},
+                "timePeriod": "ALL_TIME",
+                "absoluteSeries": [
+                    {
+                        "performance": {"value": 100.0, "unit": "SEK", "unitType": "MONETARY"},
+                        "timestamp": 1711929600000,
+                    },
+                    {
+                        "performance": {"value": 819745.35, "unit": "SEK", "unitType": "MONETARY"},
+                        "timestamp": 1777586400000,
+                    },
                 ],
-                "dividends": {"value": 3000, "unit": "SEK"},
+                "relativeSeries": [
+                    {
+                        "performance": {"value": 1.2, "unit": "percentage", "unitType": "PERCENTAGE"},
+                        "timestamp": 1711929600000,
+                    },
+                    {
+                        "performance": {"value": 224.406418, "unit": "percentage", "unitType": "PERCENTAGE"},
+                        "timestamp": 1777586400000,
+                    },
+                ],
+                "valueSeries": [
+                    {
+                        "performance": {"value": 900_000.0, "unit": "SEK", "unitType": "MONETARY"},
+                        "timestamp": 1711929600000,
+                    },
+                    {
+                        "performance": {"value": 1_173_126.31, "unit": "SEK", "unitType": "MONETARY"},
+                        "timestamp": 1777759200000,
+                    },
+                ],
             }
 
     app = AvanzaTradingTui()
@@ -1234,10 +1256,17 @@ def test_mcp_account_performance_uses_selected_account_and_period_mapping():
     assert result["account_id"] == "acc-2"
     assert result["period"] == "SINCE_START"
     assert result["raw_period"] == "ALL_TIME"
-    assert result["development_absolute"]["value"] == 819745
-    assert result["development_relative"]["value"] == 15.15
-    assert result["chart_points"][0]["date"] == "2026-01-01"
-    assert result["dividends"]["value"] == 3000
+    assert result["development_absolute"]["value"] == pytest.approx(819745.35)
+    assert result["development_absolute"]["unit"] == "SEK"
+    assert result["development_relative"]["value"] == pytest.approx(224.406418)
+    assert result["development_relative"]["unit"] == "%"
+    assert len(result["chart_points"]) == 3
+    assert result["chart_points"][-1]["account_value"]["value"] == pytest.approx(1_173_126.31)
+    assert result["chart_points"][0]["development_absolute"]["value"] == pytest.approx(100.0)
+    assert result["chart_points"][0]["development_relative"]["value"] == pytest.approx(1.2)
+    assert result["deposits"] is None
+    assert result["withdrawals"] is None
+    assert result["dividends"] is None
 
 
 def test_mcp_account_performance_allows_explicit_account_and_period():

@@ -2255,7 +2255,108 @@ def chart_date_text(value: Any) -> str:
     return text
 
 
+def normalize_relative_unit(unit: Any) -> str:
+    normalized = str(unit or "").strip().upper()
+    if not normalized:
+        return "%"
+    if normalized in {"PERCENT", "PERCENTAGE", "PROCENT", "PROCENT"}:
+        return "%"
+    if normalized == "%":
+        return "%"
+    return str(unit)
+
+
+def extract_performance_series(
+    payload: dict[str, Any], key: str, default_unit: str
+) -> list[dict[str, Any]]:
+    series = payload.get(key)
+    if not isinstance(series, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in series:
+        if not isinstance(item, dict):
+            continue
+        performance = item.get("performance")
+        if not isinstance(performance, dict):
+            performance = item
+        value = scalar_number(performance.get("value"))
+        timestamp = item.get("timestamp")
+        if timestamp is None:
+            timestamp = item.get("time")
+        if timestamp is None:
+            timestamp = item.get("date")
+        unit = performance.get("unit")
+        if unit is None:
+            unit = item.get("unit")
+        if default_unit == "%":
+            unit = normalize_relative_unit(unit or default_unit)
+        else:
+            unit = str(unit or default_unit)
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "date": chart_date_text(timestamp),
+                "value": value,
+                "unit": unit,
+            }
+        )
+    return rows
+
+
 def chart_points_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    absolute_series = extract_performance_series(payload, "absoluteSeries", "SEK")
+    relative_series = extract_performance_series(payload, "relativeSeries", "%")
+    value_series = extract_performance_series(payload, "valueSeries", "SEK")
+    if absolute_series or relative_series or value_series:
+        merged: dict[str, dict[str, Any]] = {}
+        order_index: dict[str, tuple[int, str]] = {}
+
+        def ensure_point(item: dict[str, Any], sequence_index: int) -> dict[str, Any]:
+            timestamp = item.get("timestamp")
+            key = str(timestamp)
+            if key not in merged:
+                merged[key] = {
+                    "timestamp": timestamp,
+                    "date": item.get("date", ""),
+                    "development_absolute": {"value": None, "unit": "SEK"},
+                    "development_relative": {"value": None, "unit": "%"},
+                    "account_value": {"value": None, "unit": "SEK"},
+                }
+                order_index[key] = (sequence_index, key)
+            return merged[key]
+
+        for idx, item in enumerate(absolute_series):
+            point = ensure_point(item, idx)
+            point["development_absolute"] = {
+                "value": item.get("value"),
+                "unit": str(item.get("unit") or "SEK"),
+            }
+        for idx, item in enumerate(relative_series):
+            point = ensure_point(item, idx)
+            point["development_relative"] = {
+                "value": item.get("value"),
+                "unit": normalize_relative_unit(item.get("unit") or "%"),
+            }
+        for idx, item in enumerate(value_series):
+            point = ensure_point(item, idx)
+            point["account_value"] = {
+                "value": item.get("value"),
+                "unit": str(item.get("unit") or "SEK"),
+            }
+
+        def sort_key(point: dict[str, Any], fallback_index: int) -> tuple[int, float, int]:
+            timestamp = point.get("timestamp")
+            if isinstance(timestamp, (int, float)):
+                return (0, float(timestamp), fallback_index)
+            parsed = scalar_number(timestamp)
+            if parsed is not None:
+                return (0, parsed, fallback_index)
+            return (1, float(fallback_index), fallback_index)
+
+        rows = list(merged.values())
+        rows.sort(key=lambda point: sort_key(point, order_index.get(str(point.get("timestamp")), (0, ""))[0]))
+        return rows
+
     containers: list[Any] = []
 
     for key in ("chart_points", "chartPoints", "chartData", "points", "data", "values"):
@@ -2349,7 +2450,16 @@ def account_performance_summary_from_payload(
     payload_dict = payload_to_dict(payload)
     chart_points = chart_points_from_payload(payload_dict)
 
-    absolute_value = first_value_number(
+    absolute_series = extract_performance_series(payload_dict, "absoluteSeries", "SEK")
+    relative_series = extract_performance_series(payload_dict, "relativeSeries", "%")
+
+    absolute_value = absolute_series[-1]["value"] if absolute_series else None
+    absolute_unit = str(absolute_series[-1]["unit"] or "SEK") if absolute_series else "SEK"
+    relative_value = relative_series[-1]["value"] if relative_series else None
+    relative_unit = normalize_relative_unit(relative_series[-1]["unit"] if relative_series else "%")
+
+    if absolute_value is None:
+        absolute_value = first_value_number(
         payload_dict,
         (
             ("development", "absolute"),
@@ -2357,36 +2467,39 @@ def account_performance_summary_from_payload(
             ("absoluteDevelopment",),
             ("performance", "absolute"),
         ),
-    )
-    absolute_unit = first_unit_text(
-        payload_dict,
-        (
-            ("development", "absolute"),
-            ("developmentAbsolute",),
-            ("absoluteDevelopment",),
-            ("performance", "absolute"),
-        ),
-        "SEK",
-    )
-    relative_value = first_value_number(
-        payload_dict,
-        (
-            ("development", "relative"),
-            ("developmentRelative",),
-            ("relativeDevelopment",),
-            ("performance", "relative"),
-        ),
-    )
-    relative_unit = first_unit_text(
-        payload_dict,
-        (
-            ("development", "relative"),
-            ("developmentRelative",),
-            ("relativeDevelopment",),
-            ("performance", "relative"),
-        ),
-        "%",
-    )
+        )
+        absolute_unit = first_unit_text(
+            payload_dict,
+            (
+                ("development", "absolute"),
+                ("developmentAbsolute",),
+                ("absoluteDevelopment",),
+                ("performance", "absolute"),
+            ),
+            "SEK",
+        )
+    if relative_value is None:
+        relative_value = first_value_number(
+            payload_dict,
+            (
+                ("development", "relative"),
+                ("developmentRelative",),
+                ("relativeDevelopment",),
+                ("performance", "relative"),
+            ),
+        )
+        relative_unit = normalize_relative_unit(
+            first_unit_text(
+                payload_dict,
+                (
+                    ("development", "relative"),
+                    ("developmentRelative",),
+                    ("relativeDevelopment",),
+                    ("performance", "relative"),
+                ),
+                "%",
+            )
+        )
 
     if (absolute_value is None or relative_value is None) and len(chart_points) >= 2:
         first = chart_points[0].get("value")
