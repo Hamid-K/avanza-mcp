@@ -1120,6 +1120,119 @@ def test_mcp_stoploss_snapshots_include_stop_loss_id_and_order_book_id():
     assert snapshot_first["Order Book ID"] == "369636"
 
 
+def test_open_order_items_infers_side_from_buy_sell_buckets():
+    from avanza_cli import open_order_items, open_order_side_value
+
+    payload = {
+        "buyOrders": [
+            {
+                "orderId": "ord-buy-1",
+                "status": "PENDING",
+                "orderbook": {"id": "111", "name": "Alpha"},
+                "volume": 3,
+                "price": 99.5,
+                "validUntil": "2026-05-28",
+                "account": {"id": "acc-1", "name": "Main"},
+            }
+        ],
+        "sellOrders": [
+            {
+                "id": "ord-sell-1",
+                "status": "PENDING",
+                "orderbook": {"id": "222", "name": "Beta"},
+                "volume": 2,
+                "price": 120.0,
+                "validUntil": "2026-05-28",
+                "account": {"id": "acc-1", "name": "Main"},
+            }
+        ],
+    }
+    items = open_order_items(payload)
+    assert len(items) == 2
+    sides = {str(item.get("orderId") or item.get("id")): open_order_side_value(item) for item in items}
+    assert sides["ord-buy-1"] == "BUY"
+    assert sides["ord-sell-1"] == "SELL"
+
+
+def test_mcp_open_orders_include_ids_side_and_raw_shapes():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_orders(self):
+            return {
+                "buyOrders": [
+                    {
+                        "orderId": "ord-buy-1",
+                        "status": "PENDING",
+                        "orderbook": {"id": "111", "name": "Alpha"},
+                        "volume": 3,
+                        "price": 99.5,
+                        "validUntil": "2026-05-28",
+                        "account": {"id": "acc-1", "name": "Main"},
+                    }
+                ],
+                "sellOrders": [
+                    {
+                        "id": "ord-sell-1",
+                        "status": "PENDING",
+                        "orderbook": {"id": "222", "name": "Beta"},
+                        "volume": 2,
+                        "price": 120.0,
+                        "validUntil": "2026-05-29",
+                        "account": {"id": "acc-1", "name": "Main"},
+                    }
+                ],
+            }
+
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": [], "cashPositions": []}
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100, "changePercent": 0.1}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+
+    open_orders = app.execute_mcp_tool("avanza_open_orders", {"account_id": "acc-1"})
+    assert len(open_orders["orders"]) == 2
+    first = open_orders["orders"][0]
+    required = {
+        "Order ID",
+        "Account ID",
+        "Account Name",
+        "Order Book ID",
+        "Stock",
+        "Side",
+        "Volume",
+        "Price",
+        "Valid Until",
+        "Status",
+        "order_id",
+        "order_book_id",
+        "account_id",
+    }
+    assert required.issubset(set(first.keys()))
+    ids = {row["Order ID"]: row for row in open_orders["orders"]}
+    assert ids["ord-buy-1"]["Side"] == "BUY"
+    assert ids["ord-buy-1"]["Order Book ID"] == "111"
+    assert ids["ord-buy-1"]["order_id"] == "ord-buy-1"
+    assert ids["ord-sell-1"]["Side"] == "SELL"
+    assert ids["ord-sell-1"]["Order Book ID"] == "222"
+
+    raw_snapshot = app.execute_mcp_tool("avanza_open_orders_raw", {"account_id": "acc-1"})
+    assert "raw" in raw_snapshot
+    assert "buyOrders" in raw_snapshot["raw"]
+
+    live = app.execute_mcp_tool("avanza_live_snapshot", {"account_id": "acc-1"})
+    live_ids = {row["Order ID"]: row for row in live["open_orders"]["orders"]}
+    assert live_ids["ord-buy-1"]["Side"] == "BUY"
+    assert live_ids["ord-sell-1"]["Side"] == "SELL"
+
+
 def test_tui_tracks_terminal_resize():
     from avanza_cli import AvanzaTradingTui
 
@@ -1322,6 +1435,7 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_open_orders_raw" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_ongoing_orders" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_paper_stoploss_set" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_paper_order_set" for tool in tools["result"]["tools"])

@@ -1028,6 +1028,119 @@ def looks_like_open_order(item: Any) -> bool:
     return any(key in item for key in keys)
 
 
+def normalize_order_side(value: Any) -> str:
+    text = str(value or "").strip().upper().replace("-", "_")
+    if not text:
+        return ""
+    if "BUY" in text:
+        return "BUY"
+    if "SELL" in text:
+        return "SELL"
+    return ""
+
+
+def open_order_side_value(item: dict[str, Any]) -> str:
+    for key in ("side", "type", "orderType", "order_type"):
+        side = normalize_order_side(item.get(key))
+        if side:
+            return side
+    return normalize_order_side(item.get("__bucket_side"))
+
+
+def open_order_id(item: dict[str, Any]) -> str:
+    return str(item.get("orderId") or item.get("id") or "")
+
+
+def open_order_account_id(item: dict[str, Any]) -> str:
+    return str(
+        item.get("accountId")
+        or item.get("account_id")
+        or nested_value(item, "account", "id")
+        or nested_value(item, "account", "accountId")
+        or ""
+    )
+
+
+def open_order_account_name(item: dict[str, Any]) -> str:
+    return str(
+        nested_value(item, "account", "name")
+        or item.get("accountName")
+        or nested_value(item, "account", "accountName")
+        or ""
+    )
+
+
+def open_order_order_book_id(item: dict[str, Any]) -> str:
+    return str(
+        nested_value(item, "orderbook", "id")
+        or nested_value(item, "instrument", "orderbook", "id")
+        or item.get("orderBookId")
+        or item.get("order_book_id")
+        or nested_value(item, "instrument", "id")
+        or ""
+    )
+
+
+def open_order_stock_name(item: dict[str, Any]) -> str:
+    return str(
+        nested_value(item, "orderbook", "name")
+        or nested_value(item, "instrument", "name")
+        or item.get("instrumentName")
+        or item.get("name")
+        or ""
+    )
+
+
+def open_order_value_scalar(value: Any) -> Any:
+    if isinstance(value, dict):
+        nested = value.get("value")
+        if nested is not None:
+            return nested
+    return value
+
+
+def open_order_volume_value(item: dict[str, Any]) -> Any:
+    return open_order_value_scalar(item.get("volume"))
+
+
+def open_order_price_value(item: dict[str, Any]) -> Any:
+    return open_order_value_scalar(item.get("price"))
+
+
+def open_order_valid_until(item: dict[str, Any]) -> str:
+    return str(item.get("validUntil") or item.get("valid_until") or "")
+
+
+def open_order_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
+    order_id = open_order_id(item)
+    account_id = open_order_account_id(item)
+    account_name = open_order_account_name(item)
+    order_book_id = open_order_order_book_id(item)
+    stock = open_order_stock_name(item)
+    side = open_order_side_value(item)
+    volume = open_order_volume_value(item)
+    price = open_order_price_value(item)
+    return {
+        "Order ID": order_id,
+        "Account ID": account_id,
+        "Account Name": account_name,
+        "Order Book ID": order_book_id,
+        "Stock": stock,
+        "Side": side or "-",
+        "Volume": volume,
+        "Price": price,
+        "Valid Until": open_order_valid_until(item),
+        "Status": str(item.get("status", "") or ""),
+        # Machine-friendly aliases for direct tool chaining.
+        "order_id": order_id,
+        "id": str(item.get("id", "") or ""),
+        "orderId": str(item.get("orderId", "") or ""),
+        "account_id": account_id,
+        "order_book_id": order_book_id,
+        "side": side or "",
+    }
+
+
 def open_order_items(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if looks_like_open_order(item)]
@@ -1038,12 +1151,15 @@ def open_order_items(payload: Any) -> list[dict[str, Any]]:
     collected: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
-    def push(items: Any) -> None:
+    def push(items: Any, bucket_side: str = "") -> None:
         if not isinstance(items, list):
             return
         for item in items:
             if not looks_like_open_order(item):
                 continue
+            if bucket_side and not open_order_side_value(item):
+                item = dict(item)
+                item["__bucket_side"] = bucket_side
             identifier = str(item.get("id") or item.get("orderId") or id(item))
             if identifier in seen_ids:
                 continue
@@ -1052,7 +1168,8 @@ def open_order_items(payload: Any) -> list[dict[str, Any]]:
 
     # Common shapes.
     for key in ("orders", "items", "openOrders", "buyOrders", "sellOrders"):
-        push(payload.get(key))
+        bucket_side = "BUY" if key == "buyOrders" else "SELL" if key == "sellOrders" else ""
+        push(payload.get(key), bucket_side=bucket_side)
 
     # Account-grouped shapes: {"accounts":[{"id":"...","orders":[...]}]}
     accounts = payload.get("accounts")
@@ -1065,12 +1182,18 @@ def open_order_items(payload: Any) -> list[dict[str, Any]]:
                 entries = account.get(key)
                 if not isinstance(entries, list):
                     continue
+                bucket_side = "BUY" if key == "buyOrders" else "SELL" if key == "sellOrders" else ""
                 for item in entries:
                     if not isinstance(item, dict) or not looks_like_open_order(item):
                         continue
+                    side_missing = not open_order_side_value(item)
                     if account_id and not account_id_for_item(item):
                         item = dict(item)
                         item["accountId"] = account_id
+                    elif side_missing and bucket_side:
+                        item = dict(item)
+                    if bucket_side and side_missing:
+                        item["__bucket_side"] = bucket_side
                     identifier = str(item.get("id") or item.get("orderId") or id(item))
                     if identifier in seen_ids:
                         continue
@@ -1761,17 +1884,16 @@ def cash_row(item: dict[str, Any]) -> tuple[str, ...]:
 
 
 def open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
-    orderbook = item.get("orderbook") or item.get("instrument") or {}
-    price = item.get("price", "")
+    price = open_order_price_value(item)
     price_type = item.get("priceType", "") or item.get("price_type", "")
     return (
         "Order",
         str(item.get("status", "")),
-        str(orderbook.get("name", "")),
-        side_badge(item.get("type", "") or item.get("orderType", "")),
-        str(item.get("volume", "")),
+        open_order_stock_name(item),
+        side_badge(open_order_side_value(item)),
+        str(open_order_volume_value(item)),
         formatted_typed_value(price, price_type) if price_type else str(price),
-        str(item.get("validUntil", "")),
+        open_order_valid_until(item),
     )
 
 
@@ -1849,17 +1971,16 @@ def active_stop_loss_row(item: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def active_open_order_row(item: dict[str, Any]) -> tuple[Any, ...]:
-    orderbook = item.get("orderbook") or item.get("instrument") or {}
-    price = item.get("price", "")
+    price = open_order_price_value(item)
     price_type = item.get("priceType", "") or item.get("price_type", "")
     return (
         "Live",
         "Order",
-        str(orderbook.get("name", "")),
-        side_badge(item.get("type", "") or item.get("orderType", "")),
-        str(item.get("volume", "")),
+        open_order_stock_name(item),
+        side_badge(open_order_side_value(item)),
+        str(open_order_volume_value(item)),
         formatted_typed_value(price, price_type) if price_type else str(price),
-        str(item.get("validUntil", "")),
+        open_order_valid_until(item),
         str(item.get("status", "")),
         cancel_badge(),
     )
@@ -4587,7 +4708,16 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_open_orders",
-        "description": "List live open/pending regular orders for the selected account, or a supplied account_id.",
+        "description": "List live open/pending regular orders for the selected account, or a supplied account_id, with stable IDs for edit/cancel flows.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_open_orders_raw",
+        "description": "Debug tool: return normalized open orders plus raw Avanza order payload for schema diagnostics.",
         "inputSchema": {
             "type": "object",
             "properties": {"account_id": {"type": "string"}},
@@ -7362,20 +7492,21 @@ class AvanzaTradingTui(App):
             ),
         }
 
-    def open_orders_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+    def open_orders_snapshot(self, avanza: Any, account_id: str, include_raw: bool = False) -> dict[str, Any]:
         try:
             data = avanza.get_orders()
         except Exception:
             data = []
         items = open_order_items(data)
-        rows = [open_order_row(item) for item in items if isinstance(item, dict) and matches_account(item, account_id or None)]
-        return {
+        filtered_items = [item for item in items if isinstance(item, dict) and matches_account(item, account_id or None)]
+        orders = [open_order_mcp_dict(item) for item in filtered_items]
+        snapshot: dict[str, Any] = {
             "account_id": account_id or None,
-            "orders": rows_as_dicts(
-                ["Kind", "Status", "Stock", "Side", "Volume", "Price", "Valid Until"],
-                rows,
-            ),
+            "orders": orders,
         }
+        if include_raw:
+            snapshot["raw"] = payload_to_json_safe(data)
+        return snapshot
 
     def update_mcp_session_file(self) -> None:
         if self.mcp_server is None or self.mcp_token is None:
@@ -7720,6 +7851,9 @@ class AvanzaTradingTui(App):
 
         if tool == "avanza_open_orders":
             return self.open_orders_snapshot(avanza, account_id)
+
+        if tool == "avanza_open_orders_raw":
+            return self.open_orders_snapshot(avanza, account_id, include_raw=True)
 
         if tool == "avanza_ongoing_orders":
             include_paper = bool(arguments.get("include_paper", True))

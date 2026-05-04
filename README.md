@@ -236,7 +236,8 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `signal_context_bundle` | Unified cross-source bundle for one symbol (TV technicals + optional Zacks/SEC/FRED). |
 | `avanza_portfolio` | Portfolio positions for selected or specified account. |
 | `avanza_stoplosses` | Stop-loss orders for selected or specified account. |
-| `avanza_open_orders` | Live open/pending regular orders for selected or specified account. |
+| `avanza_open_orders` | Live open/pending regular orders with stable fields/IDs for direct edit/cancel workflows. |
+| `avanza_open_orders_raw` | Debug variant of open orders: normalized rows plus raw Avanza payload for schema diagnostics. |
 | `avanza_ongoing_orders` | Ongoing orders view: live stop-losses + live open orders (+ optional paper active orders). |
 | `avanza_transactions` | Executed order/transaction history with account/date/type filters. |
 | `avanza_live_snapshot` | Full polling snapshot (positions, orders, stop-losses, paper state). |
