@@ -53,6 +53,7 @@ from avanza_cli import (
     active_paper_order_row,
     stop_loss_activity_row,
     stop_loss_row,
+    stop_loss_mcp_row,
     ticket_pane_width_after_drag,
     trade_action_from_cell,
     trade_action_badge,
@@ -596,6 +597,30 @@ def test_changed_position_row_styles_only_changed_numeric_cells():
     assert str(row[5].style) == "#7fbf8f"
     assert str(row[8]) == "+200.00 SEK"
     assert str(row[8].style) == "#7fbf8f"
+
+
+def test_stop_loss_mcp_row_includes_id_and_order_book_id():
+    row = stop_loss_mcp_row(
+        {
+            "id": "sl-123",
+            "status": "ACTIVE",
+            "account": {"name": "Trading"},
+            "orderbook": {"name": "Broadcom", "id": "369636"},
+            "trigger": {"type": "FOLLOW_UPWARDS", "value": 12, "valueType": "PERCENTAGE", "validUntil": "2026-07-28"},
+            "order": {"type": "SELL", "volume": 4, "price": 99, "priceType": "PERCENTAGE"},
+        }
+    )
+
+    assert row == (
+        "sl-123",
+        "ACTIVE",
+        "Trading",
+        "Broadcom",
+        "369636",
+        "FOLLOW_UPWARDS 12%",
+        "SELL 4 @ 99%",
+        "2026-07-28",
+    )
 
 
 def test_change_style_is_directional_and_muted():

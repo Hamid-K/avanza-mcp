@@ -924,6 +924,77 @@ def test_tui_login_shows_progress_while_authenticating(monkeypatch):
     asyncio.run(run_app())
 
 
+def test_mcp_stoploss_snapshots_include_stop_loss_id_and_order_book_id():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "A2^1776317962417^627705",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Trading"},
+                    "orderbook": {"id": "369636", "name": "Broadcom"},
+                    "trigger": {
+                        "type": "FOLLOW_UPWARDS",
+                        "value": 12,
+                        "valueType": "PERCENTAGE",
+                        "validUntil": "2026-07-28",
+                    },
+                    "order": {"type": "SELL", "volume": 4, "price": 99, "priceType": "PERCENTAGE"},
+                }
+            ]
+
+        def get_orders(self):
+            return []
+
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "pos-1",
+                        "account": {"id": "acc-1"},
+                        "instrument": {"name": "Broadcom", "orderbook": {"id": "369636", "quote": {"isRealTime": True}}},
+                        "volume": {"value": 4, "unit": "st"},
+                        "value": {"value": 800, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 180, "unit": "SEK"},
+                        "acquiredValue": {"value": 720, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 1.0, "unit": "%"},
+                            "absolute": {"value": 8, "unit": "SEK"},
+                        },
+                    }
+                ],
+                "withoutOrderbook": [],
+                "cashPositions": [],
+            }
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 200, "changePercent": 1.0}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+
+    stoplosses = app.execute_mcp_tool("avanza_stoplosses", {"account_id": "acc-1"})
+    assert stoplosses["stoplosses"]
+    first = stoplosses["stoplosses"][0]
+    assert first["Stop Loss ID"] == "A2^1776317962417^627705"
+    assert first["Order Book ID"] == "369636"
+    assert first["Stock"] == "Broadcom"
+
+    ongoing = app.execute_mcp_tool("avanza_ongoing_orders", {"account_id": "acc-1"})
+    assert ongoing["stoplosses"]
+    ongoing_first = ongoing["stoplosses"][0]
+    assert ongoing_first["Stop Loss ID"] == "A2^1776317962417^627705"
+    assert ongoing_first["Order Book ID"] == "369636"
+
+    snapshot = app.execute_mcp_tool("avanza_live_snapshot", {"account_id": "acc-1"})
+    snapshot_first = snapshot["stoplosses"]["stoplosses"][0]
+    assert snapshot_first["Stop Loss ID"] == "A2^1776317962417^627705"
+    assert snapshot_first["Order Book ID"] == "369636"
+
+
 def test_tui_tracks_terminal_resize():
     from avanza_cli import AvanzaTradingTui
 

@@ -1506,6 +1506,23 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def stop_loss_mcp_row(item: dict[str, Any]) -> tuple[str, ...]:
+    account = item.get("account") or {}
+    orderbook = item.get("orderbook") or {}
+    trigger = item.get("trigger") or {}
+    order = item.get("order") or {}
+    return (
+        str(item.get("id", "")),
+        str(item.get("status", "")),
+        str(account.get("name", "")),
+        str(orderbook.get("name", "")),
+        str(orderbook.get("id", "")),
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''))}",
+        str(trigger.get("validUntil", "")),
+    )
+
+
 def stop_loss_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
@@ -4515,11 +4532,11 @@ class AvanzaTradingTui(App):
         data = avanza.get_all_stop_losses()
         if not isinstance(data, list):
             raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
-        rows = [stop_loss_row(item) for item in data if isinstance(item, dict) and matches_account(item, account_id or None)]
+        rows = [stop_loss_mcp_row(item) for item in data if isinstance(item, dict) and matches_account(item, account_id or None)]
         return {
             "account_id": account_id or None,
             "stoplosses": rows_as_dicts(
-                ["Status", "Account", "Stock", "Trigger", "Order", "Valid Until"],
+                ["Stop Loss ID", "Status", "Account", "Stock", "Order Book ID", "Trigger", "Order", "Valid Until"],
                 rows,
             ),
         }
