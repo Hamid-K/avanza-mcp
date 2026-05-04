@@ -132,7 +132,7 @@ python avanza_cli.py transactions list \
 python avanza_cli.py tui
 ```
 
-2. Enable the `MCP` tick box in the TUI. This starts a localhost bridge that reuses the authenticated Avanza client and writes `.avanza_mcp_session.json`. The file contains localhost connection details and an ephemeral token (ignored by git).
+2. Enable the `MCP` tick box in the TUI. This starts a localhost bridge that reuses the authenticated Avanza client and writes `.avanza_mcp_session.json`. By default, the ephemeral bridge token is stored in macOS Keychain (`security` CLI) and the dotfile stores metadata/connection details; if keychain is unavailable it falls back to file storage. Set `AVANZA_MCP_SESSION_BACKEND=file` to force dotfile-only storage.
 
 3. Register the MCP server in `~/.codex/config.toml`:
 

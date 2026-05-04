@@ -43,6 +43,8 @@ from avanza_cli import (
 def isolate_runtime_files(monkeypatch, tmp_path):
     monkeypatch.setattr("avanza_cli.LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr("avanza_cli.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
+    monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "file")
+    monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
 
 
 def test_parse_date_accepts_iso_date():
@@ -1156,6 +1158,53 @@ def test_transactions_overlay_loads_account_transactions():
 def test_load_mcp_session_requires_existing_session_file(tmp_path):
     with pytest.raises(RuntimeError):
         load_mcp_session(tmp_path / "missing-session.json")
+
+
+def test_mcp_session_keychain_storage_mode(monkeypatch, tmp_path):
+    from avanza_cli import load_mcp_session, remove_mcp_session_file, write_mcp_session_file
+
+    session_path = tmp_path / "mcp-session.json"
+    monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "keychain")
+    monkeypatch.setattr("avanza_cli.tradingview_keychain_supported", lambda: True)
+
+    store: dict[str, str] = {}
+
+    def fake_set(path, token):
+        store[str(path)] = token
+        return True, ""
+
+    def fake_get(path):
+        return store.get(str(path), "")
+
+    def fake_delete(path):
+        return (store.pop(str(path), None) is not None), ""
+
+    monkeypatch.setattr("avanza_cli.mcp_keychain_set_token", fake_set)
+    monkeypatch.setattr("avanza_cli.mcp_keychain_get_token", fake_get)
+    monkeypatch.setattr("avanza_cli.mcp_keychain_delete_token", fake_delete)
+
+    write_mcp_session_file(
+        session_path,
+        {
+            "url": "http://127.0.0.1:62000",
+            "token": "super-secret-token",
+            "read_write": False,
+            "created_at": "2026-05-04T00:00:00",
+            "proxy_command": "python avanza_cli.py mcp",
+        },
+    )
+    metadata = json.loads(session_path.read_text(encoding="utf-8"))
+    assert metadata["storage"] == "keychain"
+    assert metadata["backend"] == "keychain"
+    assert "token" not in metadata
+
+    session = load_mcp_session(session_path)
+    assert session["url"] == "http://127.0.0.1:62000"
+    assert session["token"] == "super-secret-token"
+
+    remove_mcp_session_file(session_path)
+    assert not session_path.exists()
+    assert store == {}
 
 
 def test_call_mcp_bridge_handles_non_json_http_error(monkeypatch):

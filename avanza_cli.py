@@ -45,6 +45,7 @@ PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
 TRADINGVIEW_SESSION_FILE = Path(__file__).with_name(".avanza_tradingview_session.json")
 TRADINGVIEW_BROWSER_PROFILE_DIR = Path(__file__).with_name(".avanza_tradingview_profile")
 TRADINGVIEW_KEYCHAIN_SERVICE = "Avanza-MCP.TradingView"
+MCP_KEYCHAIN_SERVICE = "Avanza-MCP.BridgeSession"
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
@@ -4298,14 +4299,106 @@ def mcp_session_payload(host: str, port: int, token: str, read_write: bool) -> d
     }
 
 
+def mcp_session_backend() -> str:
+    value = str(os.getenv("AVANZA_MCP_SESSION_BACKEND", "auto") or "auto").strip().lower()
+    if value in {"keychain", "file", "auto"}:
+        return value
+    return "auto"
+
+
+def mcp_keychain_account(path: Path) -> str:
+    scope = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"mcp_session::{scope}"
+
+
+def mcp_keychain_get_token(path: Path) -> str:
+    if not tradingview_keychain_supported():
+        return ""
+    account = mcp_keychain_account(path)
+    result = subprocess.run(
+        ["security", "find-generic-password", "-a", account, "-s", MCP_KEYCHAIN_SERVICE, "-w"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return str(result.stdout or "").strip()
+
+
+def mcp_keychain_set_token(path: Path, token: str) -> tuple[bool, str]:
+    if not tradingview_keychain_supported():
+        return False, "keychain not supported"
+    account = mcp_keychain_account(path)
+    result = subprocess.run(
+        [
+            "security",
+            "add-generic-password",
+            "-a",
+            account,
+            "-s",
+            MCP_KEYCHAIN_SERVICE,
+            "-w",
+            token,
+            "-U",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return True, ""
+    error = str(result.stderr or result.stdout or "").strip()
+    return False, error or f"security exited with {result.returncode}"
+
+
+def mcp_keychain_delete_token(path: Path) -> tuple[bool, str]:
+    if not tradingview_keychain_supported():
+        return False, "keychain not supported"
+    account = mcp_keychain_account(path)
+    result = subprocess.run(
+        ["security", "delete-generic-password", "-a", account, "-s", MCP_KEYCHAIN_SERVICE],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return True, ""
+    error = str(result.stderr or result.stdout or "").strip().lower()
+    if "could not be found" in error or "item not found" in error:
+        return False, ""
+    return False, error or f"security exited with {result.returncode}"
+
+
 def write_mcp_session_file(path: Path, payload: dict[str, Any]) -> None:
+    write_payload = dict(payload)
+    token = str(write_payload.get("token", "") or "").strip()
+    backend = mcp_session_backend()
+    storage = "file"
+    keychain_error = ""
+    if token and backend in {"auto", "keychain"}:
+        saved, keychain_error = mcp_keychain_set_token(path, token)
+        if saved:
+            storage = "keychain"
+            write_payload.pop("token", None)
+        elif backend == "keychain":
+            raise RuntimeError(f"Could not save MCP session token in keychain: {keychain_error}")
+    write_payload["storage"] = storage
+    write_payload["backend"] = backend
+    if keychain_error:
+        write_payload["keychain_error"] = keychain_error
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temp_path.write_text(json.dumps(write_payload, indent=2), encoding="utf-8")
     os.replace(temp_path, path)
+    try:
+        path.chmod(0o600)
+    except Exception:
+        pass
 
 
 def remove_mcp_session_file(path: Path | None = None) -> None:
     path = path or MCP_SESSION_FILE
+    mcp_keychain_delete_token(path)
     try:
         path.unlink()
     except FileNotFoundError:
@@ -8089,8 +8182,17 @@ def load_mcp_session(path: Path | None = None) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise RuntimeError(f"MCP session file not found: {path}. Enable MCP mode in the TUI first.") from exc
-    if not isinstance(data, dict) or not data.get("url") or not data.get("token"):
+    if not isinstance(data, dict) or not data.get("url"):
         raise RuntimeError(f"Invalid MCP session file: {path}")
+    token = str(data.get("token", "") or "").strip()
+    if not token:
+        storage = str(data.get("storage", "") or "").strip().lower()
+        if storage == "keychain":
+            token = mcp_keychain_get_token(path)
+    if not token:
+        raise RuntimeError(f"Invalid MCP session file: {path}")
+    data = dict(data)
+    data["token"] = token
     return data
 
 

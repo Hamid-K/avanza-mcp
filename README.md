@@ -176,6 +176,7 @@ python avanza_cli.py tui
 ```
 
 Log in, then enable the `MCP` tick box in the TUI. This starts the localhost bridge and writes `.avanza_mcp_session.json`.
+By default, the MCP bridge token is saved to macOS Keychain (`security` CLI) and only metadata is written to the dotfile; if keychain is unavailable, it falls back to file storage. Override with `AVANZA_MCP_SESSION_BACKEND=keychain|file|auto` (default `auto`).
 
 ### 2) Register the MCP server in Codex/Codex CLI
 
