@@ -41,6 +41,7 @@ HELP_FORMATTER = argparse.RawDescriptionHelpFormatter
 MCP_SESSION_FILE = Path(__file__).with_name(".avanza_mcp_session.json")
 PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
 TRADINGVIEW_SESSION_FILE = Path(__file__).with_name(".avanza_tradingview_session.json")
+TRADINGVIEW_BROWSER_PROFILE_DIR = Path(__file__).with_name(".avanza_tradingview_profile")
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
@@ -2665,6 +2666,28 @@ def parse_cookie_value(cookie: str, key: str) -> str:
     return match.group(1) if match else ""
 
 
+def tradingview_cookie_from_browser_cookies(cookies: list[dict[str, Any]]) -> str:
+    sessionid = ""
+    sessionid_sign = ""
+    for item in cookies:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        value = str(item.get("value", "")).strip()
+        domain = str(item.get("domain", "")).lower()
+        if "tradingview.com" not in domain and domain:
+            continue
+        if name == "sessionid" and value:
+            sessionid = value
+        elif name == "sessionid_sign" and value:
+            sessionid_sign = value
+    if sessionid and sessionid_sign:
+        return f"sessionid={sessionid}; sessionid_sign={sessionid_sign}"
+    if sessionid:
+        return f"sessionid={sessionid}"
+    return ""
+
+
 def load_tradingview_session(path: Path | None = None) -> dict[str, Any]:
     session_path = path or TRADINGVIEW_SESSION_FILE
     try:
@@ -2759,6 +2782,61 @@ def tradingview_session_status(path: Path | None = None) -> dict[str, Any]:
         "has_sessionid_sign": bool(parse_cookie_value(cookie, "sessionid_sign")),
         "cookie_preview": mask_secret(cookie, keep=8),
     }
+
+
+def tradingview_auto_login_and_capture_session(
+    *,
+    timeout_seconds: int = 300,
+    profile_dir: Path | None = None,
+) -> dict[str, Any]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        raise RuntimeError(
+            "Playwright is required for browser-instrumented TradingView login. "
+            "Install with: uv add --dev playwright && uv run playwright install chromium"
+        ) from exc
+
+    target_profile_dir = profile_dir or TRADINGVIEW_BROWSER_PROFILE_DIR
+    target_profile_dir.mkdir(parents=True, exist_ok=True)
+    timeout = max(30, min(int(timeout_seconds), 1800))
+    deadline = time.time() + timeout
+    last_error = ""
+
+    with sync_playwright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            str(target_profile_dir),
+            headless=False,
+            viewport={"width": 1440, "height": 900},
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(TRADINGVIEW_LOGIN_URL, wait_until="domcontentloaded")
+            while time.time() < deadline:
+                try:
+                    cookies = context.cookies("https://www.tradingview.com")
+                    cookie_header = tradingview_cookie_from_browser_cookies(cookies)
+                    if cookie_header:
+                        saved = save_tradingview_session(cookie_header, source="playwright-auto")
+                        return {
+                            "captured": True,
+                            "timeout_seconds": timeout,
+                            "login_url": TRADINGVIEW_LOGIN_URL,
+                            "session_file": str(TRADINGVIEW_SESSION_FILE),
+                            "details": saved,
+                            "status": tradingview_session_status(),
+                        }
+                except Exception as exc:
+                    last_error = str(exc)
+                time.sleep(1.0)
+        finally:
+            context.close()
+
+    raise RuntimeError(
+        "Timed out waiting for TradingView login session cookie capture. "
+        "Complete login in the opened browser and retry."
+        + (f" Last error: {last_error}" if last_error else "")
+    )
 
 
 def recommendation_label(value: Any) -> str:
@@ -3336,6 +3414,17 @@ MCP_TOOLS = [
                 "sessionid": {"type": "string"},
                 "sessionid_sign": {"type": "string"},
                 "source": {"type": "string", "default": "manual"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_session_login_auto",
+        "description": "Open instrumented browser, let user log in normally, and automatically capture/save TradingView session cookies.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "timeout_seconds": {"type": "integer", "minimum": 30, "maximum": 1800, "default": 300},
             },
             "additionalProperties": False,
         },
@@ -6060,6 +6149,10 @@ class AvanzaTradingTui(App):
                 "status": tradingview_session_status(),
                 "details": saved,
             }
+
+        if tool == "tv_auth_session_login_auto":
+            timeout_seconds = int(arguments.get("timeout_seconds", 300))
+            return tradingview_auto_login_and_capture_session(timeout_seconds=timeout_seconds)
 
         if tool == "tv_auth_session_status":
             return tradingview_session_status()

@@ -1508,6 +1508,27 @@ def test_mcp_tv_auth_session_start_set_status_clear(monkeypatch, tmp_path):
     assert cleared["status"]["configured"] is False
 
 
+def test_mcp_tv_auth_session_login_auto_delegates_and_saves(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_auto_login(**kwargs):
+        assert kwargs["timeout_seconds"] == 123
+        return {"captured": True, "status": {"configured": True}}
+
+    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_cli.tradingview_auto_login_and_capture_session", fake_auto_login)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("tv_auth_session_login_auto", {"timeout_seconds": 123})
+
+    assert result["captured"] is True
+    assert result["status"]["configured"] is True
+
+
 def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
@@ -1530,6 +1551,19 @@ def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_pat
 
     assert result["mode"] == "authenticated_scrape"
     assert "sessionid=abc" in captured["cookie"]
+
+
+def test_tradingview_cookie_from_browser_cookies_extracts_session_tokens():
+    from avanza_cli import tradingview_cookie_from_browser_cookies
+
+    cookies = [
+        {"name": "other", "value": "x", "domain": ".tradingview.com"},
+        {"name": "sessionid", "value": "abc", "domain": ".tradingview.com"},
+        {"name": "sessionid_sign", "value": "sig", "domain": ".tradingview.com"},
+    ]
+    header = tradingview_cookie_from_browser_cookies(cookies)
+    assert "sessionid=abc" in header
+    assert "sessionid_sign=sig" in header
 
 
 def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():

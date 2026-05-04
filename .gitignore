@@ -16,6 +16,7 @@ htmlcov/
 .avanza_mcp_session.json
 .avanza_paper_session.json
 .avanza_*_session.json
+.avanza_tradingview_profile/
 avanza-cli/logs/
 avanza-cli/backups/
 

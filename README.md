@@ -207,6 +207,7 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `tv_scrape_symbol_analytics` | TradingView free scanner snapshot with technical buy/sell barometer and key performance metrics. |
 | `tv_auth_session_start` | Open TradingView login page in browser and show next-step session setup instructions. |
 | `tv_auth_session_set` | Save TradingView authenticated session cookie for reuse by `tv_auth_*` tools. |
+| `tv_auth_session_login_auto` | Open instrumented browser, log in normally, and auto-capture/save TradingView session cookie. |
 | `tv_auth_session_status` | Show status of saved TradingView auth session. |
 | `tv_auth_session_clear` | Clear saved TradingView auth session cookie. |
 | `tv_auth_symbol_analytics` | TradingView authenticated scanner snapshot (uses cookie/session for entitlement-aware mode). |
@@ -246,11 +247,13 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
   - explicit tool input (`cookie` or `sessionid` + `sessionid_sign`),
   - environment variables (`TRADINGVIEW_SESSIONID`, optional `TRADINGVIEW_SESSIONID_SIGN`),
   - saved local session via `tv_auth_session_set` (stored in `.avanza_tradingview_session.json`, ignored by git).
+- Preferred path: `tv_auth_session_login_auto` to open an instrumented browser and capture cookies automatically after login.
 - Browser-assisted flow:
-  1. call `tv_auth_session_start` (opens TradingView login),
-  2. log in normally in web browser,
-  3. call `tv_auth_session_set` with session cookie material once,
-  4. use `tv_auth_session_status` to verify persisted auth, then call `tv_auth_*`.
+  1. call `tv_auth_session_login_auto`,
+  2. log in normally in opened browser window,
+  3. wait for auto-capture confirmation, then run `tv_auth_session_status`,
+  4. use `tv_auth_*` tools with no repeated cookie input.
+- If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
 
