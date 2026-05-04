@@ -2,6 +2,7 @@
 import argparse
 import cProfile
 import getpass
+import html
 import io
 import json
 import os
@@ -18,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from avanza import Avanza
@@ -141,6 +143,67 @@ LOG_CATEGORY_FILES = {
     "mcp": "mcp.jsonl",
     "trading": "trading.jsonl",
 }
+EXTERNAL_HTTP_TIMEOUT_SECONDS = float(os.getenv("AVANZA_EXTERNAL_HTTP_TIMEOUT_SECONDS", "20"))
+EXTERNAL_HTTP_USER_AGENT = os.getenv(
+    "AVANZA_EXTERNAL_HTTP_USER_AGENT",
+    "Avanza-MCP/0.1 (+https://github.com/Hamid-K/avanza-mcp)",
+)
+TRADINGVIEW_SCANNER_URL_TEMPLATE = "https://scanner.tradingview.com/{market}/scan"
+TRADINGVIEW_DEFAULT_MARKET = "america"
+TRADINGVIEW_DEFAULT_EXCHANGE = "NASDAQ"
+TRADINGVIEW_PROFILE_URL_TEMPLATE = "https://www.tradingview.com/symbols/{symbol_slug}/"
+TRADINGVIEW_HEATMAP_FIELDS = [
+    "name",
+    "description",
+    "sector",
+    "industry",
+    "close",
+    "change",
+    "change_abs",
+    "volume",
+    "market_cap_basic",
+]
+TRADINGVIEW_ANALYTICS_FIELDS = [
+    "name",
+    "description",
+    "exchange",
+    "sector",
+    "industry",
+    "close",
+    "change",
+    "change_abs",
+    "volume",
+    "market_cap_basic",
+    "fundamental_currency_code",
+    "high",
+    "low",
+    "open",
+    "Perf.W",
+    "Perf.1M",
+    "Perf.3M",
+    "Perf.6M",
+    "Perf.YTD",
+    "Perf.Y",
+    "Recommend.All",
+    "Recommend.MA",
+    "Recommend.Other",
+    "RSI",
+    "MACD.macd",
+    "MACD.signal",
+    "Stoch.K",
+    "Stoch.D",
+]
+TRADINGVIEW_RECOMMENDATION_THRESHOLDS = (
+    (-0.5, "Strong Sell"),
+    (-0.1, "Sell"),
+    (0.1, "Neutral"),
+    (0.5, "Buy"),
+    (1.0, "Strong Buy"),
+)
+TRADINGVIEW_WATCHLIST_SYMBOL_PATTERN = re.compile(r"/symbols/([A-Z0-9_.-]+)/")
+SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
+SEC_SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik}.json"
+FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
 
 
 def max_valid_until_date(reference: date | None = None) -> date:
@@ -2533,6 +2596,396 @@ def account_performance_summary_from_payload(
     }
 
 
+def external_http_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = {"User-Agent": EXTERNAL_HTTP_USER_AGENT, "Accept": "application/json,text/plain,*/*"}
+    if extra:
+        headers.update({str(key): str(value) for key, value in extra.items() if value is not None})
+    return headers
+
+
+def external_fetch_text(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    payload: Any | None = None,
+    timeout_seconds: float = EXTERNAL_HTTP_TIMEOUT_SECONDS,
+) -> str:
+    body = None
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+    request = Request(url, data=body, method=method.upper(), headers=external_http_headers(headers))
+    with urlopen(request, timeout=timeout_seconds) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
+
+
+def external_fetch_json(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    payload: Any | None = None,
+    timeout_seconds: float = EXTERNAL_HTTP_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    text = external_fetch_text(
+        url,
+        method=method,
+        headers=headers,
+        payload=payload,
+        timeout_seconds=timeout_seconds,
+    )
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected object JSON from {url}.")
+    return data
+
+
+def append_cookie_header(headers: dict[str, str], cookie: str | None) -> dict[str, str]:
+    if not cookie:
+        return headers
+    merged = dict(headers)
+    merged["Cookie"] = cookie.strip()
+    return merged
+
+
+def tradingview_cookie_from_inputs(arguments: dict[str, Any]) -> str:
+    explicit_cookie = str(arguments.get("cookie", "") or "").strip()
+    if explicit_cookie:
+        return explicit_cookie
+    sessionid = str(arguments.get("sessionid", "") or os.getenv("TRADINGVIEW_SESSIONID", "")).strip()
+    sessionid_sign = str(arguments.get("sessionid_sign", "") or os.getenv("TRADINGVIEW_SESSIONID_SIGN", "")).strip()
+    if sessionid and sessionid_sign:
+        return f"sessionid={sessionid}; sessionid_sign={sessionid_sign}"
+    if sessionid:
+        return f"sessionid={sessionid}"
+    return ""
+
+
+def recommendation_label(value: Any) -> str:
+    score = scalar_number(value)
+    if score is None:
+        return "Unknown"
+    for threshold, label in TRADINGVIEW_RECOMMENDATION_THRESHOLDS:
+        if score <= threshold:
+            return label
+    return "Strong Buy"
+
+
+def normalize_tv_symbol(symbol: str, exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE) -> str:
+    text = str(symbol or "").strip().upper()
+    if not text:
+        raise ValueError("symbol is required.")
+    if ":" in text:
+        return text
+    return f"{exchange}:{text}"
+
+
+def tv_row_to_dict(columns: list[str], row: dict[str, Any]) -> dict[str, Any]:
+    values = row.get("d", [])
+    mapped: dict[str, Any] = {}
+    for index, column in enumerate(columns):
+        mapped[column] = values[index] if index < len(values) else None
+    mapped["ticker"] = str(row.get("s", ""))
+    return mapped
+
+
+def tradingview_scan(
+    *,
+    symbols: list[str],
+    columns: list[str],
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    limit: int = 25,
+    sort_by: str | None = None,
+    descending: bool = True,
+    cookie: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "symbols": {"tickers": symbols, "query": {"types": []}},
+        "columns": columns,
+    }
+    if not symbols:
+        payload["symbols"] = {"tickers": [], "query": {"types": ["stock"]}}
+        payload["range"] = [0, max(0, limit - 1)]
+    if sort_by:
+        payload["sort"] = {"sortBy": sort_by, "sortOrder": "desc" if descending else "asc"}
+    url = TRADINGVIEW_SCANNER_URL_TEMPLATE.format(market=market)
+    headers = append_cookie_header({"Content-Type": "application/json"}, cookie)
+    data = external_fetch_json(url, method="POST", headers=headers, payload=payload)
+    rows_raw = data.get("data", [])
+    rows = [tv_row_to_dict(columns, row) for row in rows_raw if isinstance(row, dict)]
+    return {"market": market, "columns": columns, "rows": rows, "total_count": int(data.get("totalCount", len(rows)))}
+
+
+def tradingview_symbol_profile_html(symbol: str, cookie: str = "") -> str:
+    slug = symbol.replace(":", "-").upper()
+    headers = append_cookie_header({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}, cookie)
+    return external_fetch_text(TRADINGVIEW_PROFILE_URL_TEMPLATE.format(symbol_slug=slug), headers=headers)
+
+
+def tradingview_extract_symbol_candidates_from_html(html_text: str, max_symbols: int = 120) -> list[str]:
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for match in TRADINGVIEW_WATCHLIST_SYMBOL_PATTERN.findall(html_text):
+        normalized = str(match).strip().upper().replace("-", ":", 1)
+        if ":" not in normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        symbols.append(normalized)
+        if len(symbols) >= max_symbols:
+            break
+    return symbols
+
+
+def tradingview_symbol_snapshot(
+    symbol: str,
+    *,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+    cookie: str = "",
+) -> dict[str, Any]:
+    normalized_symbol = normalize_tv_symbol(symbol, exchange)
+    scan = tradingview_scan(
+        symbols=[normalized_symbol],
+        columns=TRADINGVIEW_ANALYTICS_FIELDS,
+        market=market,
+        limit=1,
+        cookie=cookie,
+    )
+    rows = scan["rows"]
+    if not rows:
+        raise ValueError(f"TradingView returned no rows for {normalized_symbol}.")
+    row = rows[0]
+    technical_score = row.get("Recommend.All")
+    moving_average_score = row.get("Recommend.MA")
+    oscillator_score = row.get("Recommend.Other")
+    return {
+        "symbol": normalized_symbol,
+        "market": market,
+        "analytics": row,
+        "technicals": {
+            "overall_score": technical_score,
+            "overall_label": recommendation_label(technical_score),
+            "moving_average_score": moving_average_score,
+            "moving_average_label": recommendation_label(moving_average_score),
+            "oscillator_score": oscillator_score,
+            "oscillator_label": recommendation_label(oscillator_score),
+        },
+        "source": "tradingview-scanner",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
+
+
+def tradingview_heatmap_snapshot(
+    *,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    limit: int = 50,
+    cookie: str = "",
+) -> dict[str, Any]:
+    scan = tradingview_scan(
+        symbols=[],
+        columns=TRADINGVIEW_HEATMAP_FIELDS,
+        market=market,
+        limit=max(1, min(limit, 200)),
+        sort_by="change",
+        descending=True,
+        cookie=cookie,
+    )
+    return {
+        "market": market,
+        "rows": scan["rows"],
+        "total_count": scan["total_count"],
+        "source": "tradingview-scanner",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
+
+
+def tradingview_watchlist_snapshot(
+    *,
+    reference_symbol: str,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+    cookie: str = "",
+    limit: int = 25,
+) -> dict[str, Any]:
+    normalized_reference = normalize_tv_symbol(reference_symbol, exchange)
+    html_text = tradingview_symbol_profile_html(normalized_reference, cookie=cookie)
+    symbols = tradingview_extract_symbol_candidates_from_html(html_text, max_symbols=max(5, min(limit * 3, 150)))
+    if normalized_reference not in symbols:
+        symbols.insert(0, normalized_reference)
+    symbols = symbols[: max(1, min(limit, 100))]
+    scan = tradingview_scan(
+        symbols=symbols,
+        columns=["name", "description", "close", "change", "change_abs", "volume", "Recommend.All"],
+        market=market,
+        limit=len(symbols),
+        cookie=cookie,
+    )
+    rows = []
+    for row in scan["rows"]:
+        score = row.get("Recommend.All")
+        row["recommendation"] = recommendation_label(score)
+        rows.append(row)
+    auth_mode = "authenticated" if cookie else "anonymous"
+    return {
+        "reference_symbol": normalized_reference,
+        "market": market,
+        "auth_mode": auth_mode,
+        "rows": rows,
+        "raw_symbol_candidates": symbols,
+        "source": "tradingview-profile+scanner",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": auth_mode != "authenticated",
+    }
+
+
+def sec_cik_text(value: Any) -> str:
+    raw = re.sub(r"[^0-9]", "", str(value or ""))
+    if not raw:
+        raise ValueError("CIK must contain digits.")
+    return raw.zfill(10)
+
+
+def sec_ticker_index() -> list[dict[str, Any]]:
+    payload = external_fetch_json(SEC_TICKERS_URL, headers={"Accept": "application/json"})
+    rows = payload.get("data", [])
+    fields = payload.get("fields", [])
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        raise RuntimeError("Unexpected SEC ticker payload.")
+    return [
+        {str(fields[idx]): row[idx] if idx < len(row) else None for idx in range(len(fields))}
+        for row in rows
+        if isinstance(row, list)
+    ]
+
+
+def sec_lookup_cik(ticker: str | None = None, cik: str | None = None) -> tuple[str, dict[str, Any] | None]:
+    if cik:
+        return sec_cik_text(cik), None
+    ticker_text = str(ticker or "").strip().upper()
+    if not ticker_text:
+        raise ValueError("ticker or cik is required.")
+    for row in sec_ticker_index():
+        if str(row.get("ticker", "")).strip().upper() == ticker_text:
+            return sec_cik_text(row.get("cik")), row
+    raise ValueError(f"Unknown SEC ticker: {ticker_text}")
+
+
+def sec_recent_filings_snapshot(ticker: str | None, cik: str | None, limit: int = 20) -> dict[str, Any]:
+    cik_text, company = sec_lookup_cik(ticker=ticker, cik=cik)
+    payload = external_fetch_json(
+        SEC_SUBMISSIONS_URL_TEMPLATE.format(cik=cik_text),
+        headers={"Accept": "application/json"},
+    )
+    recent = payload.get("filings", {}).get("recent", {})
+    forms = recent.get("form", []) if isinstance(recent, dict) else []
+    accessions = recent.get("accessionNumber", []) if isinstance(recent, dict) else []
+    filing_dates = recent.get("filingDate", []) if isinstance(recent, dict) else []
+    report_dates = recent.get("reportDate", []) if isinstance(recent, dict) else []
+    primary_docs = recent.get("primaryDocument", []) if isinstance(recent, dict) else []
+    rows = []
+    max_len = min(len(forms), max(1, min(limit, 200)))
+    for index in range(max_len):
+        accession = str(accessions[index]) if index < len(accessions) else ""
+        accession_url = ""
+        if accession:
+            accession_compact = accession.replace("-", "")
+            accession_url = (
+                f"https://www.sec.gov/Archives/edgar/data/{int(cik_text)}/{accession_compact}/"
+                f"{primary_docs[index] if index < len(primary_docs) else ''}"
+            )
+        rows.append(
+            {
+                "form": forms[index] if index < len(forms) else "",
+                "filing_date": filing_dates[index] if index < len(filing_dates) else "",
+                "report_date": report_dates[index] if index < len(report_dates) else "",
+                "accession_number": accession,
+                "document": primary_docs[index] if index < len(primary_docs) else "",
+                "url": accession_url,
+            }
+        )
+    return {
+        "ticker": str(ticker or company.get("ticker") if company else "").upper() or None,
+        "cik": cik_text,
+        "company_name": payload.get("name") or (company.get("name") if company else ""),
+        "exchange": company.get("exchange") if company else "",
+        "filings": rows,
+        "source": "sec-edgar",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
+
+
+def fred_observations_snapshot(
+    series_id: str,
+    *,
+    api_key: str | None = None,
+    limit: int = 100,
+    sort_order: str = "desc",
+) -> dict[str, Any]:
+    key = str(api_key or os.getenv("FRED_API_KEY", "")).strip()
+    if not key:
+        raise ValueError("FRED API key missing. Set FRED_API_KEY or pass api_key.")
+    params = {
+        "series_id": series_id,
+        "api_key": key,
+        "file_type": "json",
+        "sort_order": "asc" if str(sort_order).lower() == "asc" else "desc",
+        "limit": str(max(1, min(limit, 1000))),
+    }
+    url = f"{FRED_OBSERVATIONS_URL}?{urlencode(params)}"
+    payload = external_fetch_json(url, headers={"Accept": "application/json"})
+    observations = payload.get("observations", [])
+    rows = []
+    for item in observations if isinstance(observations, list) else []:
+        if not isinstance(item, dict):
+            continue
+        value_raw = str(item.get("value", "")).strip()
+        value = None if value_raw in {"", "."} else scalar_number(value_raw)
+        rows.append({"date": item.get("date"), "value": value, "value_raw": value_raw})
+    return {
+        "series_id": series_id,
+        "title": payload.get("title"),
+        "units": payload.get("units"),
+        "frequency": payload.get("frequency"),
+        "observations": rows,
+        "source": "fred",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
+
+
+def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    url = f"https://www.zacks.com/stock/quote/{ticker}"
+    headers = append_cookie_header({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}, cookie)
+    html_text = external_fetch_text(url, headers=headers)
+    blocked = "Pardon Our Interruption" in html_text or "Access denied" in html_text
+    rank_match = re.search(r"Zacks\\s*Rank\\s*#\\s*([1-5])\\s*\\(([^)]+)\\)", html_text, re.IGNORECASE)
+    industry_rank_match = re.search(r"Industry Rank\\s*:?\\s*#?\\s*([0-9]+)", html_text, re.IGNORECASE)
+    esp_match = re.search(r"Earnings\\s+ESP\\s*:?\\s*([+-]?[0-9]+(?:\\.[0-9]+)?%)", html_text, re.IGNORECASE)
+    return {
+        "symbol": ticker,
+        "url": url,
+        "blocked": blocked,
+        "rank": {
+            "value": int(rank_match.group(1)) if rank_match else None,
+            "label": html.unescape(rank_match.group(2)).strip() if rank_match else None,
+        },
+        "industry_rank": int(industry_rank_match.group(1)) if industry_rank_match else None,
+        "earnings_esp": esp_match.group(1) if esp_match else None,
+        "source": "zacks-web",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": blocked,
+    }
+
+
 def first_numeric(payload: Any, paths: tuple[tuple[str, ...], ...]) -> float | None:
     for path in paths:
         current = payload
@@ -2746,6 +3199,138 @@ MCP_TOOLS = [
                 "account_id": {"type": "string"},
                 "period": {"type": "string", "enum": ACCOUNT_PERFORMANCE_PERIOD_CHOICES, "default": "SINCE_START"},
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_scrape_symbol_analytics",
+        "description": "Fetch TradingView symbol analytics and technical recommendation barometers from public scanner data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_symbol_analytics",
+        "description": "Fetch TradingView symbol analytics in authenticated mode (inherits account entitlements from supplied TradingView cookie/session).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_scrape_heatmap",
+        "description": "Fetch TradingView market heatmap rows (top movers) using free scanner data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_watchlist",
+        "description": "Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reference_symbol": {"type": "string", "default": "AAPL"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "zacks_scrape_symbol",
+        "description": "Scrape Zacks symbol page for rank and quick analytics (best effort; may be blocked without valid browser session/cookies).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "cookie": {"type": "string"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "sec_filings_recent",
+        "description": "Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string"},
+                "cik": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "fred_series",
+        "description": "Fetch FRED macro observations (requires a free FRED API key via FRED_API_KEY or api_key input).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "series_id": {"type": "string"},
+                "api_key": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 120},
+                "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "desc"},
+            },
+            "required": ["series_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "data_source_status",
+        "description": "Return current health, freshness, and safety flags for Avanza, TradingView, Zacks, SEC, and FRED source integrations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "default": "AAPL"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "signal_context_bundle",
+        "description": "Build a compact cross-source signal bundle (TradingView technicals + SEC filings + optional Zacks + optional FRED macro).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "include_zacks": {"type": "boolean", "default": True},
+                "include_sec": {"type": "boolean", "default": True},
+                "fred_series_id": {"type": "string"},
+                "fred_api_key": {"type": "string"},
+            },
+            "required": ["symbol"],
             "additionalProperties": False,
         },
     },
@@ -4935,6 +5520,207 @@ class AvanzaTradingTui(App):
         payload = avanza.get_account_performance_chart_data([scrambled_account_id], period_enum)
         return account_performance_summary_from_payload(payload, account_id, period_label, period_enum.value)
 
+    def data_source_status_snapshot(
+        self,
+        *,
+        symbol: str,
+        exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+        market: str = TRADINGVIEW_DEFAULT_MARKET,
+    ) -> dict[str, Any]:
+        normalized_symbol = normalize_tv_symbol(symbol, exchange)
+        as_of = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        sources: list[dict[str, Any]] = []
+
+        try:
+            tv = tradingview_symbol_snapshot(
+                normalized_symbol,
+                market=market,
+                exchange=exchange,
+                cookie="",
+            )
+            sources.append(
+                {
+                    "source": "tradingview",
+                    "status": "ok",
+                    "symbol": tv["symbol"],
+                    "recommendation": tv["technicals"]["overall_label"],
+                    "unsafe_for_execution": bool(tv.get("unsafe_for_execution")),
+                }
+            )
+        except Exception as exc:
+            sources.append(
+                {
+                    "source": "tradingview",
+                    "status": "error",
+                    "error": str(exc),
+                    "unsafe_for_execution": True,
+                }
+            )
+
+        try:
+            zacks = zacks_symbol_snapshot(normalized_symbol.split(":", 1)[-1])
+            status = "blocked" if zacks.get("blocked") else "ok"
+            sources.append(
+                {
+                    "source": "zacks",
+                    "status": status,
+                    "rank": zacks.get("rank"),
+                    "unsafe_for_execution": bool(zacks.get("blocked", True)),
+                }
+            )
+        except Exception as exc:
+            sources.append(
+                {
+                    "source": "zacks",
+                    "status": "error",
+                    "error": str(exc),
+                    "unsafe_for_execution": True,
+                }
+            )
+
+        try:
+            sec = sec_recent_filings_snapshot(ticker=normalized_symbol.split(":", 1)[-1], cik=None, limit=5)
+            sources.append(
+                {
+                    "source": "sec",
+                    "status": "ok",
+                    "ticker": sec.get("ticker"),
+                    "filings_loaded": len(sec.get("filings", [])),
+                    "unsafe_for_execution": False,
+                }
+            )
+        except Exception as exc:
+            sources.append(
+                {
+                    "source": "sec",
+                    "status": "error",
+                    "error": str(exc),
+                    "unsafe_for_execution": True,
+                }
+            )
+
+        fred_key = os.getenv("FRED_API_KEY", "").strip()
+        if fred_key:
+            try:
+                fred = fred_observations_snapshot("FEDFUNDS", api_key=fred_key, limit=1)
+                last = fred.get("observations", [{}])[-1] if fred.get("observations") else {}
+                sources.append(
+                    {
+                        "source": "fred",
+                        "status": "ok",
+                        "series_id": fred.get("series_id"),
+                        "latest_value": last.get("value"),
+                        "unsafe_for_execution": False,
+                    }
+                )
+            except Exception as exc:
+                sources.append(
+                    {
+                        "source": "fred",
+                        "status": "error",
+                        "error": str(exc),
+                        "unsafe_for_execution": True,
+                    }
+                )
+        else:
+            sources.append(
+                {
+                    "source": "fred",
+                    "status": "not_configured",
+                    "details": "Set FRED_API_KEY for macro series access.",
+                    "unsafe_for_execution": True,
+                }
+            )
+
+        sources.append(
+            {
+                "source": "avanza",
+                "status": "ok" if self.avanza is not None else "not_connected",
+                "selected_account_id": self.selected_account_id,
+                "read_write": self.mcp_write_enabled,
+                "unsafe_for_execution": self.avanza is None,
+            }
+        )
+
+        return {
+            "as_of": as_of,
+            "symbol": normalized_symbol,
+            "market": market,
+            "sources": sources,
+            "unsafe_for_execution": any(bool(item.get("unsafe_for_execution")) for item in sources),
+        }
+
+    def signal_context_bundle_snapshot(
+        self,
+        *,
+        symbol: str,
+        exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+        market: str = TRADINGVIEW_DEFAULT_MARKET,
+        include_zacks: bool = True,
+        include_sec: bool = True,
+        fred_series_id: str | None = None,
+        fred_api_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_symbol = normalize_tv_symbol(symbol, exchange)
+        payload: dict[str, Any] = {
+            "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "symbol": normalized_symbol,
+            "market": market,
+            "sources": [],
+        }
+
+        tv = tradingview_symbol_snapshot(
+            normalized_symbol,
+            market=market,
+            exchange=exchange,
+            cookie="",
+        )
+        payload["tradingview"] = tv
+        payload["sources"].append("tradingview")
+
+        if include_zacks:
+            try:
+                zacks = zacks_symbol_snapshot(normalized_symbol.split(":", 1)[-1])
+                payload["zacks"] = zacks
+                payload["sources"].append("zacks")
+            except Exception as exc:
+                payload["zacks"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["sources"].append("zacks")
+
+        if include_sec:
+            try:
+                sec = sec_recent_filings_snapshot(ticker=normalized_symbol.split(":", 1)[-1], cik=None, limit=10)
+                payload["sec"] = sec
+                payload["sources"].append("sec")
+            except Exception as exc:
+                payload["sec"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["sources"].append("sec")
+
+        if fred_series_id:
+            try:
+                fred = fred_observations_snapshot(
+                    fred_series_id,
+                    api_key=fred_api_key,
+                    limit=30,
+                    sort_order="desc",
+                )
+                payload["fred"] = fred
+                payload["sources"].append("fred")
+            except Exception as exc:
+                payload["fred"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["sources"].append("fred")
+
+        unsafe_flags: list[bool] = [bool(tv.get("unsafe_for_execution"))]
+        for key in ("zacks", "sec", "fred"):
+            item = payload.get(key)
+            if isinstance(item, dict):
+                unsafe_flags.append(bool(item.get("unsafe_for_execution")))
+                if "error" in item:
+                    unsafe_flags.append(True)
+        payload["unsafe_for_execution"] = any(unsafe_flags)
+        payload["mode"] = "experimental_scrape_mode"
+        return payload
+
     def portfolio_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
@@ -5095,6 +5881,105 @@ class AvanzaTradingTui(App):
             requested_period = arguments.get("period", "SINCE_START")
             requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
             return self.account_performance_snapshot(avanza, requested_account_id, requested_period)
+
+        if tool == "tv_scrape_symbol_analytics":
+            symbol = str(arguments["symbol"])
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            snapshot = tradingview_symbol_snapshot(symbol, exchange=exchange, market=market, cookie="")
+            snapshot["mode"] = "free_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "tv_auth_symbol_analytics":
+            symbol = str(arguments["symbol"])
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            cookie = tradingview_cookie_from_inputs(arguments)
+            if not cookie:
+                raise ValueError("Authenticated mode requires cookie/sessionid input or TRADINGVIEW_SESSIONID env.")
+            snapshot = tradingview_symbol_snapshot(symbol, exchange=exchange, market=market, cookie=cookie)
+            snapshot["mode"] = "authenticated_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            snapshot["unsafe_for_execution"] = False
+            return snapshot
+
+        if tool == "tv_scrape_heatmap":
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            limit = int(arguments.get("limit", 50))
+            snapshot = tradingview_heatmap_snapshot(market=market, limit=limit, cookie="")
+            snapshot["mode"] = "free_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "tv_auth_watchlist":
+            reference_symbol = str(arguments.get("reference_symbol", "AAPL"))
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            limit = int(arguments.get("limit", 25))
+            cookie = tradingview_cookie_from_inputs(arguments)
+            if not cookie:
+                raise ValueError("Authenticated watchlist mode requires cookie/sessionid input or TRADINGVIEW_SESSIONID env.")
+            snapshot = tradingview_watchlist_snapshot(
+                reference_symbol=reference_symbol,
+                exchange=exchange,
+                market=market,
+                limit=limit,
+                cookie=cookie,
+            )
+            snapshot["mode"] = "authenticated_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "zacks_scrape_symbol":
+            symbol = str(arguments["symbol"])
+            cookie = str(arguments.get("cookie", "") or "")
+            snapshot = zacks_symbol_snapshot(symbol, cookie=cookie)
+            snapshot["mode"] = "free_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "sec_filings_recent":
+            ticker = str(arguments.get("ticker", "") or "") or None
+            cik = str(arguments.get("cik", "") or "") or None
+            limit = int(arguments.get("limit", 20))
+            return sec_recent_filings_snapshot(ticker=ticker, cik=cik, limit=limit)
+
+        if tool == "fred_series":
+            series_id = str(arguments["series_id"])
+            api_key = str(arguments.get("api_key", "") or "") or None
+            limit = int(arguments.get("limit", 120))
+            sort_order = str(arguments.get("sort_order", "desc"))
+            return fred_observations_snapshot(
+                series_id=series_id,
+                api_key=api_key,
+                limit=limit,
+                sort_order=sort_order,
+            )
+
+        if tool == "data_source_status":
+            symbol = str(arguments.get("symbol", "AAPL"))
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            return self.data_source_status_snapshot(symbol=symbol, exchange=exchange, market=market)
+
+        if tool == "signal_context_bundle":
+            symbol = str(arguments["symbol"])
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            include_zacks = bool(arguments.get("include_zacks", True))
+            include_sec = bool(arguments.get("include_sec", True))
+            fred_series_id = str(arguments.get("fred_series_id", "") or "") or None
+            fred_api_key = str(arguments.get("fred_api_key", "") or "") or None
+            return self.signal_context_bundle_snapshot(
+                symbol=symbol,
+                exchange=exchange,
+                market=market,
+                include_zacks=include_zacks,
+                include_sec=include_sec,
+                fred_series_id=fred_series_id,
+                fred_api_key=fred_api_key,
+            )
 
         if tool == "avanza_portfolio":
             return self.portfolio_snapshot(avanza, account_id)

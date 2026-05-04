@@ -1303,6 +1303,152 @@ def test_mcp_account_performance_allows_explicit_account_and_period():
     assert result["development_absolute"]["value"] == 100.0
 
 
+def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monkeypatch):
+    from avanza_cli import tradingview_symbol_snapshot
+
+    def fake_fetch_json(url, **kwargs):
+        assert "scanner.tradingview.com/america/scan" in url
+        return {
+            "totalCount": 1,
+            "data": [
+                {
+                    "s": "NASDAQ:AAPL",
+                    "d": [
+                        "AAPL",
+                        "Apple Inc.",
+                        "NASDAQ",
+                        "Electronic Technology",
+                        "Telecommunications Equipment",
+                        280.14,
+                        3.24,
+                        8.79,
+                        79_000_000,
+                        4_100_000_000_000,
+                        "USD",
+                        287.22,
+                        278.37,
+                        278.855,
+                        2.7,
+                        10.2,
+                        9.7,
+                        1.1,
+                        2.9,
+                        33.9,
+                        0.60,
+                        0.93,
+                        0.27,
+                        66.4,
+                        4.3,
+                        3.4,
+                        74.4,
+                        72.0,
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = tradingview_symbol_snapshot("AAPL", exchange="NASDAQ", market="america")
+
+    assert snapshot["symbol"] == "NASDAQ:AAPL"
+    assert snapshot["analytics"]["close"] == 280.14
+    assert snapshot["technicals"]["overall_score"] == 0.60
+    assert snapshot["technicals"]["overall_label"] == "Strong Buy"
+    assert snapshot["technicals"]["moving_average_label"] == "Strong Buy"
+    assert snapshot["unsafe_for_execution"] is False
+
+
+def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypatch):
+    from avanza_cli import sec_recent_filings_snapshot
+
+    def fake_fetch_json(url, **kwargs):
+        if "company_tickers_exchange.json" in url:
+            return {
+                "fields": ["cik", "name", "ticker", "exchange"],
+                "data": [[320193, "Apple Inc.", "AAPL", "Nasdaq"]],
+            }
+        if "submissions/CIK0000320193.json" in url:
+            return {
+                "name": "Apple Inc.",
+                "filings": {
+                    "recent": {
+                        "form": ["10-Q", "8-K"],
+                        "filingDate": ["2026-05-01", "2026-04-28"],
+                        "reportDate": ["2026-03-31", "2026-04-27"],
+                        "accessionNumber": ["0000320193-26-000010", "0000320193-26-000009"],
+                        "primaryDocument": ["a10q.htm", "a8k.htm"],
+                    }
+                },
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = sec_recent_filings_snapshot(ticker="AAPL", cik=None, limit=2)
+
+    assert snapshot["cik"] == "0000320193"
+    assert snapshot["ticker"] == "AAPL"
+    assert len(snapshot["filings"]) == 2
+    assert snapshot["filings"][0]["form"] == "10-Q"
+    assert snapshot["filings"][0]["url"].endswith("/a10q.htm")
+
+
+def test_fred_observations_snapshot_parses_values(monkeypatch):
+    from avanza_cli import fred_observations_snapshot
+
+    def fake_fetch_json(url, **kwargs):
+        assert "fred/series/observations" in url
+        return {
+            "title": "Federal Funds Effective Rate",
+            "units": "Percent",
+            "frequency": "Monthly",
+            "observations": [
+                {"date": "2026-03-01", "value": "4.33"},
+                {"date": "2026-04-01", "value": "."},
+            ],
+        }
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = fred_observations_snapshot("FEDFUNDS", api_key="test-key", limit=2, sort_order="desc")
+
+    assert snapshot["series_id"] == "FEDFUNDS"
+    assert snapshot["observations"][0]["value"] == 4.33
+    assert snapshot["observations"][1]["value"] is None
+
+
+def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_tv(symbol, **kwargs):
+        return {
+            "symbol": "NASDAQ:AAPL",
+            "technicals": {"overall_label": "Buy"},
+            "unsafe_for_execution": False,
+        }
+
+    def fake_zacks(symbol, **kwargs):
+        return {"symbol": "AAPL", "rank": {"value": 2, "label": "Buy"}, "blocked": False}
+
+    def fake_sec(*args, **kwargs):
+        return {"ticker": "AAPL", "filings": [{"form": "10-Q"}], "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr("avanza_cli.zacks_symbol_snapshot", fake_zacks)
+    monkeypatch.setattr("avanza_cli.sec_recent_filings_snapshot", fake_sec)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("signal_context_bundle", {"symbol": "AAPL", "include_zacks": True, "include_sec": True})
+
+    assert result["symbol"] == "NASDAQ:AAPL"
+    assert "tradingview" in result
+    assert result["zacks"]["rank"]["value"] == 2
+    assert result["sec"]["filings"][0]["form"] == "10-Q"
+    assert result["unsafe_for_execution"] is False
+
+
 def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
     from avanza_cli import AvanzaTradingTui
 

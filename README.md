@@ -204,6 +204,15 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_status` | MCP bridge status, safety mode, and selected account. |
 | `avanza_accounts` | List available Avanza accounts in the active TUI session. |
 | `avanza_account_performance` | Read Avanza account development/performance for selected or specified account across common periods (including since-start). |
+| `tv_scrape_symbol_analytics` | TradingView free scanner snapshot with technical buy/sell barometer and key performance metrics. |
+| `tv_auth_symbol_analytics` | TradingView authenticated scanner snapshot (uses cookie/session for entitlement-aware mode). |
+| `tv_scrape_heatmap` | TradingView heatmap/top movers snapshot for the selected market. |
+| `tv_auth_watchlist` | TradingView authenticated watchlist monitor (best effort; scrapes profile/watchlist context + scanner metrics). |
+| `zacks_scrape_symbol` | Zacks symbol scrape for rank/quick analytics (best effort; can be bot-protected). |
+| `sec_filings_recent` | Recent SEC EDGAR filings by ticker or CIK. |
+| `fred_series` | FRED macro series observations (requires free FRED API key). |
+| `data_source_status` | Cross-source integration health/freshness/safety status (Avanza, TV, Zacks, SEC, FRED). |
+| `signal_context_bundle` | Unified cross-source bundle for one symbol (TV technicals + optional Zacks/SEC/FRED). |
 | `avanza_portfolio` | Portfolio positions for selected or specified account. |
 | `avanza_stoplosses` | Stop-loss orders for selected or specified account. |
 | `avanza_open_orders` | Live open/pending regular orders for selected or specified account. |
@@ -224,6 +233,14 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_order_delete` | Dry-run or delete regular order. |
 | `avanza_open_order_edit` | Dry-run or edit an existing open/pending regular order (alias of `avanza_order_edit`). |
 | `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order (alias of `avanza_order_delete`). |
+
+### TradingView/Zacks scrape mode notes
+
+- These tools are intentionally marked experimental.
+- `tv_scrape_*` runs in free anonymous mode.
+- `tv_auth_*` requires TradingView session cookies (`cookie` input, or `TRADINGVIEW_SESSIONID` + optional `TRADINGVIEW_SESSIONID_SIGN` env vars).
+- `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
+- Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
 
 ### MCP Transaction History Quick Use
 
