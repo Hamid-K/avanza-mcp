@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.2 - 2026-05-04
+
+- Added runtime app version management from `pyproject.toml` and exposed it in:
+  - TUI title/header (`Avanza vX.Y.Z` and window title),
+  - MCP initialize `serverInfo.version`,
+  - MCP status payload (`app_version`),
+  - CLI `--version`.
+- Added hard `Reload TUI` process restart button for code-reload workflows.
+- Added TradingView custom list monitoring (`tv_auth_custom_lists`) and TUI `TradingView Lists` view with list switching and live refresh.
+- Moved TradingView session cookie storage to macOS Keychain by default with metadata dotfile + fallback to file mode.
+- Moved Avanza MCP bridge session token storage to macOS Keychain by default with metadata dotfile + fallback to file mode.
+
 ## 0.1.1 - 2026-04-30
 
 - Updated stop-loss defaults to auto-fill maximum allowed `valid_until` (today + 90 days) when omitted.

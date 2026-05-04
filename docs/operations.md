@@ -39,6 +39,7 @@ python avanza_cli.py tui
 ```
 
 After login, the TUI hides the credential screen and loads the trading workspace. Use the account selector in the top bar to switch accounts. The position and stop-loss/open-order tables are filtered to the selected account and refresh live every 5 seconds. Use `Reload TUI` in the top control bar to hard-restart the app process with the same CLI arguments so local code changes are reloaded without manual quit/relaunch.
+The top-left app label includes the running version (`Avanza vX.Y.Z`) so the active build is always visible during trading sessions.
 
 ## Stop-Loss
 

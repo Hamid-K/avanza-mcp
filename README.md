@@ -53,6 +53,12 @@ scripts/verify.sh
 
 Console commands print human-readable Rich tables and summaries, not raw API payloads.
 
+Show running app version:
+
+```bash
+python avanza_cli.py --version
+```
+
 Show account overview:
 
 ```bash

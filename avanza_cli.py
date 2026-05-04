@@ -13,6 +13,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tomllib
 import threading
 import time
 import textwrap
@@ -214,6 +215,24 @@ TRADINGVIEW_WATCHLIST_SYMBOL_PATTERN = re.compile(r"/symbols/([A-Z0-9_.-]+)/")
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik}.json"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+
+def load_project_version(default: str = "0.0.0-dev") -> str:
+    pyproject_path = Path(__file__).with_name("pyproject.toml")
+    try:
+        raw = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+    project = raw.get("project")
+    if not isinstance(project, dict):
+        return default
+    version = str(project.get("version", "") or "").strip()
+    return version or default
+
+
+APP_VERSION = load_project_version()
+APP_NAME = "Avanza-MCP"
+TUI_TITLE = f"AvanzaTradingTui v{APP_VERSION}"
 
 
 def max_valid_until_date(reference: date | None = None) -> date:
@@ -5008,6 +5027,7 @@ class AvanzaTradingTui(App):
 
     def __init__(self, debug: bool = False, debug_profile_top: int = DEBUG_PROFILE_TOP_DEFAULT) -> None:
         super().__init__()
+        self.title = TUI_TITLE
         self.debug_mode = bool(debug)
         self.debug_profile_top = max(5, int(debug_profile_top))
         self.debug_profile_depth = 0
@@ -5093,6 +5113,7 @@ class AvanzaTradingTui(App):
             "app",
             "tui_start",
             {
+                "app_version": APP_VERSION,
                 "session_log": str(self.session_log_path),
                 "paper_session_file": str(self.paper_session_path),
                 "debug_mode": self.debug_mode,
@@ -5130,7 +5151,7 @@ class AvanzaTradingTui(App):
             with Horizontal(id="topbar"):
                 with Vertical(id="left-info"):
                     with Horizontal(id="account-row"):
-                        yield Static("Avanza", id="app-title")
+                        yield Static(f"Avanza v{APP_VERSION}", id="app-title")
                         yield Select([], prompt="Select account", allow_blank=True, id="account-select")
                     with Horizontal(id="metric-grid"):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
@@ -6090,6 +6111,7 @@ class AvanzaTradingTui(App):
     def mcp_status_payload(self) -> dict[str, Any]:
         return {
             "ok": True,
+            "app_version": APP_VERSION,
             "enabled": self.mcp_server is not None,
             "read_write": self.mcp_write_enabled,
             "paper_trading": True,
@@ -8291,7 +8313,7 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
                         {
                             "protocolVersion": MCP_PROTOCOL_VERSION,
                             "capabilities": {"tools": {}},
-                            "serverInfo": {"name": "avanza_cli", "version": "0.1.0"},
+                            "serverInfo": {"name": "avanza_cli", "version": APP_VERSION},
                         },
                     ),
                 )
@@ -8621,6 +8643,11 @@ def build_parser() -> argparse.ArgumentParser:
               Mutating commands dry-run unless you pass --confirm.
             """
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{APP_NAME} {APP_VERSION}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

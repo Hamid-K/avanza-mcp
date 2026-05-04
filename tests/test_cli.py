@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from avanza.constants import OrderType, StopLossPriceType, TimePeriod
 from rich.text import Text
 
 from avanza_cli import (
+    APP_VERSION,
     STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
     build_parser,
     build_stop_loss_preview,
@@ -158,6 +160,19 @@ def test_parser_includes_portfolio_commands():
     assert tui_args.command == "tui"
     assert tui_args.debug is True
     assert tui_args.debug_profile_top == 40
+
+
+def test_parser_version_flag_prints_runtime_version(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--version"])
+    out = capsys.readouterr().out.strip()
+    assert APP_VERSION in out
+
+
+def test_runtime_version_matches_pyproject():
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert APP_VERSION == str(data["project"]["version"])
 
 
 def test_cmd_tui_reload_reexecs_current_command(monkeypatch):
@@ -708,6 +723,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert app.live_refresh_timer is not None
             assert app.paper_mode_enabled is True
             assert app.execute_mcp_tool("avanza_status", {})["read_write"] is False
+            assert app.execute_mcp_tool("avanza_status", {})["app_version"] == APP_VERSION
             accounts = app.execute_mcp_tool("avanza_accounts", {})
             assert accounts[1]["Name"] == "Trading"
             transactions = app.execute_mcp_tool("avanza_transactions", {"account_id": "acc-2"})
