@@ -82,7 +82,7 @@ MIN_ACTIVE_TRADES_WIDTH = 30
 MAX_ACTIVE_TRADES_WIDTH = 110
 MIN_TICKET_PANE_WIDTH = 52
 MAX_TICKET_PANE_WIDTH = 110
-PROFIT_METRIC_MODES = ("day", "week", "month", "year", "total")
+PROFIT_METRIC_MODES = ("day", "week", "month", "year", "since_start", "total")
 PAPER_ORDER_ACTIVE_STATES = {"ACTIVE", "PENDING"}
 WINDOW_PERFORMANCE_KEYS = {
     "week": ("lastTradingWeekPerformance", "weekPerformance", "oneWeekPerformance", "lastWeekPerformance"),
@@ -94,6 +94,7 @@ OVERVIEW_PERFORMANCE_KEYS = {
     "week": ("ONE_WEEK", "WEEK", "LAST_TRADING_WEEK"),
     "month": ("ONE_MONTH", "MONTH", "LAST_TRADING_MONTH"),
     "year": ("ONE_YEAR", "YEAR", "THIS_YEAR", "LAST_TRADING_YEAR"),
+    "since_start": ("SINCE_START", "SEDAN_START", "ALL_TIME", "TOTAL", "INCEPTION"),
 }
 REALTIME_KEYS = {
     "isRealTime",
@@ -1210,6 +1211,7 @@ def profit_metric_label(mode: str) -> str:
         "week": "1W P/L",
         "month": "1M P/L",
         "year": "1Y P/L",
+        "since_start": "Since Start P/L",
         "total": "Total P/L",
     }
     return labels.get(mode, "1D P/L")
@@ -1296,6 +1298,10 @@ def account_metric_values(
             profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
             if profit_amount is None and profit_percent is None:
                 profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
+        elif profit_mode == "since_start":
+            profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
+            if profit_amount is None and profit_percent is None:
+                profit_amount, profit_percent, value_unit = account_profit_summary_from_avanza(account)
         else:
             profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
     return {

@@ -467,6 +467,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                             "ONE_WEEK": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
                             "ONE_MONTH": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
                             "ONE_YEAR": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
+                            "SINCE_START": {"absolute": {"value": 0, "unit": "SEK"}, "relative": {"value": 0, "unit": "%"}},
                         },
                         "status": "ACTIVE",
                     },
@@ -485,6 +486,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                             "ONE_WEEK": {"absolute": {"value": 20, "unit": "SEK"}, "relative": {"value": 0.4, "unit": "%"}},
                             "ONE_MONTH": {"absolute": {"value": 30, "unit": "SEK"}, "relative": {"value": 0.6, "unit": "%"}},
                             "ONE_YEAR": {"absolute": {"value": 40, "unit": "SEK"}, "relative": {"value": 0.8, "unit": "%"}},
+                            "SINCE_START": {"absolute": {"value": 90, "unit": "SEK"}, "relative": {"value": 1.8, "unit": "%"}},
                         },
                         "status": "ACTIVE",
                     }
@@ -637,6 +639,9 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             app.cycle_profit_metric()
             assert "1Y P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert "+40.00 SEK" in str(app.query_one("#metric-profit-value").render())
+            app.cycle_profit_metric()
+            assert "Since Start P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "+90.00 SEK" in str(app.query_one("#metric-profit-value").render())
             app.cycle_profit_metric()
             assert "Total P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert "+100.00 SEK" in str(app.query_one("#metric-profit-value").render())

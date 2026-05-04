@@ -347,6 +347,27 @@ def test_account_metric_values_day_falls_back_to_portfolio_day_when_account_day_
     assert "+25.00 SEK" in metrics["profit"].plain
 
 
+def test_account_metric_values_since_start_falls_back_to_account_profit():
+    account = {
+        "id": "acc-1",
+        "totalValue": {"value": 5000, "unit": "SEK"},
+        "buyingPower": {"value": 1000, "unit": "SEK"},
+        "status": "ACTIVE",
+        "profit": {
+            "absolute": {"value": 700, "unit": "SEK"},
+            "relative": {"value": 14, "unit": "%"},
+        },
+        "performance": {},
+    }
+    positions = {
+        "withOrderbook": [],
+        "withoutOrderbook": [],
+    }
+
+    metrics = account_metric_values(account, positions, "acc-1", "since_start")
+    assert metrics["profit"].plain == "+700.00 SEK  +14.00%"
+
+
 def test_matches_account_filters_by_nested_account_id():
     item = {"account": {"id": "acc-1"}}
 
