@@ -205,6 +205,10 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_accounts` | List available Avanza accounts in the active TUI session. |
 | `avanza_account_performance` | Read Avanza account development/performance for selected or specified account across common periods (including since-start). |
 | `tv_scrape_symbol_analytics` | TradingView free scanner snapshot with technical buy/sell barometer and key performance metrics. |
+| `tv_auth_session_start` | Open TradingView login page in browser and show next-step session setup instructions. |
+| `tv_auth_session_set` | Save TradingView authenticated session cookie for reuse by `tv_auth_*` tools. |
+| `tv_auth_session_status` | Show status of saved TradingView auth session. |
+| `tv_auth_session_clear` | Clear saved TradingView auth session cookie. |
 | `tv_auth_symbol_analytics` | TradingView authenticated scanner snapshot (uses cookie/session for entitlement-aware mode). |
 | `tv_scrape_heatmap` | TradingView heatmap/top movers snapshot for the selected market. |
 | `tv_auth_watchlist` | TradingView authenticated watchlist monitor (best effort; scrapes profile/watchlist context + scanner metrics). |
@@ -238,7 +242,15 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 
 - These tools are intentionally marked experimental.
 - `tv_scrape_*` runs in free anonymous mode.
-- `tv_auth_*` requires TradingView session cookies (`cookie` input, or `TRADINGVIEW_SESSIONID` + optional `TRADINGVIEW_SESSIONID_SIGN` env vars).
+- `tv_auth_*` supports three auth paths:
+  - explicit tool input (`cookie` or `sessionid` + `sessionid_sign`),
+  - environment variables (`TRADINGVIEW_SESSIONID`, optional `TRADINGVIEW_SESSIONID_SIGN`),
+  - saved local session via `tv_auth_session_set` (stored in `.avanza_tradingview_session.json`, ignored by git).
+- Browser-assisted flow:
+  1. call `tv_auth_session_start` (opens TradingView login),
+  2. log in normally in web browser,
+  3. call `tv_auth_session_set` with session cookie material once,
+  4. use `tv_auth_session_status` to verify persisted auth, then call `tv_auth_*`.
 - `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
 

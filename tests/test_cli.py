@@ -1449,6 +1449,89 @@ def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
     assert result["unsafe_for_execution"] is False
 
 
+def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
+    from avanza_cli import (
+        clear_tradingview_session,
+        load_tradingview_session,
+        save_tradingview_session,
+        tradingview_session_status,
+    )
+
+    session_path = tmp_path / ".avanza_tradingview_session.json"
+    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", session_path)
+
+    empty_status = tradingview_session_status()
+    assert empty_status["configured"] is False
+
+    saved = save_tradingview_session("sessionid=abc123; sessionid_sign=sig987", source="test")
+    assert saved["saved"] is True
+    loaded = load_tradingview_session()
+    assert loaded["cookie"].startswith("sessionid=abc123")
+
+    status = tradingview_session_status()
+    assert status["configured"] is True
+    assert status["has_sessionid"] is True
+    assert status["has_sessionid_sign"] is True
+
+    assert clear_tradingview_session() is True
+    assert tradingview_session_status()["configured"] is False
+
+
+def test_mcp_tv_auth_session_start_set_status_clear(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_cli.webbrowser.open", lambda *args, **kwargs: True)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    start = app.execute_mcp_tool("tv_auth_session_start", {"open_browser": True})
+    assert start["browser_opened"] is True
+
+    set_result = app.execute_mcp_tool(
+        "tv_auth_session_set",
+        {"sessionid": "abc", "sessionid_sign": "sig", "source": "unit-test"},
+    )
+    assert set_result["saved"] is True
+    assert set_result["status"]["configured"] is True
+
+    status = app.execute_mcp_tool("tv_auth_session_status", {})
+    assert status["configured"] is True
+    assert status["has_sessionid"] is True
+
+    cleared = app.execute_mcp_tool("tv_auth_session_clear", {})
+    assert cleared["cleared"] is True
+    assert cleared["status"]["configured"] is False
+
+
+def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    captured = {}
+
+    def fake_snapshot(symbol, **kwargs):
+        captured["cookie"] = kwargs.get("cookie", "")
+        return {"symbol": "NASDAQ:AAPL", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_snapshot)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.execute_mcp_tool("tv_auth_session_set", {"sessionid": "abc", "sessionid_sign": "sig"})
+    result = app.execute_mcp_tool("tv_auth_symbol_analytics", {"symbol": "AAPL"})
+
+    assert result["mode"] == "authenticated_scrape"
+    assert "sessionid=abc" in captured["cookie"]
+
+
 def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
     from avanza_cli import AvanzaTradingTui
 

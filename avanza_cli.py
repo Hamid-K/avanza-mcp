@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import textwrap
+import webbrowser
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +40,7 @@ console = Console()
 HELP_FORMATTER = argparse.RawDescriptionHelpFormatter
 MCP_SESSION_FILE = Path(__file__).with_name(".avanza_mcp_session.json")
 PAPER_SESSION_FILE = Path(__file__).with_name(".avanza_paper_session.json")
+TRADINGVIEW_SESSION_FILE = Path(__file__).with_name(".avanza_tradingview_session.json")
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
@@ -152,6 +154,7 @@ TRADINGVIEW_SCANNER_URL_TEMPLATE = "https://scanner.tradingview.com/{market}/sca
 TRADINGVIEW_DEFAULT_MARKET = "america"
 TRADINGVIEW_DEFAULT_EXCHANGE = "NASDAQ"
 TRADINGVIEW_PROFILE_URL_TEMPLATE = "https://www.tradingview.com/symbols/{symbol_slug}/"
+TRADINGVIEW_LOGIN_URL = "https://www.tradingview.com/accounts/signin/"
 TRADINGVIEW_HEATMAP_FIELDS = [
     "name",
     "description",
@@ -2649,7 +2652,76 @@ def append_cookie_header(headers: dict[str, str], cookie: str | None) -> dict[st
     return merged
 
 
-def tradingview_cookie_from_inputs(arguments: dict[str, Any]) -> str:
+def mask_secret(value: str, keep: int = 4) -> str:
+    text = str(value or "")
+    if len(text) <= keep:
+        return "*" * len(text)
+    return "*" * (len(text) - keep) + text[-keep:]
+
+
+def parse_cookie_value(cookie: str, key: str) -> str:
+    pattern = re.compile(rf"(?:^|;\s*){re.escape(key)}=([^;]+)")
+    match = pattern.search(cookie)
+    return match.group(1) if match else ""
+
+
+def load_tradingview_session(path: Path | None = None) -> dict[str, Any]:
+    session_path = path or TRADINGVIEW_SESSION_FILE
+    try:
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    cookie = str(payload.get("cookie", "") or "").strip()
+    return {
+        "cookie": cookie,
+        "created_at": str(payload.get("created_at", "") or ""),
+        "updated_at": str(payload.get("updated_at", "") or ""),
+        "source": str(payload.get("source", "") or ""),
+    }
+
+
+def save_tradingview_session(cookie: str, *, source: str = "manual", path: Path | None = None) -> dict[str, Any]:
+    clean_cookie = str(cookie or "").strip()
+    if not clean_cookie:
+        raise ValueError("TradingView cookie cannot be empty.")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    existing = load_tradingview_session(path)
+    payload = {
+        "cookie": clean_cookie,
+        "created_at": existing.get("created_at") or now,
+        "updated_at": now,
+        "source": source,
+    }
+    session_path = path or TRADINGVIEW_SESSION_FILE
+    session_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        session_path.chmod(0o600)
+    except Exception:
+        pass
+    return {
+        "saved": True,
+        "path": str(session_path),
+        "updated_at": now,
+        "source": source,
+        "has_sessionid": bool(parse_cookie_value(clean_cookie, "sessionid")),
+        "has_sessionid_sign": bool(parse_cookie_value(clean_cookie, "sessionid_sign")),
+        "cookie_preview": mask_secret(clean_cookie, keep=8),
+    }
+
+
+def clear_tradingview_session(path: Path | None = None) -> bool:
+    session_path = path or TRADINGVIEW_SESSION_FILE
+    if not session_path.exists():
+        return False
+    session_path.unlink(missing_ok=True)
+    return True
+
+
+def tradingview_cookie_from_inputs(arguments: dict[str, Any], stored_session: dict[str, Any] | None = None) -> str:
     explicit_cookie = str(arguments.get("cookie", "") or "").strip()
     if explicit_cookie:
         return explicit_cookie
@@ -2659,7 +2731,34 @@ def tradingview_cookie_from_inputs(arguments: dict[str, Any]) -> str:
         return f"sessionid={sessionid}; sessionid_sign={sessionid_sign}"
     if sessionid:
         return f"sessionid={sessionid}"
+    saved = stored_session if stored_session is not None else load_tradingview_session()
+    if isinstance(saved, dict):
+        saved_cookie = str(saved.get("cookie", "") or "").strip()
+        if saved_cookie:
+            return saved_cookie
     return ""
+
+
+def tradingview_session_status(path: Path | None = None) -> dict[str, Any]:
+    session_path = path or TRADINGVIEW_SESSION_FILE
+    session = load_tradingview_session(session_path)
+    cookie = str(session.get("cookie", "") or "")
+    if not cookie:
+        return {
+            "configured": False,
+            "path": str(session_path),
+            "message": "No saved TradingView session cookie.",
+        }
+    return {
+        "configured": True,
+        "path": str(session_path),
+        "created_at": session.get("created_at"),
+        "updated_at": session.get("updated_at"),
+        "source": session.get("source"),
+        "has_sessionid": bool(parse_cookie_value(cookie, "sessionid")),
+        "has_sessionid_sign": bool(parse_cookie_value(cookie, "sessionid_sign")),
+        "cookie_preview": mask_secret(cookie, keep=8),
+    }
 
 
 def recommendation_label(value: Any) -> str:
@@ -3213,6 +3312,49 @@ MCP_TOOLS = [
                 "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
             },
             "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_session_start",
+        "description": "Open TradingView login page in browser and show session setup instructions for authenticated MCP usage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "open_browser": {"type": "boolean", "default": True},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_session_set",
+        "description": "Persist TradingView session cookie for authenticated tv_auth_* MCP tools.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
+                "source": {"type": "string", "default": "manual"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_session_status",
+        "description": "Show saved TradingView authenticated session status used by tv_auth_* tools.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_session_clear",
+        "description": "Delete saved TradingView authenticated session cookie.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
             "additionalProperties": False,
         },
     },
@@ -5891,13 +6033,51 @@ class AvanzaTradingTui(App):
             snapshot["experimental_scrape_mode"] = True
             return snapshot
 
+        if tool == "tv_auth_session_start":
+            open_browser = bool(arguments.get("open_browser", True))
+            opened = False
+            if open_browser:
+                try:
+                    opened = bool(webbrowser.open(TRADINGVIEW_LOGIN_URL, new=2, autoraise=True))
+                except Exception:
+                    opened = False
+            return {
+                "login_url": TRADINGVIEW_LOGIN_URL,
+                "browser_opened": opened,
+                "next_step": "After logging in via browser, call tv_auth_session_set with cookie or sessionid/sessionid_sign.",
+                "session_file": str(TRADINGVIEW_SESSION_FILE),
+                "status": tradingview_session_status(),
+            }
+
+        if tool == "tv_auth_session_set":
+            source = str(arguments.get("source", "manual") or "manual")
+            cookie = tradingview_cookie_from_inputs(arguments)
+            if not cookie:
+                raise ValueError("Provide cookie or sessionid/sessionid_sign to save TradingView session.")
+            saved = save_tradingview_session(cookie, source=source)
+            return {
+                "saved": True,
+                "status": tradingview_session_status(),
+                "details": saved,
+            }
+
+        if tool == "tv_auth_session_status":
+            return tradingview_session_status()
+
+        if tool == "tv_auth_session_clear":
+            deleted = clear_tradingview_session()
+            return {
+                "cleared": deleted,
+                "status": tradingview_session_status(),
+            }
+
         if tool == "tv_auth_symbol_analytics":
             symbol = str(arguments["symbol"])
             exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
             market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
-            cookie = tradingview_cookie_from_inputs(arguments)
+            cookie = tradingview_cookie_from_inputs(arguments, load_tradingview_session())
             if not cookie:
-                raise ValueError("Authenticated mode requires cookie/sessionid input or TRADINGVIEW_SESSIONID env.")
+                raise ValueError("Authenticated mode requires cookie/sessionid input, saved session, or TRADINGVIEW_SESSIONID env.")
             snapshot = tradingview_symbol_snapshot(symbol, exchange=exchange, market=market, cookie=cookie)
             snapshot["mode"] = "authenticated_scrape"
             snapshot["experimental_scrape_mode"] = True
@@ -5917,9 +6097,9 @@ class AvanzaTradingTui(App):
             exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
             market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
             limit = int(arguments.get("limit", 25))
-            cookie = tradingview_cookie_from_inputs(arguments)
+            cookie = tradingview_cookie_from_inputs(arguments, load_tradingview_session())
             if not cookie:
-                raise ValueError("Authenticated watchlist mode requires cookie/sessionid input or TRADINGVIEW_SESSIONID env.")
+                raise ValueError("Authenticated watchlist mode requires cookie/sessionid input, saved session, or TRADINGVIEW_SESSIONID env.")
             snapshot = tradingview_watchlist_snapshot(
                 reference_symbol=reference_symbol,
                 exchange=exchange,
