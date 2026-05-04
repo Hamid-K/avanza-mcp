@@ -258,7 +258,7 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
   2. log in normally in opened browser window,
   3. wait for auto-capture confirmation, then run `tv_auth_session_status`,
   4. use `tv_auth_*` tools with no repeated cookie input.
-- The TUI `TV Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
+- The TUI `TradingView Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.

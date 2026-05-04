@@ -4506,7 +4506,7 @@ class AvanzaTradingTui(App):
     }
 
     #open-tv-lists-overlay {
-        min-width: 10;
+        min-width: 18;
     }
 
     #toggle-controls {
@@ -5059,7 +5059,7 @@ class AvanzaTradingTui(App):
                         yield Static("Views", id="view-label")
                         yield Button("Orders", id="open-orders-overlay", classes="view-tab")
                         yield Button("Transactions", id="open-transactions-overlay", classes="view-tab")
-                        yield Button("TV Lists", id="open-tv-lists-overlay", classes="view-tab")
+                        yield Button("TradingView Lists", id="open-tv-lists-overlay", classes="view-tab")
                     with Horizontal(id="toggle-controls"):
                         with Horizontal(classes="toggle-control"):
                             yield Button("✓", id="paper-mode-toggle", classes="mode-toggle-box enabled")
