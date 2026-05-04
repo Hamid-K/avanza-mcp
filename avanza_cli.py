@@ -232,7 +232,7 @@ def load_project_version(default: str = "0.0.0-dev") -> str:
 
 APP_VERSION = load_project_version()
 APP_NAME = "Avanza-MCP"
-TUI_TITLE = f"AvanzaTradingTui v{APP_VERSION}"
+TUI_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 
 def max_valid_until_date(reference: date | None = None) -> date:
@@ -5128,7 +5128,7 @@ class AvanzaTradingTui(App):
         yield Header()
         with Vertical(id="login-screen"):
             with Vertical(id="login-card"):
-                yield Static("Avanza Trading Console", id="login-title")
+                yield Static(f"{APP_NAME} Trading Console", id="login-title")
                 yield Static("Sign in once. Credentials disappear after login.", id="login-subtitle")
                 yield Input(placeholder="Username", id="username")
                 yield Input(placeholder="Password", id="password", password=True)

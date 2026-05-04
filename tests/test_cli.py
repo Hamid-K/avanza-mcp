@@ -290,6 +290,8 @@ def test_tui_mounts_headless():
             await pilot.pause()
             assert app.query_one("#login-screen").display is True
             assert app.query_one("#workspace").display is False
+            assert app.title == f"Avanza-MCP v{APP_VERSION}"
+            assert str(app.query_one("#login-title").render()) == "Avanza-MCP Trading Console"
             assert app.query_one("#onepassword-item") is not None
             assert app.query_one("#onepassword-vault") is not None
             assert isinstance(app.query_one("#onepassword-login"), Button)
