@@ -1525,6 +1525,77 @@ def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monk
     assert snapshot["unsafe_for_execution"] is False
 
 
+def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
+    from avanza_cli import tradingview_symbol_full_snapshot
+
+    scanner_calls: list[list[str]] = []
+
+    def fake_fetch_json(url, **kwargs):
+        payload = kwargs.get("payload", {})
+        columns = list(payload.get("columns", []))
+        scanner_calls.append(columns)
+        if len(scanner_calls) == 1:
+            return {"totalCount": 0, "data": None, "error": 'Unknown field "SMA100"'}
+        values = []
+        for column in columns:
+            if column == "name":
+                values.append("AAPL")
+            elif column == "description":
+                values.append("Apple Inc.")
+            elif column == "exchange":
+                values.append("NASDAQ")
+            elif column == "close":
+                values.append(280.14)
+            elif column == "Recommend.All":
+                values.append(0.62)
+            elif column == "Recommend.MA":
+                values.append(0.80)
+            elif column == "Recommend.Other":
+                values.append(0.10)
+            else:
+                values.append(None)
+        return {"totalCount": 1, "data": [{"s": "NASDAQ:AAPL", "d": values}]}
+
+    def fake_fetch_text(url, **kwargs):
+        return """
+        <html>
+          <head>
+            <title>Apple Inc. (AAPL) Stock Price | TradingView</title>
+            <meta name="description" content="AAPL overview page">
+            <link rel="canonical" href="https://www.tradingview.com/symbols/NASDAQ-AAPL/">
+          </head>
+          <body>
+            <script>window.initData.symbolInfo = {"pro_symbol":"NASDAQ:AAPL","exchange":"NASDAQ","short_description":"Apple Inc.","flag":"us"};\n</script>
+            <script type="application/ld+json">{"@context":"https://schema.org","@type":"FinancialProduct","name":"Apple Inc."}</script>
+            <a href="/symbols/NASDAQ-MSFT/">MSFT</a>
+            <a href="/symbols/NASDAQ-NVDA/">NVDA</a>
+          </body>
+        </html>
+        """
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    snapshot = tradingview_symbol_full_snapshot("AAPL", exchange="NASDAQ", market="america")
+
+    assert snapshot["symbol"] == "NASDAQ:AAPL"
+    assert snapshot["analytics"]["close"] == 280.14
+    assert snapshot["technicals"]["overall_label"] == "Strong Buy"
+    assert snapshot["profile"]["symbol_info"]["pro_symbol"] == "NASDAQ:AAPL"
+    assert "NASDAQ:MSFT" in snapshot["related_symbols"]
+    assert "SMA100" in snapshot["unsupported_fields"]
+    assert snapshot["source"] == "tradingview-scanner+profile-html"
+    assert len(scanner_calls) >= 2
+
+
+def test_tradingview_watchlist_entry_matches_target_variants():
+    from avanza_cli import tradingview_watchlist_entry_matches_target
+
+    entry = {"id": "id57177174", "name": "My Stocks", "raw_label": "My Stocks 128"}
+    assert tradingview_watchlist_entry_matches_target(entry, "57177174", "")
+    assert tradingview_watchlist_entry_matches_target(entry, "", "my stocks")
+    assert tradingview_watchlist_entry_matches_target(entry, "https://www.tradingview.com/watchlists/57177174/", "") is False
+
+
 def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypatch):
     from avanza_cli import sec_recent_filings_snapshot
 
@@ -1769,6 +1840,48 @@ def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_pat
     app.avanza = FakeAvanza()
     app.execute_mcp_tool("tv_auth_session_set", {"sessionid": "abc", "sessionid_sign": "sig"})
     result = app.execute_mcp_tool("tv_auth_symbol_analytics", {"symbol": "AAPL"})
+
+    assert result["mode"] == "authenticated_scrape"
+    assert "sessionid=abc" in captured["cookie"]
+
+
+def test_tv_scrape_symbol_full_delegates(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_snapshot(symbol, **kwargs):
+        assert symbol == "AAPL"
+        return {"symbol": "NASDAQ:AAPL", "field_count": 42, "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_snapshot)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("tv_scrape_symbol_full", {"symbol": "AAPL"})
+    assert result["mode"] == "free_scrape"
+    assert result["experimental_scrape_mode"] is True
+    assert result["field_count"] == 42
+
+
+def test_tv_auth_symbol_full_uses_saved_session_cookie(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    captured = {}
+
+    def fake_snapshot(symbol, **kwargs):
+        captured["cookie"] = kwargs.get("cookie", "")
+        return {"symbol": "NASDAQ:AAPL", "field_count": 12, "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_snapshot)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.execute_mcp_tool("tv_auth_session_set", {"sessionid": "abc", "sessionid_sign": "sig"})
+    result = app.execute_mcp_tool("tv_auth_symbol_full", {"symbol": "AAPL"})
 
     assert result["mode"] == "authenticated_scrape"
     assert "sessionid=abc" in captured["cookie"]

@@ -172,7 +172,7 @@ TRADINGVIEW_HEATMAP_FIELDS = [
     "volume",
     "market_cap_basic",
 ]
-TRADINGVIEW_WATCHLIST_ROW_LIMIT = 300
+TRADINGVIEW_WATCHLIST_ROW_LIMIT = 1500
 TRADINGVIEW_TUI_REFRESH_SECONDS = 15.0
 TRADINGVIEW_ANALYTICS_FIELDS = [
     "name",
@@ -204,6 +204,78 @@ TRADINGVIEW_ANALYTICS_FIELDS = [
     "Stoch.K",
     "Stoch.D",
 ]
+TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS = [
+    "name",
+    "description",
+    "exchange",
+    "type",
+    "subtype",
+    "sector",
+    "industry",
+    "country",
+    "close",
+    "change",
+    "change_abs",
+    "open",
+    "high",
+    "low",
+    "volume",
+    "Value.Traded",
+    "average_volume_10d_calc",
+    "relative_volume_10d_calc",
+    "market_cap_basic",
+    "fundamental_currency_code",
+    "currency",
+    "price_earnings_ttm",
+    "price_book_fq",
+    "price_sales_current",
+    "earnings_per_share_basic_ttm",
+    "earnings_per_share_diluted_ttm",
+    "earnings_per_share_diluted_yoy_growth_ttm",
+    "dividends_yield_current",
+    "dividend_payout_ratio_ttm",
+    "beta_1_year",
+    "shares_outstanding_current",
+    "float_shares_outstanding",
+    "number_of_employees",
+    "52_week_high",
+    "52_week_low",
+    "Perf.W",
+    "Perf.1M",
+    "Perf.3M",
+    "Perf.6M",
+    "Perf.YTD",
+    "Perf.Y",
+    "Recommend.All",
+    "Recommend.MA",
+    "Recommend.Other",
+    "RSI",
+    "RSI[1]",
+    "MACD.macd",
+    "MACD.signal",
+    "Stoch.K",
+    "Stoch.D",
+    "ADX",
+    "CCI20",
+    "Mom",
+    "AO",
+    "UO",
+    "VWMA",
+    "EMA20",
+    "EMA50",
+    "EMA100",
+    "EMA200",
+    "SMA20",
+    "SMA50",
+    "SMA100",
+    "SMA200",
+    "Volatility.W",
+    "update_mode",
+    "premarket_close",
+    "postmarket_close",
+    "earnings_release_next_date",
+    "earnings_release_next_time",
+]
 TRADINGVIEW_RECOMMENDATION_THRESHOLDS = (
     (-0.5, "Strong Sell"),
     (-0.1, "Sell"),
@@ -213,6 +285,8 @@ TRADINGVIEW_RECOMMENDATION_THRESHOLDS = (
 )
 TRADINGVIEW_WATCHLIST_SYMBOL_PATTERN = re.compile(r"/symbols/([A-Z0-9_.-]+)/")
 TRADINGVIEW_WATCHLIST_ID_PATTERN = re.compile(r"/watchlists/(\d+)", re.IGNORECASE)
+TRADINGVIEW_NUMERIC_ID_PATTERN = re.compile(r"(\d{4,})")
+TRADINGVIEW_UNKNOWN_FIELD_PATTERN = re.compile(r'Unknown field "([^"]+)"')
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik}.json"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -3112,6 +3186,18 @@ def tv_row_to_dict(columns: list[str], row: dict[str, Any]) -> dict[str, Any]:
     return mapped
 
 
+def unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
+
+
 def tradingview_scan(
     *,
     symbols: list[str],
@@ -3134,9 +3220,18 @@ def tradingview_scan(
     url = TRADINGVIEW_SCANNER_URL_TEMPLATE.format(market=market)
     headers = append_cookie_header({"Content-Type": "application/json"}, cookie)
     data = external_fetch_json(url, method="POST", headers=headers, payload=payload)
+    error_text = str(data.get("error", "") or "").strip() if isinstance(data, dict) else ""
     rows_raw = data.get("data", [])
+    if not isinstance(rows_raw, list):
+        rows_raw = []
     rows = [tv_row_to_dict(columns, row) for row in rows_raw if isinstance(row, dict)]
-    return {"market": market, "columns": columns, "rows": rows, "total_count": int(data.get("totalCount", len(rows)))}
+    return {
+        "market": market,
+        "columns": columns,
+        "rows": rows,
+        "total_count": int(data.get("totalCount", len(rows))),
+        "error": error_text or None,
+    }
 
 
 def tradingview_symbol_profile_html(symbol: str, cookie: str = "") -> str:
@@ -3155,6 +3250,138 @@ def tradingview_watchlist_id_from_input(value: str | None) -> str:
     return text
 
 
+def tradingview_numeric_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = TRADINGVIEW_NUMERIC_ID_PATTERN.search(text)
+    if match:
+        return str(match.group(1))
+    return ""
+
+
+def tradingview_watchlist_entry_matches_target(entry: dict[str, Any], target_list_id: str, target_list_name: str) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if target_list_id:
+        direct_candidates = [
+            str(entry.get("id", "") or ""),
+            str(entry.get("title", "") or ""),
+            str(entry.get("name", "") or ""),
+            str(entry.get("raw_label", "") or ""),
+        ]
+        for candidate in direct_candidates:
+            if candidate == target_list_id:
+                return True
+            if tradingview_watchlist_id_from_input(candidate) == target_list_id:
+                return True
+            if tradingview_numeric_id(candidate) == target_list_id:
+                return True
+    if target_list_name:
+        normalized_name = target_list_name.strip().lower()
+        name = str(entry.get("name", "") or "").strip().lower()
+        raw_label = str(entry.get("raw_label", "") or "").strip().lower()
+        if name == normalized_name or raw_label.startswith(normalized_name):
+            return True
+    return False
+
+
+def tradingview_scan_with_field_fallback(
+    *,
+    symbols: list[str],
+    fields: list[str],
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    cookie: str = "",
+) -> tuple[dict[str, Any], list[str]]:
+    columns = unique_strings(fields)
+    unsupported: list[str] = []
+    attempts = 0
+    while attempts < 80 and columns:
+        attempts += 1
+        snapshot = tradingview_scan(
+            symbols=symbols,
+            columns=columns,
+            market=market,
+            limit=max(1, len(symbols)),
+            cookie=cookie,
+        )
+        error_text = str(snapshot.get("error", "") or "")
+        if not error_text:
+            return snapshot, unsupported
+        unknown_match = TRADINGVIEW_UNKNOWN_FIELD_PATTERN.search(error_text)
+        if not unknown_match:
+            raise RuntimeError(f"TradingView scanner error: {error_text}")
+        unknown_field = str(unknown_match.group(1))
+        if unknown_field not in columns:
+            raise RuntimeError(f"TradingView scanner rejected unsupported field '{unknown_field}'.")
+        columns = [column for column in columns if column != unknown_field]
+        unsupported.append(unknown_field)
+    raise RuntimeError("TradingView scanner could not return data with the requested field set.")
+
+
+def tradingview_json_ld_objects_from_html(html_text: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for match in re.finditer(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_text, re.IGNORECASE | re.DOTALL):
+        raw = html.unescape(str(match.group(1) or "").strip())
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            objects.append(payload)
+        elif isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    objects.append(item)
+    return objects
+
+
+def tradingview_init_data_value_from_html(html_text: str, key: str) -> Any:
+    safe_key = re.escape(key)
+    pattern = re.compile(rf"window\.initData\.{safe_key}\s*=\s*(.*?);(?:\n|$)", re.DOTALL)
+    match = pattern.search(html_text)
+    if not match:
+        return None
+    raw = str(match.group(1) or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
+def tradingview_symbol_profile_metadata_from_html(symbol: str, html_text: str) -> dict[str, Any]:
+    title_match = re.search(r"<title>(.*?)</title>", html_text, re.IGNORECASE | re.DOTALL)
+    title = html.unescape(str(title_match.group(1) or "").strip()) if title_match else ""
+    title = re.sub(r"\s+", " ", title)
+    meta_description_match = re.search(
+        r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
+        html_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    description = html.unescape(str(meta_description_match.group(1) or "").strip()) if meta_description_match else ""
+    description = re.sub(r"\s+", " ", description)
+    canonical_match = re.search(
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\'](.*?)["\']',
+        html_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    canonical_url = str(canonical_match.group(1) or "").strip() if canonical_match else ""
+    json_ld_objects = tradingview_json_ld_objects_from_html(html_text)
+    symbol_info = tradingview_init_data_value_from_html(html_text, "symbolInfo")
+    return {
+        "symbol": symbol,
+        "title": title,
+        "description": description,
+        "canonical_url": canonical_url,
+        "symbol_info": symbol_info if isinstance(symbol_info, dict) else {},
+        "json_ld": json_ld_objects,
+    }
+
+
 def tradingview_extract_symbol_candidates_from_html(html_text: str, max_symbols: int = 120) -> list[str]:
     seen: set[str] = set()
     symbols: list[str] = []
@@ -3169,6 +3396,53 @@ def tradingview_extract_symbol_candidates_from_html(html_text: str, max_symbols:
         if len(symbols) >= max_symbols:
             break
     return symbols
+
+
+def tradingview_symbol_full_snapshot(
+    symbol: str,
+    *,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+    cookie: str = "",
+) -> dict[str, Any]:
+    normalized_symbol = normalize_tv_symbol(symbol, exchange)
+    scan, unsupported_fields = tradingview_scan_with_field_fallback(
+        symbols=[normalized_symbol],
+        fields=TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS,
+        market=market,
+        cookie=cookie,
+    )
+    rows = scan.get("rows", [])
+    if not rows:
+        raise ValueError(f"TradingView returned no rows for {normalized_symbol}.")
+    analytics = rows[0]
+    technical_score = analytics.get("Recommend.All")
+    moving_average_score = analytics.get("Recommend.MA")
+    oscillator_score = analytics.get("Recommend.Other")
+    profile_html = tradingview_symbol_profile_html(normalized_symbol, cookie=cookie)
+    profile_metadata = tradingview_symbol_profile_metadata_from_html(normalized_symbol, profile_html)
+    symbol_candidates = tradingview_extract_symbol_candidates_from_html(profile_html, max_symbols=120)
+    return {
+        "symbol": normalized_symbol,
+        "market": market,
+        "exchange": str(analytics.get("exchange", exchange) or exchange),
+        "analytics": analytics,
+        "technicals": {
+            "overall_score": technical_score,
+            "overall_label": recommendation_label(technical_score),
+            "moving_average_score": moving_average_score,
+            "moving_average_label": recommendation_label(moving_average_score),
+            "oscillator_score": oscillator_score,
+            "oscillator_label": recommendation_label(oscillator_score),
+        },
+        "profile": profile_metadata,
+        "related_symbols": symbol_candidates,
+        "unsupported_fields": unsupported_fields,
+        "field_count": len(analytics),
+        "source": "tradingview-scanner+profile-html",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
 
 
 def tradingview_symbol_snapshot(
@@ -3495,29 +3769,15 @@ async (maxRows) => {
 
             if target_list_id or target_list_name:
                 target_entry = None
-                if target_list_id:
-                    target_entry = next(
-                        (
-                            entry
-                            for entry in list_entries
-                            if isinstance(entry, dict) and str(entry.get("id", "")) == target_list_id
-                        ),
-                        None,
-                    )
-                if target_entry is None and target_list_name:
-                    normalized_name = target_list_name.strip().lower()
-                    target_entry = next(
-                        (
-                            entry
-                            for entry in list_entries
-                            if isinstance(entry, dict)
-                            and (
-                                str(entry.get("name", "")).strip().lower() == normalized_name
-                                or str(entry.get("raw_label", "")).strip().lower().startswith(normalized_name)
-                            )
-                        ),
-                        None,
-                    )
+                target_entry = next(
+                    (
+                        entry
+                        for entry in list_entries
+                        if isinstance(entry, dict)
+                        and tradingview_watchlist_entry_matches_target(entry, target_list_id, target_list_name)
+                    ),
+                    None,
+                )
                 if target_entry is None:
                     raise ValueError(f"TradingView list not found: id='{target_list_id}' name='{target_list_name}'")
                 target_dom_id = target_entry.get("id")
@@ -3938,6 +4198,20 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "tv_scrape_symbol_full",
+        "description": "Fetch rich TradingView symbol payload (scanner analytics + technical labels + symbol profile metadata) in LLM-friendly JSON.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "tv_auth_session_start",
         "description": "Open TradingView login page in browser and show session setup instructions for authenticated MCP usage.",
         "inputSchema": {
@@ -4009,6 +4283,23 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "tv_auth_symbol_full",
+        "description": "Fetch rich TradingView symbol payload in authenticated mode (scanner analytics + technical labels + profile metadata + entitlement context).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "tv_scrape_heatmap",
         "description": "Fetch TradingView market heatmap rows (top movers) using free scanner data.",
         "inputSchema": {
@@ -4045,7 +4336,12 @@ MCP_TOOLS = [
             "properties": {
                 "list_id": {"type": "string"},
                 "list_name": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": TRADINGVIEW_WATCHLIST_ROW_LIMIT, "default": 300},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": TRADINGVIEW_WATCHLIST_ROW_LIMIT,
+                    "default": TRADINGVIEW_WATCHLIST_ROW_LIMIT,
+                },
             },
             "additionalProperties": False,
         },
@@ -6961,6 +7257,15 @@ class AvanzaTradingTui(App):
             snapshot["experimental_scrape_mode"] = True
             return snapshot
 
+        if tool == "tv_scrape_symbol_full":
+            symbol = str(arguments["symbol"])
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            snapshot = tradingview_symbol_full_snapshot(symbol, exchange=exchange, market=market, cookie="")
+            snapshot["mode"] = "free_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
         if tool == "tv_auth_session_start":
             open_browser = bool(arguments.get("open_browser", True))
             opened = False
@@ -7014,6 +7319,19 @@ class AvanzaTradingTui(App):
             if not cookie:
                 raise ValueError("Authenticated mode requires cookie/sessionid input, saved session, or TRADINGVIEW_SESSIONID env.")
             snapshot = tradingview_symbol_snapshot(symbol, exchange=exchange, market=market, cookie=cookie)
+            snapshot["mode"] = "authenticated_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            snapshot["unsafe_for_execution"] = False
+            return snapshot
+
+        if tool == "tv_auth_symbol_full":
+            symbol = str(arguments["symbol"])
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            cookie = tradingview_cookie_from_inputs(arguments, load_tradingview_session())
+            if not cookie:
+                raise ValueError("Authenticated mode requires cookie/sessionid input, saved session, or TRADINGVIEW_SESSIONID env.")
+            snapshot = tradingview_symbol_full_snapshot(symbol, exchange=exchange, market=market, cookie=cookie)
             snapshot["mode"] = "authenticated_scrape"
             snapshot["experimental_scrape_mode"] = True
             snapshot["unsafe_for_execution"] = False

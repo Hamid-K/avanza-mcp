@@ -216,15 +216,17 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `avanza_accounts` | List available Avanza accounts in the active TUI session. |
 | `avanza_account_performance` | Read Avanza account development/performance for selected or specified account across common periods (including since-start). |
 | `tv_scrape_symbol_analytics` | TradingView free scanner snapshot with technical buy/sell barometer and key performance metrics. |
+| `tv_scrape_symbol_full` | TradingView free rich symbol payload (extended scanner metrics + technical labels + profile metadata) in LLM-friendly JSON. |
 | `tv_auth_session_start` | Open TradingView login page in browser and show next-step session setup instructions. |
 | `tv_auth_session_set` | Save TradingView authenticated session cookie for reuse by `tv_auth_*` tools. |
 | `tv_auth_session_login_auto` | Open instrumented browser, log in normally, and auto-capture/save TradingView session cookie. |
 | `tv_auth_session_status` | Show status of saved TradingView auth session. |
 | `tv_auth_session_clear` | Clear saved TradingView auth session cookie. |
 | `tv_auth_symbol_analytics` | TradingView authenticated scanner snapshot (uses cookie/session for entitlement-aware mode). |
+| `tv_auth_symbol_full` | TradingView authenticated rich symbol payload (extended scanner metrics + technical labels + profile metadata + entitlement context). |
 | `tv_scrape_heatmap` | TradingView heatmap/top movers snapshot for the selected market. |
 | `tv_auth_watchlist` | TradingView authenticated watchlist monitor (best effort; scrapes profile/watchlist context + scanner metrics). |
-| `tv_auth_custom_lists` | TradingView authenticated custom tracking lists (inventory + rows; optional list switch by id/name). |
+| `tv_auth_custom_lists` | TradingView authenticated custom tracking lists (inventory + rows; optional list switch by id/name/URL, deep-scrolled collection, up to configured row cap). |
 | `zacks_scrape_symbol` | Zacks symbol scrape for rank/quick analytics (best effort; can be bot-protected). |
 | `sec_filings_recent` | Recent SEC EDGAR filings by ticker or CIK. |
 | `fred_series` | FRED macro series observations (requires free FRED API key). |
