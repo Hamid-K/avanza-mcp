@@ -2839,6 +2839,24 @@ def tradingview_auto_login_and_capture_session(
     )
 
 
+def run_blocking_in_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    result_holder: dict[str, Any] = {}
+    error_holder: dict[str, BaseException] = {}
+
+    def target() -> None:
+        try:
+            result_holder["value"] = func(*args, **kwargs)
+        except BaseException as exc:  # pragma: no cover - passthrough
+            error_holder["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True, name="avanza-blocking-worker")
+    thread.start()
+    thread.join()
+    if "error" in error_holder:
+        raise error_holder["error"]
+    return result_holder.get("value")
+
+
 def recommendation_label(value: Any) -> str:
     score = scalar_number(value)
     if score is None:
@@ -6152,7 +6170,10 @@ class AvanzaTradingTui(App):
 
         if tool == "tv_auth_session_login_auto":
             timeout_seconds = int(arguments.get("timeout_seconds", 300))
-            return tradingview_auto_login_and_capture_session(timeout_seconds=timeout_seconds)
+            return run_blocking_in_thread(
+                tradingview_auto_login_and_capture_session,
+                timeout_seconds=timeout_seconds,
+            )
 
         if tool == "tv_auth_session_status":
             return tradingview_session_status()

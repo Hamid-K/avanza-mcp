@@ -1514,17 +1514,20 @@ def test_mcp_tv_auth_session_login_auto_delegates_and_saves(monkeypatch, tmp_pat
     class FakeAvanza:
         pass
 
-    def fake_auto_login(**kwargs):
-        assert kwargs["timeout_seconds"] == 123
+    called = {"thread_wrapper": False}
+
+    def fake_worker(func, *args, **kwargs):
+        called["thread_wrapper"] = True
         return {"captured": True, "status": {"configured": True}}
 
     monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
-    monkeypatch.setattr("avanza_cli.tradingview_auto_login_and_capture_session", fake_auto_login)
+    monkeypatch.setattr("avanza_cli.run_blocking_in_thread", fake_worker)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("tv_auth_session_login_auto", {"timeout_seconds": 123})
 
+    assert called["thread_wrapper"] is True
     assert result["captured"] is True
     assert result["status"]["configured"] is True
 
