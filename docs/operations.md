@@ -13,6 +13,8 @@ The tools prompt for:
 
 The password and TOTP prompts are masked. The TUI clears secret fields after a successful login.
 
+TradingView authenticated session cookies are stored in macOS Keychain by default when available (`security` CLI), with metadata in `.avanza_tradingview_session.json`. Set `AVANZA_TV_SESSION_BACKEND=file` to force dotfile-only storage.
+
 As an alternative, use 1Password CLI integration:
 
 ```bash

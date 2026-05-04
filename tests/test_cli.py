@@ -1514,6 +1514,7 @@ def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
 
     session_path = tmp_path / ".avanza_tradingview_session.json"
     monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", session_path)
+    monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
 
     empty_status = tradingview_session_status()
     assert empty_status["configured"] is False
@@ -1527,6 +1528,56 @@ def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
     assert status["configured"] is True
     assert status["has_sessionid"] is True
     assert status["has_sessionid_sign"] is True
+    assert status["storage"] == "file"
+
+    assert clear_tradingview_session() is True
+    assert tradingview_session_status()["configured"] is False
+
+
+def test_tradingview_session_keychain_storage_mode(monkeypatch, tmp_path):
+    from avanza_cli import (
+        clear_tradingview_session,
+        load_tradingview_session,
+        save_tradingview_session,
+        tradingview_session_status,
+    )
+
+    session_path = tmp_path / ".avanza_tradingview_session.json"
+    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", session_path)
+    monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "keychain")
+    monkeypatch.setattr("avanza_cli.tradingview_keychain_supported", lambda: True)
+
+    store: dict[str, str] = {}
+
+    def fake_set(path, cookie):
+        store[str(path)] = cookie
+        return True, ""
+
+    def fake_get(path):
+        return store.get(str(path), "")
+
+    def fake_delete(path):
+        return (store.pop(str(path), None) is not None), ""
+
+    monkeypatch.setattr("avanza_cli.tradingview_keychain_set_cookie", fake_set)
+    monkeypatch.setattr("avanza_cli.tradingview_keychain_get_cookie", fake_get)
+    monkeypatch.setattr("avanza_cli.tradingview_keychain_delete_cookie", fake_delete)
+
+    saved = save_tradingview_session("sessionid=abc123; sessionid_sign=sig987", source="unit-test")
+    assert saved["saved"] is True
+    assert saved["storage"] == "keychain"
+
+    metadata = json.loads(session_path.read_text(encoding="utf-8"))
+    assert metadata.get("storage") == "keychain"
+    assert "cookie" not in metadata
+
+    loaded = load_tradingview_session()
+    assert loaded["cookie"].startswith("sessionid=abc123")
+    assert loaded["storage"] == "keychain"
+
+    status = tradingview_session_status()
+    assert status["configured"] is True
+    assert status["storage"] == "keychain"
 
     assert clear_tradingview_session() is True
     assert tradingview_session_status()["configured"] is False

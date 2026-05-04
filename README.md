@@ -249,7 +249,9 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 - `tv_auth_*` supports three auth paths:
   - explicit tool input (`cookie` or `sessionid` + `sessionid_sign`),
   - environment variables (`TRADINGVIEW_SESSIONID`, optional `TRADINGVIEW_SESSIONID_SIGN`),
-  - saved local session via `tv_auth_session_set` (stored in `.avanza_tradingview_session.json`, ignored by git).
+  - saved local session via `tv_auth_session_set`.
+- Saved TradingView session storage defaults to macOS Keychain (`security` CLI) when available, with metadata in `.avanza_tradingview_session.json` (ignored by git). Fallback is file-only storage.
+- Optional override: `AVANZA_TV_SESSION_BACKEND=keychain|file|auto` (default `auto`).
 - Preferred path: `tv_auth_session_login_auto` to open an instrumented browser and capture cookies automatically after login.
 - Browser-assisted flow:
   1. call `tv_auth_session_login_auto`,
