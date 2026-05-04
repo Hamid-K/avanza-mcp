@@ -4931,6 +4931,7 @@ class AvanzaTradingTui(App):
                     with Horizontal(id="button-controls"):
                         yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
                         yield Button("Refresh", id="refresh-all", variant="primary")
+                        yield Button("Reload TUI", id="reload-tui", variant="default")
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
                     yield Static("", id="controls-separator")
@@ -7485,6 +7486,9 @@ class AvanzaTradingTui(App):
                 self.refresh_accounts()
                 self.refresh_portfolio()
                 self.refresh_stoplosses()
+            elif button_id == "reload-tui":
+                self.write_log("[yellow]Reloading TUI process to apply latest code changes...[/yellow]")
+                self.exit({"reload_tui": True})
             elif button_id in {"refresh", "refresh-account"}:
                 self.refresh_portfolio()
                 self.refresh_stoplosses()
@@ -8090,10 +8094,12 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
 
 
 def cmd_tui(args: argparse.Namespace) -> None:
-    AvanzaTradingTui(
+    result = AvanzaTradingTui(
         debug=bool(getattr(args, "debug", False)),
         debug_profile_top=int(getattr(args, "debug_profile_top", DEBUG_PROFILE_TOP_DEFAULT)),
     ).run()
+    if isinstance(result, dict) and bool(result.get("reload_tui")):
+        os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:

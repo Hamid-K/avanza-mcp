@@ -158,6 +158,56 @@ def test_parser_includes_portfolio_commands():
     assert tui_args.debug_profile_top == 40
 
 
+def test_cmd_tui_reload_reexecs_current_command(monkeypatch):
+    import avanza_cli
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self):
+            return {"reload_tui": True}
+
+    captured: dict[str, Any] = {}
+
+    def fake_execv(executable, argv):
+        captured["executable"] = executable
+        captured["argv"] = list(argv)
+
+    monkeypatch.setattr(avanza_cli, "AvanzaTradingTui", FakeApp)
+    monkeypatch.setattr(avanza_cli.os, "execv", fake_execv)
+    monkeypatch.setattr(avanza_cli.sys, "argv", ["avanza_cli.py", "tui", "--debug"])
+    monkeypatch.setattr(avanza_cli.sys, "executable", "/usr/bin/python3")
+
+    avanza_cli.cmd_tui(argparse.Namespace(debug=True, debug_profile_top=12))
+
+    assert captured["executable"] == "/usr/bin/python3"
+    assert captured["argv"] == ["/usr/bin/python3", "avanza_cli.py", "tui", "--debug"]
+
+
+def test_cmd_tui_without_reload_does_not_reexec(monkeypatch):
+    import avanza_cli
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self):
+            return None
+
+    called = {"execv": False}
+
+    def fake_execv(_executable, _argv):
+        called["execv"] = True
+
+    monkeypatch.setattr(avanza_cli, "AvanzaTradingTui", FakeApp)
+    monkeypatch.setattr(avanza_cli.os, "execv", fake_execv)
+
+    avanza_cli.cmd_tui(argparse.Namespace(debug=False, debug_profile_top=25))
+
+    assert called["execv"] is False
+
+
 def test_connect_rejects_conflicting_auth_sources():
     args = argparse.Namespace(username="alice", onepassword_item="Avanza", onepassword_vault=None)
     with pytest.raises(ValueError, match="either --username or --onepassword-item"):
@@ -230,6 +280,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#metric-grid") is not None
             assert app.query_one("#clock-status") is not None
             assert app.query_one("#button-controls") is not None
+            assert app.query_one("#reload-tui") is not None
             assert app.query_one("#toggle-controls") is not None
             assert app.query_one("#account-select") is not None
             assert app.query_one("#metric-total") is not None
