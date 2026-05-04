@@ -152,9 +152,14 @@ LOG_CATEGORY_FILES = {
     "trading": "trading.jsonl",
 }
 EXTERNAL_HTTP_TIMEOUT_SECONDS = float(os.getenv("AVANZA_EXTERNAL_HTTP_TIMEOUT_SECONDS", "20"))
+DEFAULT_BRAVE_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
 EXTERNAL_HTTP_USER_AGENT = os.getenv(
     "AVANZA_EXTERNAL_HTTP_USER_AGENT",
-    "Avanza-MCP/0.1 (+https://github.com/Hamid-K/avanza-mcp)",
+    DEFAULT_BRAVE_USER_AGENT,
 )
 TRADINGVIEW_SCANNER_URL_TEMPLATE = "https://scanner.tradingview.com/{market}/scan"
 TRADINGVIEW_DEFAULT_MARKET = "america"
@@ -3111,6 +3116,7 @@ def tradingview_auto_login_and_capture_session(
             str(target_profile_dir),
             headless=False,
             viewport={"width": 1440, "height": 900},
+            user_agent=EXTERNAL_HTTP_USER_AGENT,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -3739,6 +3745,7 @@ async (maxRows) => {
             str(target_profile_dir),
             headless=True,
             viewport={"width": 1700, "height": 1050},
+            user_agent=EXTERNAL_HTTP_USER_AGENT,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
