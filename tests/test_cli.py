@@ -1630,6 +1630,64 @@ def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypat
     assert snapshot["filings"][0]["url"].endswith("/a10q.htm")
 
 
+def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
+    from avanza_cli import fmp_analyst_recommendations_snapshot
+
+    def fake_fetch_text(url, **kwargs):
+        assert "financialmodelingprep.com/api/v3/analyst-stock-recommendations/AAPL" in url
+        assert "apikey=test-key" in url
+        return json.dumps(
+            [
+                {
+                    "symbol": "AAPL",
+                    "date": "2026-05-01",
+                    "strongBuy": 12,
+                    "buy": 15,
+                    "hold": 6,
+                    "sell": 1,
+                    "strongSell": 0,
+                }
+            ]
+        )
+
+    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    snapshot = fmp_analyst_recommendations_snapshot("AAPL", api_key="test-key", limit=5)
+    assert snapshot["symbol"] == "AAPL"
+    assert snapshot["latest"]["strong_buy"] == 12
+    assert snapshot["rows"][0]["buy"] == 15
+
+
+def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
+    from avanza_cli import polygon_analyst_insights_snapshot
+
+    def fake_fetch_json(url, **kwargs):
+        assert "api.polygon.io/benzinga/v1/analyst-insights" in url
+        assert "ticker=AAPL" in url
+        return {
+            "status": "OK",
+            "request_id": "req-1",
+            "results": [
+                {
+                    "date": "2026-05-01",
+                    "ticker": "AAPL",
+                    "firm": "Example Research",
+                    "rating": "Buy",
+                    "rating_action": "upgrades",
+                    "price_target": 320.0,
+                    "insight": "Margin expansion and services growth",
+                }
+            ],
+            "next_url": "",
+        }
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = polygon_analyst_insights_snapshot("AAPL", api_key="poly-key", limit=5)
+    assert snapshot["symbol"] == "AAPL"
+    assert snapshot["status"] == "OK"
+    assert snapshot["rows"][0]["rating"] == "Buy"
+    assert snapshot["rows"][0]["price_target"] == 320.0
+
+
 def test_fred_observations_snapshot_parses_values(monkeypatch):
     from avanza_cli import fred_observations_snapshot
 
@@ -1685,6 +1743,46 @@ def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
     assert result["zacks"]["rank"]["value"] == 2
     assert result["sec"]["filings"][0]["form"] == "10-Q"
     assert result["unsafe_for_execution"] is False
+
+
+def test_execute_mcp_signal_context_bundle_with_fmp_and_polygon(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    monkeypatch.setattr(
+        "avanza_cli.tradingview_symbol_snapshot",
+        lambda *args, **kwargs: {"symbol": "NASDAQ:AAPL", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False},
+    )
+    monkeypatch.setattr(
+        "avanza_cli.fmp_analyst_recommendations_snapshot",
+        lambda *args, **kwargs: {"symbol": "AAPL", "rows": [{"buy": 10}], "unsafe_for_execution": False},
+    )
+    monkeypatch.setattr(
+        "avanza_cli.polygon_analyst_insights_snapshot",
+        lambda *args, **kwargs: {"symbol": "AAPL", "rows": [{"rating": "Buy"}], "unsafe_for_execution": False},
+    )
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool(
+        "signal_context_bundle",
+        {
+            "symbol": "AAPL",
+            "include_fmp": True,
+            "include_polygon": True,
+            "include_zacks": False,
+            "include_sec": False,
+            "fmp_api_key": "x",
+            "polygon_api_key": "y",
+        },
+    )
+
+    assert "fmp" in result
+    assert "polygon" in result
+    assert "fmp" in result["sources"]
+    assert "polygon" in result["sources"]
 
 
 def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
@@ -1918,6 +2016,42 @@ def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
     assert captured["kwargs"]["limit"] == TRADINGVIEW_WATCHLIST_ROW_LIMIT
     assert result["mode"] == "authenticated_scrape"
     assert result["experimental_scrape_mode"] is True
+
+
+def test_fmp_analyst_recommendations_tool_dispatch(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_snapshot(symbol, **kwargs):
+        assert symbol == "AAPL"
+        return {"symbol": "AAPL", "rows": [{"buy": 11}], "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.fmp_analyst_recommendations_snapshot", fake_snapshot)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("fmp_analyst_recommendations", {"symbol": "AAPL", "api_key": "x"})
+    assert result["mode"] == "api"
+    assert result["rows"][0]["buy"] == 11
+
+
+def test_polygon_analyst_insights_tool_dispatch(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_snapshot(symbol, **kwargs):
+        assert symbol == "AAPL"
+        return {"symbol": "AAPL", "rows": [{"rating": "Buy"}], "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.polygon_analyst_insights_snapshot", fake_snapshot)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("polygon_analyst_insights", {"symbol": "AAPL", "api_key": "x"})
+    assert result["mode"] == "api"
+    assert result["rows"][0]["rating"] == "Buy"
 
 
 def test_tradingview_cookie_from_browser_cookies_extracts_session_tokens():

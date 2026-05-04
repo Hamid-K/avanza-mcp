@@ -228,6 +228,8 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `tv_auth_watchlist` | TradingView authenticated watchlist monitor (best effort; scrapes profile/watchlist context + scanner metrics). |
 | `tv_auth_custom_lists` | TradingView authenticated custom tracking lists (inventory + rows; optional list switch by id/name/URL, deep-scrolled collection, up to configured row cap). |
 | `zacks_scrape_symbol` | Zacks symbol scrape for rank/quick analytics (best effort; can be bot-protected). |
+| `fmp_analyst_recommendations` | Financial Modeling Prep analyst recommendation history for a symbol (strong buy/buy/hold/sell/strong sell counts). |
+| `polygon_analyst_insights` | Polygon Benzinga analyst insights feed for a symbol (firm/rating/action/price target/insight text). |
 | `sec_filings_recent` | Recent SEC EDGAR filings by ticker or CIK. |
 | `fred_series` | FRED macro series observations (requires free FRED API key). |
 | `data_source_status` | Cross-source integration health/freshness/safety status (Avanza, TV, Zacks, SEC, FRED). |
@@ -273,6 +275,9 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
+- API-key tools:
+  - `fmp_analyst_recommendations`: pass `api_key` or set `FMP_API_KEY`.
+  - `polygon_analyst_insights`: pass `api_key` or set `POLYGON_API_KEY`.
 
 ### MCP Transaction History Quick Use
 

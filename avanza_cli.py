@@ -290,6 +290,8 @@ TRADINGVIEW_UNKNOWN_FIELD_PATTERN = re.compile(r'Unknown field "([^"]+)"')
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik}.json"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
+FMP_ANALYST_RECOMMENDATIONS_URL_TEMPLATE = "https://financialmodelingprep.com/api/v3/analyst-stock-recommendations/{symbol}"
+POLYGON_ANALYST_INSIGHTS_URL = "https://api.polygon.io/benzinga/v1/analyst-insights"
 
 
 def load_project_version(default: str = "0.0.0-dev") -> str:
@@ -3967,6 +3969,113 @@ def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
     }
 
 
+def fmp_analyst_recommendations_snapshot(
+    symbol: str,
+    *,
+    api_key: str | None = None,
+    limit: int = 52,
+) -> dict[str, Any]:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    resolved_key = str(api_key or os.getenv("FMP_API_KEY", "")).strip()
+    if not resolved_key:
+        raise ValueError("FMP API key missing. Pass api_key or set FMP_API_KEY.")
+    url = f"{FMP_ANALYST_RECOMMENDATIONS_URL_TEMPLATE.format(symbol=ticker)}?apikey={resolved_key}"
+    payload = json.loads(external_fetch_text(url, headers={"Accept": "application/json"}))
+    rows_raw: list[Any]
+    if isinstance(payload, list):
+        rows_raw = payload
+    elif isinstance(payload, dict):
+        nested = payload.get("data")
+        rows_raw = nested if isinstance(nested, list) else []
+    else:
+        rows_raw = []
+
+    rows: list[dict[str, Any]] = []
+    for item in rows_raw[: max(1, min(limit, 5000))]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "date": str(item.get("date", "") or ""),
+                "symbol": str(item.get("symbol", ticker) or ticker),
+                "strong_buy": int(item.get("strongBuy", 0) or 0),
+                "buy": int(item.get("buy", 0) or 0),
+                "hold": int(item.get("hold", 0) or 0),
+                "sell": int(item.get("sell", 0) or 0),
+                "strong_sell": int(item.get("strongSell", 0) or 0),
+            }
+        )
+
+    latest = rows[0] if rows else None
+    return {
+        "symbol": ticker,
+        "rows": rows,
+        "latest": latest,
+        "source": "fmp-analyst-stock-recommendations",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
+
+
+def polygon_analyst_insights_snapshot(
+    symbol: str,
+    *,
+    api_key: str | None = None,
+    limit: int = 50,
+    date_value: str | None = None,
+) -> dict[str, Any]:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    resolved_key = str(api_key or os.getenv("POLYGON_API_KEY", "")).strip()
+    if not resolved_key:
+        raise ValueError("Polygon API key missing. Pass api_key or set POLYGON_API_KEY.")
+    params: dict[str, str] = {
+        "ticker": ticker,
+        "limit": str(max(1, min(limit, 5000))),
+        "apiKey": resolved_key,
+        "sort": "-date",
+    }
+    if str(date_value or "").strip():
+        params["date"] = str(date_value).strip()
+    url = f"{POLYGON_ANALYST_INSIGHTS_URL}?{urlencode(params)}"
+    payload = external_fetch_json(url, headers={"Accept": "application/json"})
+
+    results_raw = payload.get("results", []) if isinstance(payload, dict) else []
+    if not isinstance(results_raw, list):
+        results_raw = []
+    rows: list[dict[str, Any]] = []
+    for item in results_raw:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "date": str(item.get("date", "") or ""),
+                "ticker": str(item.get("ticker", ticker) or ticker),
+                "firm": str(item.get("firm", "") or ""),
+                "rating": str(item.get("rating", "") or ""),
+                "rating_action": str(item.get("rating_action", "") or ""),
+                "price_target": scalar_number(item.get("price_target")),
+                "insight": str(item.get("insight", "") or ""),
+                "company_name": str(item.get("company_name", "") or ""),
+                "last_updated": str(item.get("last_updated", "") or ""),
+            }
+        )
+    return {
+        "symbol": ticker,
+        "status": str(payload.get("status", "") or ""),
+        "count": len(rows),
+        "rows": rows,
+        "next_url": str(payload.get("next_url", "") or ""),
+        "request_id": str(payload.get("request_id", "") or ""),
+        "source": "polygon-benzinga-analyst-insights",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
+
+
 def first_numeric(payload: Any, paths: tuple[tuple[str, ...], ...]) -> float | None:
     for path in paths:
         current = payload
@@ -4360,6 +4469,35 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "fmp_analyst_recommendations",
+        "description": "Fetch analyst recommendation history for a symbol from Financial Modeling Prep (requires FMP API key).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 52},
+                "api_key": {"type": "string"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "polygon_analyst_insights",
+        "description": "Fetch analyst insights/ratings for a symbol from Polygon Benzinga feed (requires Polygon API key).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 50},
+                "date": {"type": "string"},
+                "api_key": {"type": "string"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "sec_filings_recent",
         "description": "Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data).",
         "inputSchema": {
@@ -4389,7 +4527,7 @@ MCP_TOOLS = [
     },
     {
         "name": "data_source_status",
-        "description": "Return current health, freshness, and safety flags for Avanza, TradingView, Zacks, SEC, and FRED source integrations.",
+        "description": "Return current health, freshness, and safety flags for Avanza, TradingView, Zacks, FMP, Polygon, SEC, and FRED source integrations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -4402,7 +4540,7 @@ MCP_TOOLS = [
     },
     {
         "name": "signal_context_bundle",
-        "description": "Build a compact cross-source signal bundle (TradingView technicals + SEC filings + optional Zacks + optional FRED macro).",
+        "description": "Build a compact cross-source signal bundle (TradingView technicals + SEC filings + optional Zacks/FMP/Polygon + optional FRED macro).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -4410,9 +4548,13 @@ MCP_TOOLS = [
                 "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
                 "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
                 "include_zacks": {"type": "boolean", "default": True},
+                "include_fmp": {"type": "boolean", "default": False},
+                "include_polygon": {"type": "boolean", "default": False},
                 "include_sec": {"type": "boolean", "default": True},
                 "fred_series_id": {"type": "string"},
                 "fred_api_key": {"type": "string"},
+                "fmp_api_key": {"type": "string"},
+                "polygon_api_key": {"type": "string"},
             },
             "required": ["symbol"],
             "additionalProperties": False,
@@ -6935,6 +7077,78 @@ class AvanzaTradingTui(App):
                 }
             )
 
+        fmp_key = os.getenv("FMP_API_KEY", "").strip()
+        if fmp_key:
+            try:
+                fmp = fmp_analyst_recommendations_snapshot(normalized_symbol.split(":", 1)[-1], limit=1, api_key=fmp_key)
+                latest = fmp.get("latest") if isinstance(fmp.get("latest"), dict) else {}
+                sources.append(
+                    {
+                        "source": "fmp",
+                        "status": "ok",
+                        "latest_date": latest.get("date"),
+                        "strong_buy": latest.get("strong_buy"),
+                        "buy": latest.get("buy"),
+                        "hold": latest.get("hold"),
+                        "sell": latest.get("sell"),
+                        "strong_sell": latest.get("strong_sell"),
+                        "unsafe_for_execution": False,
+                    }
+                )
+            except Exception as exc:
+                sources.append(
+                    {
+                        "source": "fmp",
+                        "status": "error",
+                        "error": str(exc),
+                        "unsafe_for_execution": True,
+                    }
+                )
+        else:
+            sources.append(
+                {
+                    "source": "fmp",
+                    "status": "not_configured",
+                    "details": "Set FMP_API_KEY for analyst recommendation history.",
+                    "unsafe_for_execution": True,
+                }
+            )
+
+        polygon_key = os.getenv("POLYGON_API_KEY", "").strip()
+        if polygon_key:
+            try:
+                polygon = polygon_analyst_insights_snapshot(normalized_symbol.split(":", 1)[-1], limit=1, api_key=polygon_key)
+                first = polygon.get("rows", [{}])[0] if polygon.get("rows") else {}
+                sources.append(
+                    {
+                        "source": "polygon",
+                        "status": "ok",
+                        "latest_date": first.get("date"),
+                        "rating": first.get("rating"),
+                        "rating_action": first.get("rating_action"),
+                        "price_target": first.get("price_target"),
+                        "unsafe_for_execution": False,
+                    }
+                )
+            except Exception as exc:
+                sources.append(
+                    {
+                        "source": "polygon",
+                        "status": "error",
+                        "error": str(exc),
+                        "unsafe_for_execution": True,
+                    }
+                )
+        else:
+            sources.append(
+                {
+                    "source": "polygon",
+                    "status": "not_configured",
+                    "details": "Set POLYGON_API_KEY for analyst insights.",
+                    "unsafe_for_execution": True,
+                }
+            )
+
         try:
             sec = sec_recent_filings_snapshot(ticker=normalized_symbol.split(":", 1)[-1], cik=None, limit=5)
             sources.append(
@@ -7014,9 +7228,13 @@ class AvanzaTradingTui(App):
         exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
         market: str = TRADINGVIEW_DEFAULT_MARKET,
         include_zacks: bool = True,
+        include_fmp: bool = False,
+        include_polygon: bool = False,
         include_sec: bool = True,
         fred_series_id: str | None = None,
         fred_api_key: str | None = None,
+        fmp_api_key: str | None = None,
+        polygon_api_key: str | None = None,
     ) -> dict[str, Any]:
         normalized_symbol = normalize_tv_symbol(symbol, exchange)
         payload: dict[str, Any] = {
@@ -7043,6 +7261,32 @@ class AvanzaTradingTui(App):
             except Exception as exc:
                 payload["zacks"] = {"error": str(exc), "unsafe_for_execution": True}
                 payload["sources"].append("zacks")
+
+        if include_fmp:
+            try:
+                fmp = fmp_analyst_recommendations_snapshot(
+                    normalized_symbol.split(":", 1)[-1],
+                    limit=52,
+                    api_key=fmp_api_key,
+                )
+                payload["fmp"] = fmp
+                payload["sources"].append("fmp")
+            except Exception as exc:
+                payload["fmp"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["sources"].append("fmp")
+
+        if include_polygon:
+            try:
+                polygon = polygon_analyst_insights_snapshot(
+                    normalized_symbol.split(":", 1)[-1],
+                    limit=50,
+                    api_key=polygon_api_key,
+                )
+                payload["polygon"] = polygon
+                payload["sources"].append("polygon")
+            except Exception as exc:
+                payload["polygon"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["sources"].append("polygon")
 
         if include_sec:
             try:
@@ -7387,6 +7631,30 @@ class AvanzaTradingTui(App):
             snapshot["experimental_scrape_mode"] = True
             return snapshot
 
+        if tool == "fmp_analyst_recommendations":
+            symbol = str(arguments["symbol"])
+            limit = int(arguments.get("limit", 52))
+            api_key = str(arguments.get("api_key", "") or "") or None
+            snapshot = fmp_analyst_recommendations_snapshot(symbol, limit=limit, api_key=api_key)
+            snapshot["mode"] = "api"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "polygon_analyst_insights":
+            symbol = str(arguments["symbol"])
+            limit = int(arguments.get("limit", 50))
+            date_value = str(arguments.get("date", "") or "") or None
+            api_key = str(arguments.get("api_key", "") or "") or None
+            snapshot = polygon_analyst_insights_snapshot(
+                symbol,
+                limit=limit,
+                date_value=date_value,
+                api_key=api_key,
+            )
+            snapshot["mode"] = "api"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
         if tool == "sec_filings_recent":
             ticker = str(arguments.get("ticker", "") or "") or None
             cik = str(arguments.get("cik", "") or "") or None
@@ -7416,17 +7684,25 @@ class AvanzaTradingTui(App):
             exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
             market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
             include_zacks = bool(arguments.get("include_zacks", True))
+            include_fmp = bool(arguments.get("include_fmp", False))
+            include_polygon = bool(arguments.get("include_polygon", False))
             include_sec = bool(arguments.get("include_sec", True))
             fred_series_id = str(arguments.get("fred_series_id", "") or "") or None
             fred_api_key = str(arguments.get("fred_api_key", "") or "") or None
+            fmp_api_key = str(arguments.get("fmp_api_key", "") or "") or None
+            polygon_api_key = str(arguments.get("polygon_api_key", "") or "") or None
             return self.signal_context_bundle_snapshot(
                 symbol=symbol,
                 exchange=exchange,
                 market=market,
                 include_zacks=include_zacks,
+                include_fmp=include_fmp,
+                include_polygon=include_polygon,
                 include_sec=include_sec,
                 fred_series_id=fred_series_id,
                 fred_api_key=fred_api_key,
+                fmp_api_key=fmp_api_key,
+                polygon_api_key=polygon_api_key,
             )
 
         if tool == "avanza_portfolio":
