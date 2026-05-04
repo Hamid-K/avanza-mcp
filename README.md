@@ -213,6 +213,7 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 | `tv_auth_symbol_analytics` | TradingView authenticated scanner snapshot (uses cookie/session for entitlement-aware mode). |
 | `tv_scrape_heatmap` | TradingView heatmap/top movers snapshot for the selected market. |
 | `tv_auth_watchlist` | TradingView authenticated watchlist monitor (best effort; scrapes profile/watchlist context + scanner metrics). |
+| `tv_auth_custom_lists` | TradingView authenticated custom tracking lists (inventory + rows; optional list switch by id/name). |
 | `zacks_scrape_symbol` | Zacks symbol scrape for rank/quick analytics (best effort; can be bot-protected). |
 | `sec_filings_recent` | Recent SEC EDGAR filings by ticker or CIK. |
 | `fred_series` | FRED macro series observations (requires free FRED API key). |
@@ -253,6 +254,7 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
   2. log in normally in opened browser window,
   3. wait for auto-capture confirmation, then run `tv_auth_session_status`,
   4. use `tv_auth_*` tools with no repeated cookie input.
+- The TUI `TV Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.

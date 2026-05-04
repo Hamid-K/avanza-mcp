@@ -162,6 +162,7 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_live_snapshot` | Full polling snapshot for trading loops. |
 | `avanza_realtime_quotes` | Real-time quote snapshot for holdings. |
 | `avanza_search_stock` | Search stocks/order books by name, ticker, or ISIN. |
+| `tv_auth_custom_lists` | TradingView authenticated custom tracking lists (list inventory + rows, optional list switch by id/name). |
 | `avanza_paper_stoploss_set` | Create paper stop-loss order. |
 | `avanza_paper_order_set` | Create paper regular order. |
 | `avanza_paper_orders` | List paper orders and events. |

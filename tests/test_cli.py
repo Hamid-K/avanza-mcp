@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from textual import events
@@ -248,6 +249,9 @@ def test_tui_mounts_headless():
             assert app.query_one("#order-modal").display is False
             assert app.query_one("#orders-overlay").display is False
             assert app.query_one("#transactions-overlay").display is False
+            assert app.query_one("#tv-lists-overlay").display is False
+            assert app.query_one("#open-tv-lists-overlay") is not None
+            assert app.query_one("#tv-lists-select") is not None
             assert isinstance(app.query_one("#paper-mode-toggle"), Button)
             assert app.query_one("#paper-mode-label").renderable == "Paper"
             assert isinstance(app.query_one("#mcp-toggle"), Button)
@@ -1554,6 +1558,39 @@ def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_pat
 
     assert result["mode"] == "authenticated_scrape"
     assert "sessionid=abc" in captured["cookie"]
+
+
+def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
+    from avanza_cli import AvanzaTradingTui, TRADINGVIEW_WATCHLIST_ROW_LIMIT
+
+    class FakeAvanza:
+        pass
+
+    captured: dict[str, Any] = {}
+
+    def fake_thread_wrapper(func, *args, **kwargs):
+        captured["function"] = getattr(func, "__name__", "")
+        captured["kwargs"] = kwargs
+        return {
+            "lists": [{"id": "list-1", "name": "My Stocks", "count": 2}],
+            "items": [{"symbol": "AAPL"}],
+            "source": "tradingview-auth-watchlists",
+        }
+
+    monkeypatch.setattr("avanza_cli.run_blocking_in_thread", fake_thread_wrapper)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool(
+        "tv_auth_custom_lists",
+        {"list_id": "list-1", "limit": TRADINGVIEW_WATCHLIST_ROW_LIMIT + 25},
+    )
+
+    assert captured["function"] == "tradingview_custom_watchlists_from_profile"
+    assert captured["kwargs"]["list_id"] == "list-1"
+    assert captured["kwargs"]["limit"] == TRADINGVIEW_WATCHLIST_ROW_LIMIT
+    assert result["mode"] == "authenticated_scrape"
+    assert result["experimental_scrape_mode"] is True
 
 
 def test_tradingview_cookie_from_browser_cookies_extracts_session_tokens():

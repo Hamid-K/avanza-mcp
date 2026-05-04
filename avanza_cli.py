@@ -167,6 +167,8 @@ TRADINGVIEW_HEATMAP_FIELDS = [
     "volume",
     "market_cap_basic",
 ]
+TRADINGVIEW_WATCHLIST_ROW_LIMIT = 300
+TRADINGVIEW_TUI_REFRESH_SECONDS = 15.0
 TRADINGVIEW_ANALYTICS_FIELDS = [
     "name",
     "description",
@@ -3038,6 +3040,183 @@ def tradingview_watchlist_snapshot(
     }
 
 
+def tradingview_custom_watchlists_from_profile(
+    *,
+    list_id: str | None = None,
+    list_name: str | None = None,
+    limit: int = TRADINGVIEW_WATCHLIST_ROW_LIMIT,
+    profile_dir: Path | None = None,
+) -> dict[str, Any]:
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        raise RuntimeError(
+            "Playwright is required for TradingView custom list scraping. "
+            "Install with: uv add --dev playwright && uv run playwright install chromium"
+        ) from exc
+
+    target_profile_dir = profile_dir or TRADINGVIEW_BROWSER_PROFILE_DIR
+    if not target_profile_dir.exists():
+        raise RuntimeError(
+            f"TradingView profile directory not found: {target_profile_dir}. "
+            "Run tv_auth_session_login_auto first."
+        )
+
+    target_list_id = str(list_id or "").strip()
+    target_list_name = str(list_name or "").strip()
+
+    extraction_script = """
+() => {
+  const dialog = document.querySelector('[data-name="watchlists-dialog"]');
+  const listEntries = dialog
+    ? [...dialog.querySelectorAll('[data-role="list-item"]')].map((el, index) => {
+        const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+        const countMatch = text.match(/(\\d+)$/);
+        const count = countMatch ? Number(countMatch[1]) : null;
+        const name = countMatch ? text.slice(0, countMatch.index).trim() : text;
+        return {
+          index,
+          id: el.getAttribute('data-id') || '',
+          title: el.getAttribute('data-title') || '',
+          name,
+          raw_label: text,
+          count,
+          selected: el.className.includes('selected-') || el.getAttribute('aria-selected') === 'true',
+        };
+      })
+    : [];
+
+  const activeHeader = document.querySelector('.widgetbar-widget-watchlist [class*="separator-"][class*="firstItem-"]');
+  const activeListName = activeHeader ? (activeHeader.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+  const symbolRows = [...document.querySelectorAll('.widgetbar-widget-watchlist [data-symbol-full]')];
+  const rows = symbolRows.map((row) => {
+    const pick = (selector) => {
+      const element = row.querySelector(selector);
+      return element ? (element.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+    };
+    const symbolShort = row.getAttribute('data-symbol-short') || pick('[class*="symbolNameText"]');
+    const symbolFull = row.getAttribute('data-symbol-full') || '';
+    const marketStatusRaw = pick('[class*="displayContents"]');
+    const marketStatus = marketStatusRaw
+      .replace(symbolShort, '')
+      .replace(/RMarket\\s*/i, 'Market ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    return {
+      symbol: symbolShort,
+      symbol_full: symbolFull,
+      last: pick('[class*="last-"] [class*="inner-"]'),
+      change: pick('[class*="change-"] [class*="inner-"]'),
+      change_percent: pick('[class*="changeInPercents"] [class*="inner-"]'),
+      volume: pick('[class*="volume-"] [class*="inner-"]'),
+      market_status: marketStatus,
+    };
+  });
+
+  return { list_entries: listEntries, active_list_name: activeListName, rows };
+}
+"""
+
+    with sync_playwright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            str(target_profile_dir),
+            headless=True,
+            viewport={"width": 1700, "height": 1050},
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto("https://www.tradingview.com/chart/", wait_until="domcontentloaded", timeout=90_000)
+            page.wait_for_timeout(5_000)
+
+            if page.locator("text=Sign in").count() > 0:
+                raise RuntimeError("TradingView profile is not authenticated. Run tv_auth_session_login_auto first.")
+
+            watchlist_button = page.locator('[data-name="watchlists-button"]').first
+            if watchlist_button.count() == 0:
+                raise RuntimeError("TradingView watchlist widget not found on chart page.")
+            watchlist_button.click(timeout=10_000)
+            page.wait_for_timeout(700)
+            open_list_entry = page.locator("text=Open list…").first
+            if open_list_entry.count() == 0:
+                open_list_entry = page.locator("text=Open list...").first
+            if open_list_entry.count() == 0:
+                raise RuntimeError("Could not open TradingView watchlist list-selector.")
+            open_list_entry.click(timeout=10_000)
+            page.wait_for_timeout(1_200)
+
+            snapshot = page.evaluate(extraction_script)
+            list_entries = snapshot.get("list_entries", []) if isinstance(snapshot, dict) else []
+
+            selected_entry: dict[str, Any] | None = next(
+                (entry for entry in list_entries if isinstance(entry, dict) and bool(entry.get("selected"))),
+                None,
+            )
+
+            if target_list_id or target_list_name:
+                target_entry = None
+                if target_list_id:
+                    target_entry = next(
+                        (
+                            entry
+                            for entry in list_entries
+                            if isinstance(entry, dict) and str(entry.get("id", "")) == target_list_id
+                        ),
+                        None,
+                    )
+                if target_entry is None and target_list_name:
+                    normalized_name = target_list_name.strip().lower()
+                    target_entry = next(
+                        (
+                            entry
+                            for entry in list_entries
+                            if isinstance(entry, dict)
+                            and (
+                                str(entry.get("name", "")).strip().lower() == normalized_name
+                                or str(entry.get("raw_label", "")).strip().lower().startswith(normalized_name)
+                            )
+                        ),
+                        None,
+                    )
+                if target_entry is None:
+                    raise ValueError(f"TradingView list not found: id='{target_list_id}' name='{target_list_name}'")
+                target_dom_id = target_entry.get("id")
+                if target_dom_id:
+                    page.locator(f'[data-role=\"list-item\"][data-id=\"{target_dom_id}\"]').first.click(timeout=10_000)
+                    page.wait_for_timeout(1_500)
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+                    snapshot = page.evaluate(extraction_script)
+                    selected_entry = target_entry
+
+            if page.locator('[data-name=\"watchlists-dialog\"]').count() > 0:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(300)
+
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+
+            rows = snapshot.get("rows", [])
+            rows = [row for row in rows if isinstance(row, dict)]
+            rows = rows[: max(1, min(int(limit), TRADINGVIEW_WATCHLIST_ROW_LIMIT))]
+            active_name = str(snapshot.get("active_list_name", "") or "")
+            list_entries = [entry for entry in list_entries if isinstance(entry, dict)]
+            if selected_entry is None:
+                selected_entry = next((entry for entry in list_entries if str(entry.get("name", "")) == active_name), None)
+
+            return {
+                "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "profile_dir": str(target_profile_dir),
+                "active_list_name": active_name,
+                "selected_list": selected_entry,
+                "lists": list_entries,
+                "items": rows,
+                "source": "tradingview-auth-watchlists",
+                "unsafe_for_execution": False,
+            }
+        finally:
+            context.close()
+
+
 def sec_cik_text(value: Any) -> str:
     raw = re.sub(r"[^0-9]", "", str(value or ""))
     if not raw:
@@ -3507,6 +3686,19 @@ MCP_TOOLS = [
                 "cookie": {"type": "string"},
                 "sessionid": {"type": "string"},
                 "sessionid_sign": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_auth_custom_lists",
+        "description": "Load authenticated TradingView custom tracking lists and rows from your TradingView profile session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "list_id": {"type": "string"},
+                "list_name": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": TRADINGVIEW_WATCHLIST_ROW_LIMIT, "default": 300},
             },
             "additionalProperties": False,
         },
@@ -4193,6 +4385,10 @@ class AvanzaTradingTui(App):
         min-width: 14;
     }
 
+    #open-tv-lists-overlay {
+        min-width: 10;
+    }
+
     #toggle-controls {
         height: 2;
         align: center middle;
@@ -4415,7 +4611,8 @@ class AvanzaTradingTui(App):
     }
 
     #orders-overlay,
-    #transactions-overlay {
+    #transactions-overlay,
+    #tv-lists-overlay {
         display: none;
         dock: top;
         width: 1fr;
@@ -4427,15 +4624,28 @@ class AvanzaTradingTui(App):
     }
 
     #orders-overlay-note,
-    #transactions-overlay-note {
+    #transactions-overlay-note,
+    #tv-lists-overlay-note {
         height: 1;
         margin-bottom: 1;
         color: $text-muted;
     }
 
     #orders-history-table,
-    #transactions-history-table {
+    #transactions-history-table,
+    #tv-lists-table {
         height: 1fr;
+    }
+
+    #tv-lists-controls {
+        height: 3;
+        align: left middle;
+        margin-bottom: 1;
+    }
+
+    #tv-lists-select {
+        width: 1fr;
+        margin-right: 1;
     }
 
     .ticket-resizer {
@@ -4596,6 +4806,7 @@ class AvanzaTradingTui(App):
         self.clock_timer = None
         self.mcp_health_timer = None
         self.order_search_timer = None
+        self.tv_lists_refresh_timer = None
         self.login_progress_timer = None
         self.login_thread: threading.Thread | None = None
         self.login_busy = False
@@ -4629,6 +4840,15 @@ class AvanzaTradingTui(App):
         self.latest_portfolio_data: dict[str, Any] | None = None
         self.latest_stoploss_items: list[dict[str, Any]] = []
         self.latest_open_order_items: list[dict[str, Any]] = []
+        self.latest_tv_lists: list[dict[str, Any]] = []
+        self.latest_tv_list_items: list[dict[str, Any]] = []
+        self.tv_list_option_refs: dict[str, dict[str, str]] = {}
+        self.tv_lists_loaded_value = ""
+        self.tv_lists_select_updating = False
+        self.tv_lists_refresh_thread: threading.Thread | None = None
+        self.tv_lists_refresh_inflight = False
+        self.tv_lists_refresh_pending_value: str | None = None
+        self.tv_lists_refresh_lock = threading.Lock()
         self.portfolio_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.paper_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.cancel_targets_by_row_key: dict[str, dict[str, str]] = {}
@@ -4718,6 +4938,7 @@ class AvanzaTradingTui(App):
                         yield Static("Views", id="view-label")
                         yield Button("Orders", id="open-orders-overlay", classes="view-tab")
                         yield Button("Transactions", id="open-transactions-overlay", classes="view-tab")
+                        yield Button("TV Lists", id="open-tv-lists-overlay", classes="view-tab")
                     with Horizontal(id="toggle-controls"):
                         with Horizontal(classes="toggle-control"):
                             yield Button("✓", id="paper-mode-toggle", classes="mode-toggle-box enabled")
@@ -4865,6 +5086,19 @@ class AvanzaTradingTui(App):
                     yield Button("Refresh", id="refresh-transactions-overlay", variant="primary")
                 yield Static("Executed orders and account transactions for the selected account.", id="transactions-overlay-note")
                 yield DataTable(id="transactions-history-table")
+            with Vertical(id="tv-lists-overlay"):
+                with Horizontal(classes="modal-header"):
+                    yield Button("X", id="close-tv-lists-overlay", classes="modal-close")
+                    yield Static("TradingView Custom Lists", classes="modal-title")
+                    yield Button("Refresh", id="refresh-tv-lists-overlay", variant="primary")
+                yield Static(
+                    f"Authenticated profile watchlists. Auto-refresh every {TRADINGVIEW_TUI_REFRESH_SECONDS:g}s while open.",
+                    id="tv-lists-overlay-note",
+                )
+                with Horizontal(id="tv-lists-controls"):
+                    yield Select([], prompt="Select TradingView list", allow_blank=True, id="tv-lists-select")
+                    yield Button("Reload Lists", id="reload-tv-lists", variant="default")
+                yield DataTable(id="tv-lists-table")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -4944,6 +5178,18 @@ class AvanzaTradingTui(App):
         transactions_history_table.cursor_type = "row"
         transactions_history_table.zebra_stripes = True
 
+        tv_lists_table = self.query_one("#tv-lists-table", DataTable)
+        tv_lists_table.add_columns(
+            "Symbol",
+            "Last",
+            "Chg",
+            "Chg%",
+            "Volume",
+            "Status",
+        )
+        tv_lists_table.cursor_type = "row"
+        tv_lists_table.zebra_stripes = True
+
         self.write_log("Ready. Log in, then refresh portfolio or stop-losses.")
         if self.debug_mode and self.debug_session_log_path is not None:
             self.write_log(f"[yellow]Debug profiling enabled:[/yellow] {self.debug_session_log_path}")
@@ -4952,6 +5198,12 @@ class AvanzaTradingTui(App):
         self.start_clock()
         if self.mcp_health_timer is None:
             self.mcp_health_timer = self.set_interval(MCP_HEALTH_CHECK_SECONDS, self.ensure_mcp_bridge_health, pause=False)
+        if self.tv_lists_refresh_timer is None:
+            self.tv_lists_refresh_timer = self.set_interval(
+                TRADINGVIEW_TUI_REFRESH_SECONDS,
+                self.refresh_tv_lists_if_visible,
+                pause=False,
+            )
         self.apply_ticket_pane_width(self.ticket_pane_width)
         self.apply_activity_subpane_weights(self.activity_table_weight, self.activity_logs_weight)
         self.update_mode_toggles()
@@ -6078,6 +6330,9 @@ class AvanzaTradingTui(App):
         if self.mcp_health_timer is not None:
             self.mcp_health_timer.stop()
             self.mcp_health_timer = None
+        if self.tv_lists_refresh_timer is not None:
+            self.tv_lists_refresh_timer.stop()
+            self.tv_lists_refresh_timer = None
         self.stop_mcp_bridge(announce=False)
 
     def require_mcp_write(self, confirmed: bool) -> None:
@@ -6220,6 +6475,20 @@ class AvanzaTradingTui(App):
                 market=market,
                 limit=limit,
                 cookie=cookie,
+            )
+            snapshot["mode"] = "authenticated_scrape"
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "tv_auth_custom_lists":
+            list_id = str(arguments.get("list_id", "") or "").strip() or None
+            list_name = str(arguments.get("list_name", "") or "").strip() or None
+            limit = int(arguments.get("limit", TRADINGVIEW_WATCHLIST_ROW_LIMIT))
+            snapshot = run_blocking_in_thread(
+                tradingview_custom_watchlists_from_profile,
+                list_id=list_id,
+                list_name=list_name,
+                limit=max(1, min(limit, TRADINGVIEW_WATCHLIST_ROW_LIMIT)),
             )
             snapshot["mode"] = "authenticated_scrape"
             snapshot["experimental_scrape_mode"] = True
@@ -6810,6 +7079,134 @@ class AvanzaTradingTui(App):
     def close_transactions_overlay(self) -> None:
         self.query_one("#transactions-overlay").display = False
 
+    def tv_list_selection(self, value: str | None = None) -> dict[str, str | None]:
+        selection = value
+        if selection is None:
+            widget_value = self.query_one("#tv-lists-select", Select).value
+            if widget_value != Select.BLANK:
+                selection = str(widget_value)
+        ref = self.tv_list_option_refs.get(str(selection or ""), {})
+        list_id = str(ref.get("id", "") or "").strip() or None
+        list_name = str(ref.get("name", "") or "").strip() or None
+        return {"value": str(selection or ""), "list_id": list_id, "list_name": list_name}
+
+    def refresh_tv_lists_if_visible(self) -> None:
+        if self.query_one("#tv-lists-overlay").display:
+            self.refresh_tv_lists()
+
+    def refresh_tv_lists(self, selection_value: str | None = None) -> None:
+        selection = self.tv_list_selection(selection_value)
+        with self.tv_lists_refresh_lock:
+            if self.tv_lists_refresh_inflight:
+                self.tv_lists_refresh_pending_value = selection.get("value") or self.tv_lists_refresh_pending_value
+                return
+            self.tv_lists_refresh_inflight = True
+        self.query_one("#tv-lists-overlay-note", Static).update("Loading TradingView custom lists...")
+        self.tv_lists_refresh_thread = threading.Thread(
+            target=self._refresh_tv_lists_worker,
+            args=(selection.get("list_id"), selection.get("list_name")),
+            daemon=True,
+            name="avanza-tv-lists-refresh",
+        )
+        self.tv_lists_refresh_thread.start()
+
+    def _refresh_tv_lists_worker(self, list_id: str | None, list_name: str | None) -> None:
+        try:
+            snapshot = tradingview_custom_watchlists_from_profile(
+                list_id=list_id,
+                list_name=list_name,
+                limit=TRADINGVIEW_WATCHLIST_ROW_LIMIT,
+            )
+            self.call_from_thread(self.apply_tv_lists_snapshot, snapshot)
+        except Exception as exc:
+            self.call_from_thread(self.write_log, f"[yellow]TradingView list refresh failed:[/yellow] {exc}")
+            self.call_from_thread(self.set_tv_lists_overlay_note, f"TradingView list refresh failed: {exc}")
+        finally:
+            self.call_from_thread(self.finish_tv_lists_refresh)
+
+    def finish_tv_lists_refresh(self) -> None:
+        pending_value = None
+        with self.tv_lists_refresh_lock:
+            pending_value = self.tv_lists_refresh_pending_value
+            self.tv_lists_refresh_pending_value = None
+            self.tv_lists_refresh_inflight = False
+        if pending_value:
+            self.refresh_tv_lists(pending_value)
+
+    def apply_tv_lists_snapshot(self, snapshot: dict[str, Any]) -> None:
+        list_entries = [entry for entry in snapshot.get("lists", []) if isinstance(entry, dict)]
+        rows = [item for item in snapshot.get("items", []) if isinstance(item, dict)]
+        self.latest_tv_lists = list_entries
+        self.latest_tv_list_items = rows
+
+        select = self.query_one("#tv-lists-select", Select)
+        prior = select.value
+        options: list[tuple[str, str]] = []
+        refs: dict[str, dict[str, str]] = {}
+        for index, entry in enumerate(list_entries):
+            entry_id = str(entry.get("id", "") or "").strip()
+            entry_name = str(entry.get("name", "") or entry.get("raw_label", "") or f"List {index + 1}").strip()
+            count = scalar_number(entry.get("count"))
+            count_suffix = f" ({int(count)})" if count is not None else ""
+            option_value = entry_id or f"list-{index}"
+            options.append((f"{entry_name}{count_suffix}", option_value))
+            refs[option_value] = {"id": entry_id, "name": entry_name}
+        self.tv_list_option_refs = refs
+        self.tv_lists_select_updating = True
+        select.set_options(options)
+
+        selected_entry = snapshot.get("selected_list") if isinstance(snapshot.get("selected_list"), dict) else {}
+        selected_id = str(selected_entry.get("id", "") or "").strip()
+        selected_name = str(selected_entry.get("name", "") or "").strip().lower()
+
+        selected_value = None
+        if prior != Select.BLANK and str(prior) in refs:
+            selected_value = str(prior)
+        if selected_id:
+            selected_value = next((value for value, ref in refs.items() if ref.get("id") == selected_id), selected_value)
+        if selected_value is None and selected_name:
+            selected_value = next(
+                (value for value, ref in refs.items() if str(ref.get("name", "")).strip().lower() == selected_name),
+                None,
+            )
+        if selected_value is None and options:
+            selected_value = options[0][1]
+        self.tv_lists_loaded_value = str(selected_value or "")
+        if selected_value is not None:
+            select.value = selected_value
+        self.tv_lists_select_updating = False
+
+        table = self.query_one("#tv-lists-table", DataTable)
+        selected_row = selected_table_row_key(table)
+        table.clear()
+        for index, item in enumerate(rows):
+            row = (
+                str(item.get("symbol", "") or "-"),
+                str(item.get("last", "") or "-"),
+                str(item.get("change", "") or "-"),
+                str(item.get("change_percent", "") or "-"),
+                str(item.get("volume", "") or "-"),
+                str(item.get("market_status", "") or "-"),
+            )
+            table.add_row(*row, key=f"tv-list-row-{index}")
+        restore_table_row_selection(table, selected_row)
+
+        active_name = str(snapshot.get("active_list_name", "") or "")
+        as_of = str(snapshot.get("as_of", "") or "")
+        self.set_tv_lists_overlay_note(f"Loaded {len(rows)} row(s) from {active_name or 'TradingView list'} at {as_of}.")
+        if self.query_one("#tv-lists-overlay").display:
+            self.write_log(f"Loaded {len(rows)} TradingView list row(s) from {active_name or 'selected list'}.")
+
+    def set_tv_lists_overlay_note(self, message: str) -> None:
+        self.query_one("#tv-lists-overlay-note", Static).update(message)
+
+    def open_tv_lists_overlay(self) -> None:
+        self.query_one("#tv-lists-overlay").display = True
+        self.refresh_tv_lists()
+
+    def close_tv_lists_overlay(self) -> None:
+        self.query_one("#tv-lists-overlay").display = False
+
     def reset_stoploss_modal_for_new(self) -> None:
         self.pending_stoploss_edit_id = None
         self.query_one("#stoploss-modal-title", Static).update("New Stop-Loss")
@@ -7022,6 +7419,13 @@ class AvanzaTradingTui(App):
             if self.input_value("regular-order-type") == "sell" and not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
             self.update_regular_order_value()
+        elif event.select.id == "tv-lists-select":
+            if self.tv_lists_select_updating:
+                return
+            if event.value and event.value != Select.BLANK:
+                if str(event.value) == self.tv_lists_loaded_value:
+                    return
+                self.refresh_tv_lists(str(event.value))
         elif event.select.id == "regular-order-type":
             if str(event.value) == "sell":
                 order_book_id = self.input_value("order-instrument-select")
@@ -7095,6 +7499,8 @@ class AvanzaTradingTui(App):
                 self.open_orders_overlay()
             elif button_id == "open-transactions-overlay":
                 self.open_transactions_overlay()
+            elif button_id == "open-tv-lists-overlay":
+                self.open_tv_lists_overlay()
             elif button_id == "close-stoploss-modal":
                 self.reset_stoploss_modal_for_new()
                 self.query_one("#stoploss-modal").display = False
@@ -7108,6 +7514,10 @@ class AvanzaTradingTui(App):
                 self.close_transactions_overlay()
             elif button_id == "refresh-transactions-overlay":
                 self.refresh_transactions_overlay()
+            elif button_id == "close-tv-lists-overlay":
+                self.close_tv_lists_overlay()
+            elif button_id in {"refresh-tv-lists-overlay", "reload-tv-lists"}:
+                self.refresh_tv_lists()
             elif button_id == "close-cancel-modal":
                 self.close_cancel_modal()
             elif button_id == "clear-log":
