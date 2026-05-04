@@ -1292,6 +1292,10 @@ def account_metric_values(
     if portfolio_data is not None:
         if profit_mode == "total":
             profit_amount, profit_percent, value_unit = account_profit_summary_from_avanza(account)
+        elif profit_mode == "day":
+            profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
+            if profit_amount is None and profit_percent is None:
+                profit_amount, profit_percent, value_unit = portfolio_day_summary(portfolio_data, account_id, account)
         else:
             profit_amount, profit_percent, value_unit = account_performance_window_summary(account, profit_mode)
     return {
