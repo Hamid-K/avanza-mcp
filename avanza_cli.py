@@ -233,6 +233,90 @@ def load_project_version(default: str = "0.0.0-dev") -> str:
 APP_VERSION = load_project_version()
 APP_NAME = "Avanza-MCP"
 TUI_TITLE = f"{APP_NAME} v{APP_VERSION}"
+GITHUB_RELEASE_REPO = os.getenv("AVANZA_GITHUB_REPO", "Hamid-K/avanza-mcp")
+UPDATE_CHECK_INTERVAL_SECONDS = float(os.getenv("AVANZA_UPDATE_CHECK_INTERVAL_SECONDS", "1800"))
+UPDATE_CHECK_TIMEOUT_SECONDS = float(os.getenv("AVANZA_UPDATE_CHECK_TIMEOUT_SECONDS", "10"))
+UPDATE_BLINK_INTERVAL_SECONDS = float(os.getenv("AVANZA_UPDATE_BLINK_INTERVAL_SECONDS", "0.7"))
+
+
+def update_check_enabled() -> bool:
+    return str(os.getenv("AVANZA_UPDATE_CHECK_ENABLED", "1")).strip().lower() not in {"0", "false", "no"}
+
+
+def normalize_version_text(value: str) -> str:
+    text = str(value or "").strip()
+    if text.lower().startswith("v"):
+        text = text[1:]
+    return text
+
+
+def version_tuple(value: str) -> tuple[int, ...] | None:
+    normalized = normalize_version_text(value)
+    if not normalized:
+        return None
+    parts = normalized.split(".")
+    numbers: list[int] = []
+    for part in parts:
+        match = re.match(r"^(\d+)", part)
+        if not match:
+            break
+        numbers.append(int(match.group(1)))
+    return tuple(numbers) if numbers else None
+
+
+def is_version_outdated(current: str, latest: str) -> bool:
+    current_tuple = version_tuple(current)
+    latest_tuple = version_tuple(latest)
+    if not current_tuple or not latest_tuple:
+        return False
+    width = max(len(current_tuple), len(latest_tuple))
+    current_padded = current_tuple + (0,) * (width - len(current_tuple))
+    latest_padded = latest_tuple + (0,) * (width - len(latest_tuple))
+    return current_padded < latest_padded
+
+
+def github_latest_version_info(repo: str = GITHUB_RELEASE_REPO) -> dict[str, str]:
+    headers = {"Accept": "application/vnd.github+json"}
+    release_url = f"https://api.github.com/repos/{repo}/releases/latest"
+    try:
+        text = external_fetch_text(
+            release_url,
+            headers=headers,
+            timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
+        )
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            tag = str(payload.get("tag_name", "") or payload.get("name", "")).strip()
+            if tag:
+                return {
+                    "version": normalize_version_text(tag),
+                    "tag": tag,
+                    "url": str(payload.get("html_url", "") or ""),
+                    "source": "release",
+                }
+    except HTTPError as exc:
+        if int(getattr(exc, "code", 0)) != 404:
+            raise
+
+    tags_url = f"https://api.github.com/repos/{repo}/tags?per_page=1"
+    tags_text = external_fetch_text(
+        tags_url,
+        headers=headers,
+        timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
+    )
+    tags_payload = json.loads(tags_text)
+    if isinstance(tags_payload, list) and tags_payload:
+        first = tags_payload[0]
+        if isinstance(first, dict):
+            tag = str(first.get("name", "")).strip()
+            if tag:
+                return {
+                    "version": normalize_version_text(tag),
+                    "tag": tag,
+                    "url": str(first.get("zipball_url", "") or ""),
+                    "source": "tag",
+                }
+    raise RuntimeError(f"No GitHub release/tag data found for {repo}.")
 
 
 def max_valid_until_date(reference: date | None = None) -> date:
@@ -4880,6 +4964,19 @@ class AvanzaTradingTui(App):
         margin-right: 1;
     }
 
+    #status-bar {
+        height: 1;
+        dock: bottom;
+        padding: 0 1;
+        background: $surface-darken-1;
+    }
+
+    #update-status {
+        width: 1fr;
+        content-align: right middle;
+        color: $text-muted;
+    }
+
     .ticket-resizer {
         width: 1;
         height: 1fr;
@@ -5040,6 +5137,8 @@ class AvanzaTradingTui(App):
         self.mcp_health_timer = None
         self.order_search_timer = None
         self.tv_lists_refresh_timer = None
+        self.update_check_timer = None
+        self.update_blink_timer = None
         self.login_progress_timer = None
         self.login_thread: threading.Thread | None = None
         self.login_busy = False
@@ -5082,6 +5181,15 @@ class AvanzaTradingTui(App):
         self.tv_lists_refresh_inflight = False
         self.tv_lists_refresh_pending_value: str | None = None
         self.tv_lists_refresh_lock = threading.Lock()
+        self.update_check_thread: threading.Thread | None = None
+        self.update_check_inflight = False
+        self.update_check_lock = threading.Lock()
+        self.update_status_repo = GITHUB_RELEASE_REPO
+        self.update_status_text = "Update: checking..."
+        self.update_status_latest = ""
+        self.update_status_outdated = False
+        self.update_status_error = ""
+        self.update_status_blink_on = True
         self.portfolio_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.paper_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.cancel_targets_by_row_key: dict[str, dict[str, str]] = {}
@@ -5334,6 +5442,8 @@ class AvanzaTradingTui(App):
                     yield Select([], prompt="Select TradingView list", allow_blank=True, id="tv-lists-select")
                     yield Button("Reload Lists", id="reload-tv-lists", variant="default")
                 yield DataTable(id="tv-lists-table")
+        with Horizontal(id="status-bar"):
+            yield Static("Update: checking...", id="update-status")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -5431,6 +5541,7 @@ class AvanzaTradingTui(App):
         self.write_mcp_log("MCP disabled. Log in, then enable MCP mode.")
         self.update_clock_status()
         self.start_clock()
+        self.start_update_checker()
         if self.mcp_health_timer is None:
             self.mcp_health_timer = self.set_interval(MCP_HEALTH_CHECK_SECONDS, self.ensure_mcp_bridge_health, pause=False)
         if self.tv_lists_refresh_timer is None:
@@ -6108,6 +6219,94 @@ class AvanzaTradingTui(App):
         if self.clock_timer is None:
             self.clock_timer = self.set_interval(1.0, self.update_clock_status, pause=False)
 
+    def render_update_status(self) -> None:
+        text = self.update_status_text
+        style = "dim"
+        if self.update_check_inflight:
+            style = "cyan"
+        elif self.update_status_error:
+            style = "red"
+        elif self.update_status_outdated:
+            style = "bold yellow" if self.update_status_blink_on else "yellow"
+        elif self.update_status_latest:
+            style = "green"
+        try:
+            self.query_one("#update-status", Static).update(Text(text, style=style))
+        except Exception:
+            pass
+
+    def start_update_checker(self) -> None:
+        if not update_check_enabled():
+            self.update_status_text = "Update: disabled"
+            self.render_update_status()
+            return
+        self.render_update_status()
+        if self.update_check_timer is None:
+            self.update_check_timer = self.set_interval(
+                UPDATE_CHECK_INTERVAL_SECONDS,
+                self.schedule_update_check,
+                pause=False,
+            )
+        if self.update_blink_timer is None:
+            self.update_blink_timer = self.set_interval(
+                UPDATE_BLINK_INTERVAL_SECONDS,
+                self.toggle_update_blink,
+                pause=False,
+            )
+        self.schedule_update_check()
+
+    def toggle_update_blink(self) -> None:
+        if not self.update_status_outdated:
+            return
+        self.update_status_blink_on = not self.update_status_blink_on
+        self.render_update_status()
+
+    def schedule_update_check(self) -> None:
+        with self.update_check_lock:
+            if self.update_check_inflight:
+                return
+            self.update_check_inflight = True
+        self.update_status_text = "Update: checking..."
+        self.render_update_status()
+        self.update_check_thread = threading.Thread(
+            target=self._update_check_worker,
+            daemon=True,
+            name="avanza-update-check",
+        )
+        self.update_check_thread.start()
+
+    def _update_check_worker(self) -> None:
+        info: dict[str, str] | None = None
+        error = ""
+        try:
+            info = github_latest_version_info(self.update_status_repo)
+        except Exception as exc:
+            error = str(exc)
+        self.call_from_thread(self.apply_update_check_result, info, error)
+
+    def apply_update_check_result(self, info: dict[str, str] | None, error: str) -> None:
+        self.update_status_error = error
+        self.update_status_blink_on = True
+        if error:
+            self.update_status_latest = ""
+            self.update_status_outdated = False
+            self.update_status_text = "Update: check failed"
+            self.render_update_status()
+            with self.update_check_lock:
+                self.update_check_inflight = False
+            return
+
+        latest = str((info or {}).get("version", "") or "")
+        self.update_status_latest = latest
+        self.update_status_outdated = is_version_outdated(APP_VERSION, latest)
+        if self.update_status_outdated and latest:
+            self.update_status_text = f"Update: v{latest} available"
+        else:
+            self.update_status_text = f"Update: latest ({APP_VERSION})"
+        self.render_update_status()
+        with self.update_check_lock:
+            self.update_check_inflight = False
+
     def mcp_status_payload(self) -> dict[str, Any]:
         return {
             "ok": True,
@@ -6119,6 +6318,8 @@ class AvanzaTradingTui(App):
             "accounts_loaded": len(self.accounts),
             "poll_interval_seconds": LIVE_REFRESH_SECONDS,
             "paper_session_file": str(self.paper_session_path),
+            "update_available": self.update_status_outdated,
+            "latest_version": self.update_status_latest or APP_VERSION,
         }
 
     def save_paper_state(self) -> None:
@@ -6566,6 +6767,12 @@ class AvanzaTradingTui(App):
         if self.mcp_health_timer is not None:
             self.mcp_health_timer.stop()
             self.mcp_health_timer = None
+        if self.update_check_timer is not None:
+            self.update_check_timer.stop()
+            self.update_check_timer = None
+        if self.update_blink_timer is not None:
+            self.update_blink_timer.stop()
+            self.update_blink_timer = None
         if self.tv_lists_refresh_timer is not None:
             self.tv_lists_refresh_timer.stop()
             self.tv_lists_refresh_timer = None

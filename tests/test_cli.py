@@ -47,6 +47,7 @@ def isolate_runtime_files(monkeypatch, tmp_path):
     monkeypatch.setattr("avanza_cli.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
     monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
+    monkeypatch.setenv("AVANZA_UPDATE_CHECK_ENABLED", "0")
 
 
 def test_parse_date_accepts_iso_date():
@@ -175,6 +176,41 @@ def test_runtime_version_matches_pyproject():
     assert APP_VERSION == str(data["project"]["version"])
 
 
+def test_version_outdated_comparison_helpers():
+    from avanza_cli import is_version_outdated, normalize_version_text, version_tuple
+
+    assert normalize_version_text("v1.2.3") == "1.2.3"
+    assert version_tuple("v0.1.2") == (0, 1, 2)
+    assert is_version_outdated("0.1.2", "0.1.3") is True
+    assert is_version_outdated("0.2.0", "0.1.9") is False
+    assert is_version_outdated("0.1.2", "v0.1.2") is False
+
+
+def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
+    from avanza_cli import github_latest_version_info
+    from urllib.error import HTTPError
+
+    def fake_fetch_text_release(url, **kwargs):
+        assert "releases/latest" in url
+        return json.dumps({"tag_name": "v0.1.9", "html_url": "https://example/release"})
+
+    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text_release)
+    release_info = github_latest_version_info("hamid-k/avanza-mcp")
+    assert release_info["version"] == "0.1.9"
+    assert release_info["source"] == "release"
+
+    def fake_fetch_text_tags(url, **kwargs):
+        if "releases/latest" in url:
+            raise HTTPError(url, 404, "not found", hdrs=None, fp=io.BytesIO(b""))
+        assert "tags" in url
+        return json.dumps([{"name": "v0.2.0", "zipball_url": "https://example/tag"}])
+
+    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text_tags)
+    tag_info = github_latest_version_info("hamid-k/avanza-mcp")
+    assert tag_info["version"] == "0.2.0"
+    assert tag_info["source"] == "tag"
+
+
 def test_cmd_tui_reload_reexecs_current_command(monkeypatch):
     import avanza_cli
 
@@ -300,6 +336,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#clock-status") is not None
             assert app.query_one("#button-controls") is not None
             assert app.query_one("#reload-tui") is not None
+            assert app.query_one("#update-status") is not None
             assert app.query_one("#toggle-controls") is not None
             assert app.query_one("#account-select") is not None
             assert app.query_one("#metric-total") is not None

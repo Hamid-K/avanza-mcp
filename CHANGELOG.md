@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 - 2026-05-04
+
+- Added TUI bottom-right update indicator with automatic GitHub release/tag checks against `Hamid-K/avanza-mcp`.
+- Added outdated-version warning state with blinking highlight in the status bar.
+- Added configurable update-check controls:
+  - `AVANZA_UPDATE_CHECK_ENABLED` (`1`/`0`)
+  - `AVANZA_UPDATE_CHECK_INTERVAL_SECONDS`
+  - `AVANZA_UPDATE_CHECK_TIMEOUT_SECONDS`
+  - `AVANZA_UPDATE_BLINK_INTERVAL_SECONDS`
+  - `AVANZA_GITHUB_REPO`
+- Added version comparison and GitHub update-check tests.
+
 ## 0.1.2 - 2026-05-04
 
 - Added runtime app version management from `pyproject.toml` and exposed it in:
