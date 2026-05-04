@@ -186,6 +186,14 @@ def test_version_outdated_comparison_helpers():
     assert is_version_outdated("0.1.2", "v0.1.2") is False
 
 
+def test_tradingview_watchlist_id_from_url():
+    from avanza_cli import tradingview_watchlist_id_from_input
+
+    assert tradingview_watchlist_id_from_input("https://www.tradingview.com/watchlists/57177174/") == "57177174"
+    assert tradingview_watchlist_id_from_input("57177174") == "57177174"
+    assert tradingview_watchlist_id_from_input("") == ""
+
+
 def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
     from avanza_cli import github_latest_version_info
     from urllib.error import HTTPError
@@ -1789,11 +1797,11 @@ def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool(
         "tv_auth_custom_lists",
-        {"list_id": "list-1", "limit": TRADINGVIEW_WATCHLIST_ROW_LIMIT + 25},
+        {"list_id": "https://www.tradingview.com/watchlists/57177174/", "limit": TRADINGVIEW_WATCHLIST_ROW_LIMIT + 25},
     )
 
     assert captured["function"] == "tradingview_custom_watchlists_from_profile"
-    assert captured["kwargs"]["list_id"] == "list-1"
+    assert captured["kwargs"]["list_id"] == "57177174"
     assert captured["kwargs"]["limit"] == TRADINGVIEW_WATCHLIST_ROW_LIMIT
     assert result["mode"] == "authenticated_scrape"
     assert result["experimental_scrape_mode"] is True

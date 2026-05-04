@@ -212,6 +212,7 @@ TRADINGVIEW_RECOMMENDATION_THRESHOLDS = (
     (1.0, "Strong Buy"),
 )
 TRADINGVIEW_WATCHLIST_SYMBOL_PATTERN = re.compile(r"/symbols/([A-Z0-9_.-]+)/")
+TRADINGVIEW_WATCHLIST_ID_PATTERN = re.compile(r"/watchlists/(\d+)", re.IGNORECASE)
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik}.json"
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -3144,6 +3145,16 @@ def tradingview_symbol_profile_html(symbol: str, cookie: str = "") -> str:
     return external_fetch_text(TRADINGVIEW_PROFILE_URL_TEMPLATE.format(symbol_slug=slug), headers=headers)
 
 
+def tradingview_watchlist_id_from_input(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = TRADINGVIEW_WATCHLIST_ID_PATTERN.search(text)
+    if match:
+        return str(match.group(1))
+    return text
+
+
 def tradingview_extract_symbol_candidates_from_html(html_text: str, max_symbols: int = 120) -> list[str]:
     seen: set[str] = set()
     symbols: list[str] = []
@@ -3286,7 +3297,7 @@ def tradingview_custom_watchlists_from_profile(
             "Run tv_auth_session_login_auto first."
         )
 
-    target_list_id = str(list_id or "").strip()
+    target_list_id = tradingview_watchlist_id_from_input(list_id)
     target_list_name = str(list_name or "").strip()
 
     extraction_script = """
@@ -3338,6 +3349,112 @@ def tradingview_custom_watchlists_from_profile(
   });
 
   return { list_entries: listEntries, active_list_name: activeListName, rows };
+}
+"""
+    rows_collection_script = """
+async (maxRows) => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const widget = document.querySelector('.widgetbar-widget-watchlist');
+  if (!widget) {
+    return { rows: [], active_list_name: '', scanned_rows: 0, scroll_steps: 0 };
+  }
+
+  const activeHeader = widget.querySelector('[class*="separator-"][class*="firstItem-"]');
+  const activeListName = activeHeader ? (activeHeader.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+
+  const rowSelector = '[data-symbol-full]';
+  const pick = (root, selector) => {
+    const element = root.querySelector(selector);
+    return element ? (element.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+  };
+
+  const serializeRow = (row) => {
+    const symbolShort = row.getAttribute('data-symbol-short') || pick(row, '[class*="symbolNameText"]');
+    const symbolFull = row.getAttribute('data-symbol-full') || '';
+    const marketStatusRaw = pick(row, '[class*="displayContents"]');
+    const marketStatus = marketStatusRaw
+      .replace(symbolShort, '')
+      .replace(/RMarket\\s*/i, 'Market ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    return {
+      symbol: symbolShort,
+      symbol_full: symbolFull,
+      last: pick(row, '[class*="last-"] [class*="inner-"]'),
+      change: pick(row, '[class*="change-"] [class*="inner-"]'),
+      change_percent: pick(row, '[class*="changeInPercents"] [class*="inner-"]'),
+      volume: pick(row, '[class*="volume-"] [class*="inner-"]'),
+      market_status: marketStatus,
+    };
+  };
+
+  const findScroller = () => {
+    const candidates = [widget, ...widget.querySelectorAll('*')];
+    let best = null;
+    let bestHeight = 0;
+    for (const element of candidates) {
+      const delta = element.scrollHeight - element.clientHeight;
+      if (delta > 12 && element.clientHeight > bestHeight) {
+        best = element;
+        bestHeight = element.clientHeight;
+      }
+    }
+    return best;
+  };
+
+  const scroller = findScroller();
+  const seen = new Map();
+  const readVisible = () => {
+    for (const row of widget.querySelectorAll(rowSelector)) {
+      const payload = serializeRow(row);
+      const key = payload.symbol_full || payload.symbol || `${payload.last}|${payload.volume}`;
+      if (!key) continue;
+      if (!seen.has(key)) {
+        seen.set(key, payload);
+      }
+      if (seen.size >= maxRows) break;
+    }
+  };
+
+  if (scroller) {
+    scroller.scrollTop = 0;
+    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await wait(140);
+  }
+  readVisible();
+
+  let steps = 0;
+  let stable = 0;
+  let lastCount = seen.size;
+  while (scroller && steps < 900 && seen.size < maxRows) {
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const currentTop = Math.max(0, scroller.scrollTop);
+    if (currentTop >= maxTop - 1) {
+      break;
+    }
+    const increment = Math.max(18, Math.floor(scroller.clientHeight * 0.7));
+    scroller.scrollTop = Math.min(maxTop, currentTop + increment);
+    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await wait(80);
+    readVisible();
+    steps += 1;
+    if (seen.size == lastCount) {
+      stable += 1;
+      if (stable >= 5) {
+        break;
+      }
+    } else {
+      stable = 0;
+      lastCount = seen.size;
+    }
+  }
+
+  return {
+    rows: [...seen.values()],
+    active_list_name: activeListName,
+    scanned_rows: seen.size,
+    scroll_steps: steps,
+  };
 }
 """
 
@@ -3419,10 +3536,14 @@ def tradingview_custom_watchlists_from_profile(
             if not isinstance(snapshot, dict):
                 snapshot = {}
 
-            rows = snapshot.get("rows", [])
+            limit_value = max(1, min(int(limit), TRADINGVIEW_WATCHLIST_ROW_LIMIT))
+            rows_snapshot = page.evaluate(rows_collection_script, limit_value)
+            if not isinstance(rows_snapshot, dict):
+                rows_snapshot = {}
+            rows = rows_snapshot.get("rows", [])
             rows = [row for row in rows if isinstance(row, dict)]
-            rows = rows[: max(1, min(int(limit), TRADINGVIEW_WATCHLIST_ROW_LIMIT))]
-            active_name = str(snapshot.get("active_list_name", "") or "")
+            rows = rows[:limit_value]
+            active_name = str(rows_snapshot.get("active_list_name", "") or snapshot.get("active_list_name", "") or "")
             list_entries = [entry for entry in list_entries if isinstance(entry, dict)]
             if selected_entry is None:
                 selected_entry = next((entry for entry in list_entries if str(entry.get("name", "")) == active_name), None)
@@ -3434,6 +3555,8 @@ def tradingview_custom_watchlists_from_profile(
                 "selected_list": selected_entry,
                 "lists": list_entries,
                 "items": rows,
+                "collected_rows": int(rows_snapshot.get("scanned_rows", len(rows))),
+                "scroll_steps": int(rows_snapshot.get("scroll_steps", 0)),
                 "source": "tradingview-auth-watchlists",
                 "unsafe_for_execution": False,
             }
@@ -6924,7 +7047,8 @@ class AvanzaTradingTui(App):
             return snapshot
 
         if tool == "tv_auth_custom_lists":
-            list_id = str(arguments.get("list_id", "") or "").strip() or None
+            list_id = tradingview_watchlist_id_from_input(arguments.get("list_id"))
+            list_id = list_id or None
             list_name = str(arguments.get("list_name", "") or "").strip() or None
             limit = int(arguments.get("limit", TRADINGVIEW_WATCHLIST_ROW_LIMIT))
             snapshot = run_blocking_in_thread(
