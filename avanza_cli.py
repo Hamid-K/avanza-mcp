@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import textwrap
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from avanza import Avanza
-from avanza.constants import Condition, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType, TransactionsDetailsType
+from avanza.constants import Condition, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType, TimePeriod, TransactionsDetailsType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
 from rich.panel import Panel
@@ -60,6 +60,15 @@ PRICE_TYPE_SELECT_OPTIONS = [("SEK", "monetary"), ("%", "percentage")]
 ORDER_TYPE_CHOICES = ["buy", "sell"]
 ORDER_CONDITION_CHOICES = ["normal", "fill-or-kill", "fill-and-kill"]
 TRANSACTION_TYPE_CHOICES = [item.value for item in TransactionsDetailsType]
+ACCOUNT_PERFORMANCE_PERIOD_CHOICES = [
+    "ONE_WEEK",
+    "ONE_MONTH",
+    "THREE_MONTHS",
+    "YEAR_TO_DATE",
+    "ONE_YEAR",
+    "THREE_YEARS",
+    "SINCE_START",
+]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 QUOTE_CACHE_SECONDS = 8.0
@@ -95,6 +104,23 @@ OVERVIEW_PERFORMANCE_KEYS = {
     "month": ("ONE_MONTH", "MONTH", "LAST_TRADING_MONTH"),
     "year": ("ONE_YEAR", "YEAR", "THIS_YEAR", "LAST_TRADING_YEAR"),
     "since_start": ("SINCE_START", "SEDAN_START", "ALL_TIME", "TOTAL", "INCEPTION"),
+}
+ACCOUNT_PERFORMANCE_PERIOD_MAP = {
+    "ONE_WEEK": TimePeriod.ONE_WEEK,
+    "ONE_MONTH": TimePeriod.ONE_MONTH,
+    "THREE_MONTHS": TimePeriod.THREE_MONTHS,
+    "YEAR_TO_DATE": TimePeriod.THIS_YEAR,
+    "ONE_YEAR": TimePeriod.ONE_YEAR,
+    "THREE_YEARS": TimePeriod.THREE_YEARS,
+    "SINCE_START": TimePeriod.ALL_TIME,
+    "YTD": TimePeriod.THIS_YEAR,
+    "THIS_YEAR": TimePeriod.THIS_YEAR,
+    "ALL_TIME": TimePeriod.ALL_TIME,
+    "TODAY": TimePeriod.TODAY,
+    "FIVE_YEARS": TimePeriod.FIVE_YEARS,
+    "THREE_YEARS_ROLLING": TimePeriod.THREE_YEARS_ROLLING,
+    "FIVE_YEARS_ROLLING": TimePeriod.FIVE_YEARS_ROLLING,
+    "SEDAN_START": TimePeriod.ALL_TIME,
 }
 REALTIME_KEYS = {
     "isRealTime",
@@ -2160,6 +2186,240 @@ def scalar_number(value: Any) -> float | None:
     return None
 
 
+def normalize_period_name(value: Any) -> str:
+    return str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+
+
+def map_account_performance_period(period: Any) -> tuple[str, TimePeriod]:
+    requested = normalize_period_name(period or "SINCE_START")
+    mapped = ACCOUNT_PERFORMANCE_PERIOD_MAP.get(requested)
+    if mapped is None:
+        choices = ", ".join(ACCOUNT_PERFORMANCE_PERIOD_CHOICES)
+        raise ValueError(f"Invalid period '{period}'. Choices: {choices}")
+    canonical = requested if requested in ACCOUNT_PERFORMANCE_PERIOD_CHOICES else next(
+        key for key, value in ACCOUNT_PERFORMANCE_PERIOD_MAP.items() if value == mapped and key in ACCOUNT_PERFORMANCE_PERIOD_CHOICES
+    )
+    return canonical, mapped
+
+
+def payload_to_dict(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if hasattr(payload, "model_dump"):
+        try:
+            dumped = payload.model_dump()
+        except Exception:
+            dumped = None
+        if isinstance(dumped, dict):
+            return dumped
+    if hasattr(payload, "dict"):
+        try:
+            dumped = payload.dict()
+        except Exception:
+            dumped = None
+        if isinstance(dumped, dict):
+            return dumped
+    return {}
+
+
+def payload_to_json_safe(payload: Any) -> Any:
+    if isinstance(payload, (dict, list, str, int, float, bool)) or payload is None:
+        return payload
+    if hasattr(payload, "model_dump"):
+        try:
+            return payload_to_json_safe(payload.model_dump())
+        except Exception:
+            pass
+    if hasattr(payload, "dict"):
+        try:
+            return payload_to_json_safe(payload.dict())
+        except Exception:
+            pass
+    return str(payload)
+
+
+def chart_date_text(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        try:
+            timestamp = float(value)
+            if timestamp > 10_000_000_000:
+                timestamp /= 1000.0
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
+        except Exception:
+            return str(value)
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "T" in text:
+        return text.split("T", 1)[0]
+    return text
+
+
+def chart_points_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    containers: list[Any] = []
+
+    for key in ("chart_points", "chartPoints", "chartData", "points", "data", "values"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            containers.append(value)
+        elif isinstance(value, dict):
+            nested = value.get("data")
+            if isinstance(nested, list):
+                containers.append(nested)
+
+    series = payload.get("series")
+    if isinstance(series, list):
+        for entry in series:
+            if isinstance(entry, dict):
+                nested = entry.get("data")
+                if isinstance(nested, list):
+                    containers.append(nested)
+
+    rows: list[dict[str, Any]] = []
+    for container in containers:
+        for point in container:
+            if isinstance(point, dict):
+                point_date = chart_date_text(
+                    point.get("date")
+                    or point.get("x")
+                    or point.get("timestamp")
+                    or point.get("time")
+                )
+                point_value = first_value_number(
+                    point,
+                    (
+                        ("value",),
+                        ("y",),
+                        ("close",),
+                        ("latest",),
+                        ("amount",),
+                        ("development", "absolute"),
+                    ),
+                )
+                point_abs = first_value_number(
+                    point,
+                    (
+                        ("development_absolute",),
+                        ("developmentAbsolute",),
+                        ("absolute",),
+                        ("development", "absolute"),
+                    ),
+                )
+                point_rel = first_value_number(
+                    point,
+                    (
+                        ("development_relative",),
+                        ("developmentRelative",),
+                        ("relative",),
+                        ("development", "relative"),
+                    ),
+                )
+                if point_value is None and point_abs is None and point_rel is None:
+                    continue
+                rows.append(
+                    {
+                        "date": point_date,
+                        "value": point_value,
+                        "development_absolute": point_abs,
+                        "development_relative": point_rel,
+                    }
+                )
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                point_date = chart_date_text(point[0])
+                point_value = scalar_number(point[1])
+                if point_value is None:
+                    continue
+                rows.append(
+                    {
+                        "date": point_date,
+                        "value": point_value,
+                        "development_absolute": None,
+                        "development_relative": None,
+                    }
+                )
+    return rows
+
+
+def account_performance_summary_from_payload(
+    payload: Any,
+    account_id: str,
+    requested_period: str,
+    raw_period: str,
+) -> dict[str, Any]:
+    payload_dict = payload_to_dict(payload)
+    chart_points = chart_points_from_payload(payload_dict)
+
+    absolute_value = first_value_number(
+        payload_dict,
+        (
+            ("development", "absolute"),
+            ("developmentAbsolute",),
+            ("absoluteDevelopment",),
+            ("performance", "absolute"),
+        ),
+    )
+    absolute_unit = first_unit_text(
+        payload_dict,
+        (
+            ("development", "absolute"),
+            ("developmentAbsolute",),
+            ("absoluteDevelopment",),
+            ("performance", "absolute"),
+        ),
+        "SEK",
+    )
+    relative_value = first_value_number(
+        payload_dict,
+        (
+            ("development", "relative"),
+            ("developmentRelative",),
+            ("relativeDevelopment",),
+            ("performance", "relative"),
+        ),
+    )
+    relative_unit = first_unit_text(
+        payload_dict,
+        (
+            ("development", "relative"),
+            ("developmentRelative",),
+            ("relativeDevelopment",),
+            ("performance", "relative"),
+        ),
+        "%",
+    )
+
+    if (absolute_value is None or relative_value is None) and len(chart_points) >= 2:
+        first = chart_points[0].get("value")
+        last = chart_points[-1].get("value")
+        if isinstance(first, (int, float)) and isinstance(last, (int, float)):
+            best_effort_abs = float(last) - float(first)
+            best_effort_rel = (best_effort_abs / float(first) * 100.0) if float(first) != 0 else None
+            if absolute_value is None:
+                absolute_value = best_effort_abs
+            if relative_value is None and best_effort_rel is not None:
+                relative_value = best_effort_rel
+
+    deposits_value = first_value_number(payload_dict, (("deposits",), ("deposit",), ("transactions", "deposits")))
+    deposits_unit = first_unit_text(payload_dict, (("deposits",), ("deposit",), ("transactions", "deposits")), "SEK")
+    withdrawals_value = first_value_number(payload_dict, (("withdrawals",), ("withdraw",), ("transactions", "withdrawals")))
+    withdrawals_unit = first_unit_text(payload_dict, (("withdrawals",), ("withdraw",), ("transactions", "withdrawals")), "SEK")
+    dividends_value = first_value_number(payload_dict, (("dividends",), ("dividend",), ("transactions", "dividends")))
+    dividends_unit = first_unit_text(payload_dict, (("dividends",), ("dividend",), ("transactions", "dividends")), "SEK")
+
+    return {
+        "account_id": account_id,
+        "period": requested_period,
+        "raw_period": raw_period,
+        "development_absolute": {"value": absolute_value, "unit": absolute_unit},
+        "development_relative": {"value": relative_value, "unit": relative_unit},
+        "chart_points": chart_points,
+        "deposits": {"value": deposits_value, "unit": deposits_unit} if deposits_value is not None else None,
+        "withdrawals": {"value": withdrawals_value, "unit": withdrawals_unit} if withdrawals_value is not None else None,
+        "dividends": {"value": dividends_value, "unit": dividends_unit} if dividends_value is not None else None,
+        "raw": payload_to_json_safe(payload),
+    }
+
+
 def first_numeric(payload: Any, paths: tuple[tuple[str, ...], ...]) -> float | None:
     for path in paths:
         current = payload
@@ -2363,6 +2623,18 @@ MCP_TOOLS = [
         "name": "avanza_accounts",
         "description": "List Avanza accounts currently visible to the authenticated TUI session.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "avanza_account_performance",
+        "description": "Read Avanza account performance/development for the selected or supplied account_id over a chosen period.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "period": {"type": "string", "enum": ACCOUNT_PERFORMANCE_PERIOD_CHOICES, "default": "SINCE_START"},
+            },
+            "additionalProperties": False,
+        },
     },
     {
         "name": "avanza_portfolio",
@@ -4514,6 +4786,42 @@ class AvanzaTradingTui(App):
             self.cancel_targets_by_row_key[row_key] = target
         restore_table_row_selection(table, selected_row_key)
 
+    def account_scrambled_id(self, account: dict[str, Any]) -> str:
+        return str(account.get("urlParameterId") or account.get("url_parameter_id") or account.get("id") or "")
+
+    def resolve_account_for_performance(
+        self,
+        avanza: Any,
+        requested_account_id: str,
+    ) -> tuple[str, str]:
+        account_id = requested_account_id or self.require_selected_account_id()
+        account = self.account_by_id(account_id)
+        if account is None:
+            overview = avanza.get_overview()
+            if isinstance(overview, dict):
+                for candidate in account_rows_from_overview(overview):
+                    candidate_id = str(candidate.get("id", ""))
+                    candidate_scrambled = self.account_scrambled_id(candidate)
+                    if candidate_id == account_id or candidate_scrambled == account_id:
+                        account = candidate
+                        account_id = candidate_id or account_id
+                        break
+        if account is None:
+            raise RuntimeError(f"Unknown account id for performance: {account_id}")
+        scrambled_account_id = self.account_scrambled_id(account) or account_id
+        return account_id, scrambled_account_id
+
+    def account_performance_snapshot(
+        self,
+        avanza: Any,
+        requested_account_id: str,
+        requested_period: Any,
+    ) -> dict[str, Any]:
+        period_label, period_enum = map_account_performance_period(requested_period)
+        account_id, scrambled_account_id = self.resolve_account_for_performance(avanza, requested_account_id)
+        payload = avanza.get_account_performance_chart_data([scrambled_account_id], period_enum)
+        return account_performance_summary_from_payload(payload, account_id, period_label, period_enum.value)
+
     def portfolio_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
@@ -4669,6 +4977,11 @@ class AvanzaTradingTui(App):
             overview = avanza.get_overview()
             accounts = account_rows_from_overview(overview) if isinstance(overview, dict) else []
             return rows_as_dicts(["ID", "Name", "Type", "Total Value", "Buying Power", "Status"], [account_row(account) for account in accounts])
+
+        if tool == "avanza_account_performance":
+            requested_period = arguments.get("period", "SINCE_START")
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            return self.account_performance_snapshot(avanza, requested_account_id, requested_period)
 
         if tool == "avanza_portfolio":
             return self.portfolio_snapshot(avanza, account_id)

@@ -13,7 +13,7 @@ from textual import events
 from textual.geometry import Size
 from textual.widgets import Button, DataTable, Input, Select
 
-from avanza.constants import OrderType, StopLossPriceType
+from avanza.constants import OrderType, StopLossPriceType, TimePeriod
 from rich.text import Text
 
 from avanza_cli import (
@@ -1152,6 +1152,7 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
 
     assert initialize["result"]["serverInfo"]["name"] == "avanza_cli"
     assert any(tool["name"] == "avanza_status" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_ongoing_orders" for tool in tools["result"]["tools"])
@@ -1192,6 +1193,85 @@ def test_tui_sorts_table_when_header_is_clicked():
             assert table.get_row_at(0)[0] == "Beta"
 
     asyncio.run(run_app())
+
+
+def test_mcp_account_performance_uses_selected_account_and_period_mapping():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.calls = []
+
+        def get_account_performance_chart_data(self, url_parameters_ids, time_period):
+            self.calls.append((url_parameters_ids, time_period))
+            return {
+                "development": {
+                    "absolute": {"value": 819745, "unit": "SEK"},
+                    "relative": {"value": 15.15, "unit": "%"},
+                },
+                "chartData": [
+                    {"date": "2026-01-01", "value": {"value": 1000, "unit": "SEK"}},
+                    {"date": "2026-01-02", "value": {"value": 1100, "unit": "SEK"}},
+                ],
+                "dividends": {"value": 3000, "unit": "SEK"},
+            }
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-2"
+    app.accounts = [
+        {
+            "id": "acc-2",
+            "urlParameterId": "scrambled-acc-2",
+            "name": {"defaultName": "ISK", "userDefinedName": "Trading"},
+            "type": "ISK",
+        }
+    ]
+
+    result = app.execute_mcp_tool("avanza_account_performance", {})
+    assert app.avanza.calls[0][0] == ["scrambled-acc-2"]
+    assert app.avanza.calls[0][1] == TimePeriod.ALL_TIME
+    assert result["account_id"] == "acc-2"
+    assert result["period"] == "SINCE_START"
+    assert result["raw_period"] == "ALL_TIME"
+    assert result["development_absolute"]["value"] == 819745
+    assert result["development_relative"]["value"] == 15.15
+    assert result["chart_points"][0]["date"] == "2026-01-01"
+    assert result["dividends"]["value"] == 3000
+
+
+def test_mcp_account_performance_allows_explicit_account_and_period():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.calls = []
+
+        def get_account_performance_chart_data(self, url_parameters_ids, time_period):
+            self.calls.append((url_parameters_ids, time_period))
+            return {"chartData": [[1711929600000, 1000], [1712016000000, 1100]]}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.accounts = [
+        {
+            "id": "acc-1",
+            "urlParameterId": "scrambled-acc-1",
+            "name": {"defaultName": "ISK", "userDefinedName": "Main"},
+            "type": "ISK",
+        }
+    ]
+
+    result = app.execute_mcp_tool(
+        "avanza_account_performance",
+        {"account_id": "acc-1", "period": "YEAR_TO_DATE"},
+    )
+    assert app.avanza.calls[0][0] == ["scrambled-acc-1"]
+    assert app.avanza.calls[0][1] == TimePeriod.THIS_YEAR
+    assert result["period"] == "YEAR_TO_DATE"
+    assert result["raw_period"] == "THIS_YEAR"
+    assert result["development_absolute"]["value"] == 100.0
 
 
 def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
