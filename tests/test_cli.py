@@ -9,6 +9,7 @@ import tomllib
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 
 import pytest
 from textual import events
@@ -2292,6 +2293,7 @@ def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monk
     snapshot = tradingview_symbol_snapshot("AAPL", exchange="NASDAQ", market="america")
 
     assert snapshot["symbol"] == "NASDAQ:AAPL"
+    assert snapshot["fallback_used"] is False
     assert snapshot["analytics"]["close"] == 280.14
     assert snapshot["technicals"]["overall_score"] == 0.60
     assert snapshot["technicals"]["overall_label"] == "Strong Buy"
@@ -2352,6 +2354,7 @@ def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
     snapshot = tradingview_symbol_full_snapshot("AAPL", exchange="NASDAQ", market="america")
 
     assert snapshot["symbol"] == "NASDAQ:AAPL"
+    assert snapshot["fallback_used"] is False
     assert snapshot["analytics"]["close"] == 280.14
     assert snapshot["technicals"]["overall_label"] == "Strong Buy"
     assert snapshot["profile"]["symbol_info"]["pro_symbol"] == "NASDAQ:AAPL"
@@ -2359,6 +2362,69 @@ def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
     assert "SMA100" in snapshot["unsupported_fields"]
     assert snapshot["source"] == "tradingview-scanner+profile-html"
     assert len(scanner_calls) >= 2
+
+
+def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monkeypatch):
+    from avanza_cli import tradingview_symbol_snapshot
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_fetch_json(url, **kwargs):
+        payload = kwargs.get("payload", {})
+        calls.append((url, payload))
+        ticker = payload.get("symbols", {}).get("tickers", [""])[0]
+        if "scanner.tradingview.com/america/scan" in url and ticker == "NASDAQ:ETHUSD":
+            raise HTTPError(url, 400, "Bad Request", hdrs=None, fp=io.BytesIO(b'{"error":"bad request"}'))
+        if "scanner.tradingview.com/crypto/scan" in url and ticker in {"CRYPTO:ETHUSD", "BITSTAMP:ETHUSD", "COINBASE:ETHUSD"}:
+            return {
+                "totalCount": 1,
+                "data": [
+                    {
+                        "s": ticker,
+                        "d": [
+                            "Ethereum / U.S. Dollar",
+                            "ETHUSD",
+                            "CRYPTO",
+                            "Crypto",
+                            "Layer 1",
+                            3123.45,
+                            1.1,
+                            34.0,
+                            123456.0,
+                            0.0,
+                            "USD",
+                            3200.0,
+                            3000.0,
+                            3050.0,
+                            3.0,
+                            7.0,
+                            10.0,
+                            22.0,
+                            30.0,
+                            70.0,
+                            0.55,
+                            0.40,
+                            0.10,
+                            60.0,
+                            1.0,
+                            1.0,
+                            60.0,
+                            50.0,
+                        ],
+                    }
+                ],
+            }
+        return {"totalCount": 0, "data": []}
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = tradingview_symbol_snapshot("ETHUSD", exchange="NASDAQ", market="america")
+
+    assert snapshot["fallback_used"] is True
+    assert snapshot["symbol"].endswith(":ETHUSD")
+    assert snapshot["market"] == "crypto"
+    assert snapshot["technicals"]["overall_label"] in {"Buy", "Strong Buy"}
+    assert any("america/scan" in url for url, _ in calls)
+    assert any("crypto/scan" in url for url, _ in calls)
 
 
 def test_tradingview_watchlist_entry_matches_target_variants():

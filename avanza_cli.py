@@ -207,6 +207,12 @@ EXTERNAL_HTTP_USER_AGENT = os.getenv(
 TRADINGVIEW_SCANNER_URL_TEMPLATE = "https://scanner.tradingview.com/{market}/scan"
 TRADINGVIEW_DEFAULT_MARKET = "america"
 TRADINGVIEW_DEFAULT_EXCHANGE = "NASDAQ"
+TRADINGVIEW_CRYPTO_MARKET = "crypto"
+TRADINGVIEW_FOREX_MARKET = "forex"
+TRADINGVIEW_CRYPTO_EXCHANGE_FALLBACKS = ("CRYPTO", "BINANCE", "COINBASE", "BITSTAMP", "KRAKEN", "BYBIT", "OKX")
+TRADINGVIEW_FOREX_EXCHANGE_FALLBACKS = ("FX_IDC", "OANDA", "FOREXCOM")
+TRADINGVIEW_FIAT_CODES = {"USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SEK", "NOK", "DKK"}
+TRADINGVIEW_CRYPTO_QUOTE_SUFFIXES = ("USDT", "USDC", "USD", "BTC", "ETH", "EUR", "TRY", "BUSD")
 TRADINGVIEW_PROFILE_URL_TEMPLATE = "https://www.tradingview.com/symbols/{symbol_slug}/"
 TRADINGVIEW_LOGIN_URL = "https://www.tradingview.com/accounts/signin/"
 TRADINGVIEW_HEATMAP_FIELDS = [
@@ -3884,6 +3890,86 @@ def normalize_tv_symbol(symbol: str, exchange: str = TRADINGVIEW_DEFAULT_EXCHANG
     return f"{exchange}:{text}"
 
 
+def tv_symbol_core(symbol: str) -> str:
+    text = str(symbol or "").strip().upper()
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    return re.sub(r"[\s/_-]+", "", text)
+
+
+def is_probable_forex_pair(symbol_core: str) -> bool:
+    if len(symbol_core) != 6 or not symbol_core.isalpha():
+        return False
+    base = symbol_core[:3]
+    quote = symbol_core[3:]
+    return base in TRADINGVIEW_FIAT_CODES and quote in TRADINGVIEW_FIAT_CODES
+
+
+def is_probable_crypto_pair(symbol_core: str) -> bool:
+    if not re.fullmatch(r"[A-Z0-9]{5,16}", symbol_core):
+        return False
+    if is_probable_forex_pair(symbol_core):
+        return False
+    return any(symbol_core.endswith(suffix) and len(symbol_core) > len(suffix) for suffix in TRADINGVIEW_CRYPTO_QUOTE_SUFFIXES)
+
+
+def tradingview_symbol_attempts(
+    symbol: str,
+    *,
+    exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+) -> list[tuple[str, str]]:
+    symbol_text = str(symbol or "").strip().upper()
+    exchange_text = str(exchange or TRADINGVIEW_DEFAULT_EXCHANGE).strip().upper()
+    market_text = str(market or TRADINGVIEW_DEFAULT_MARKET).strip().lower()
+    if not symbol_text:
+        raise ValueError("symbol is required.")
+
+    attempts: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def push(symbol_value: str, market_value: str) -> None:
+        key = (symbol_value.strip().upper(), market_value.strip().lower())
+        if not key[0] or not key[1] or key in seen:
+            return
+        seen.add(key)
+        attempts.append(key)
+
+    if ":" in symbol_text:
+        push(symbol_text, market_text)
+        return attempts
+
+    core = tv_symbol_core(symbol_text)
+    push(normalize_tv_symbol(core or symbol_text, exchange_text), market_text)
+
+    if is_probable_crypto_pair(core):
+        pairs = [core]
+        if core.endswith("USD"):
+            pairs.append(core[:-3] + "USDT")
+        if core.endswith("USDT"):
+            pairs.append(core[:-4] + "USD")
+        for pair in unique_strings(pairs):
+            for candidate_exchange in unique_strings([exchange_text, *TRADINGVIEW_CRYPTO_EXCHANGE_FALLBACKS]):
+                push(f"{candidate_exchange}:{pair}", TRADINGVIEW_CRYPTO_MARKET)
+
+    if is_probable_forex_pair(core):
+        for candidate_exchange in unique_strings([exchange_text, *TRADINGVIEW_FOREX_EXCHANGE_FALLBACKS]):
+            push(f"{candidate_exchange}:{core}", TRADINGVIEW_FOREX_MARKET)
+
+    return attempts
+
+
+def should_retry_tv_scan_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in {400, 404}
+    message = str(exc).lower()
+    if "http error 400" in message or "http error 404" in message:
+        return True
+    if "returned no rows" in message:
+        return True
+    return False
+
+
 def tv_row_to_dict(columns: list[str], row: dict[str, Any]) -> dict[str, Any]:
     values = row.get("d", [])
     mapped: dict[str, Any] = {}
@@ -4112,44 +4198,59 @@ def tradingview_symbol_full_snapshot(
     exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
     cookie: str = "",
 ) -> dict[str, Any]:
-    normalized_symbol = normalize_tv_symbol(symbol, exchange)
-    scan, unsupported_fields = tradingview_scan_with_field_fallback(
-        symbols=[normalized_symbol],
-        fields=TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS,
-        market=market,
-        cookie=cookie,
+    attempts = tradingview_symbol_attempts(symbol, exchange=exchange, market=market)
+    errors: list[str] = []
+    for attempt_index, (attempt_symbol, attempt_market) in enumerate(attempts):
+        try:
+            scan, unsupported_fields = tradingview_scan_with_field_fallback(
+                symbols=[attempt_symbol],
+                fields=TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS,
+                market=attempt_market,
+                cookie=cookie,
+            )
+            rows = scan.get("rows", [])
+            if not rows:
+                raise ValueError(f"TradingView returned no rows for {attempt_symbol}.")
+            analytics = rows[0]
+            technical_score = analytics.get("Recommend.All")
+            moving_average_score = analytics.get("Recommend.MA")
+            oscillator_score = analytics.get("Recommend.Other")
+            profile_html = tradingview_symbol_profile_html(attempt_symbol, cookie=cookie)
+            profile_metadata = tradingview_symbol_profile_metadata_from_html(attempt_symbol, profile_html)
+            symbol_candidates = tradingview_extract_symbol_candidates_from_html(profile_html, max_symbols=120)
+            return {
+                "symbol": attempt_symbol,
+                "market": attempt_market,
+                "requested_symbol": str(symbol or "").strip().upper(),
+                "requested_market": str(market or "").strip().lower(),
+                "requested_exchange": str(exchange or "").strip().upper(),
+                "fallback_used": attempt_index > 0,
+                "analytics": analytics,
+                "technicals": {
+                    "overall_score": technical_score,
+                    "overall_label": recommendation_label(technical_score),
+                    "moving_average_score": moving_average_score,
+                    "moving_average_label": recommendation_label(moving_average_score),
+                    "oscillator_score": oscillator_score,
+                    "oscillator_label": recommendation_label(oscillator_score),
+                },
+                "profile": profile_metadata,
+                "related_symbols": symbol_candidates,
+                "unsupported_fields": unsupported_fields,
+                "field_count": len(analytics),
+                "source": "tradingview-scanner+profile-html",
+                "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "unsafe_for_execution": False,
+            }
+        except Exception as exc:
+            errors.append(f"{attempt_symbol} @ {attempt_market}: {exc}")
+            if not should_retry_tv_scan_error(exc) or attempt_index >= len(attempts) - 1:
+                break
+    raise RuntimeError(
+        "TradingView analytics lookup failed after fallback attempts. "
+        f"requested={symbol!r}, market={market!r}, exchange={exchange!r}. "
+        f"errors={errors[:5]}"
     )
-    rows = scan.get("rows", [])
-    if not rows:
-        raise ValueError(f"TradingView returned no rows for {normalized_symbol}.")
-    analytics = rows[0]
-    technical_score = analytics.get("Recommend.All")
-    moving_average_score = analytics.get("Recommend.MA")
-    oscillator_score = analytics.get("Recommend.Other")
-    profile_html = tradingview_symbol_profile_html(normalized_symbol, cookie=cookie)
-    profile_metadata = tradingview_symbol_profile_metadata_from_html(normalized_symbol, profile_html)
-    symbol_candidates = tradingview_extract_symbol_candidates_from_html(profile_html, max_symbols=120)
-    return {
-        "symbol": normalized_symbol,
-        "market": market,
-        "exchange": str(analytics.get("exchange", exchange) or exchange),
-        "analytics": analytics,
-        "technicals": {
-            "overall_score": technical_score,
-            "overall_label": recommendation_label(technical_score),
-            "moving_average_score": moving_average_score,
-            "moving_average_label": recommendation_label(moving_average_score),
-            "oscillator_score": oscillator_score,
-            "oscillator_label": recommendation_label(oscillator_score),
-        },
-        "profile": profile_metadata,
-        "related_symbols": symbol_candidates,
-        "unsupported_fields": unsupported_fields,
-        "field_count": len(analytics),
-        "source": "tradingview-scanner+profile-html",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": False,
-    }
 
 
 def tradingview_symbol_snapshot(
@@ -4159,37 +4260,53 @@ def tradingview_symbol_snapshot(
     exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
     cookie: str = "",
 ) -> dict[str, Any]:
-    normalized_symbol = normalize_tv_symbol(symbol, exchange)
-    scan = tradingview_scan(
-        symbols=[normalized_symbol],
-        columns=TRADINGVIEW_ANALYTICS_FIELDS,
-        market=market,
-        limit=1,
-        cookie=cookie,
+    attempts = tradingview_symbol_attempts(symbol, exchange=exchange, market=market)
+    errors: list[str] = []
+    for attempt_index, (attempt_symbol, attempt_market) in enumerate(attempts):
+        try:
+            scan = tradingview_scan(
+                symbols=[attempt_symbol],
+                columns=TRADINGVIEW_ANALYTICS_FIELDS,
+                market=attempt_market,
+                limit=1,
+                cookie=cookie,
+            )
+            rows = scan["rows"]
+            if not rows:
+                raise ValueError(f"TradingView returned no rows for {attempt_symbol}.")
+            row = rows[0]
+            technical_score = row.get("Recommend.All")
+            moving_average_score = row.get("Recommend.MA")
+            oscillator_score = row.get("Recommend.Other")
+            return {
+                "symbol": attempt_symbol,
+                "market": attempt_market,
+                "requested_symbol": str(symbol or "").strip().upper(),
+                "requested_market": str(market or "").strip().lower(),
+                "requested_exchange": str(exchange or "").strip().upper(),
+                "fallback_used": attempt_index > 0,
+                "analytics": row,
+                "technicals": {
+                    "overall_score": technical_score,
+                    "overall_label": recommendation_label(technical_score),
+                    "moving_average_score": moving_average_score,
+                    "moving_average_label": recommendation_label(moving_average_score),
+                    "oscillator_score": oscillator_score,
+                    "oscillator_label": recommendation_label(oscillator_score),
+                },
+                "source": "tradingview-scanner",
+                "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "unsafe_for_execution": False,
+            }
+        except Exception as exc:
+            errors.append(f"{attempt_symbol} @ {attempt_market}: {exc}")
+            if not should_retry_tv_scan_error(exc) or attempt_index >= len(attempts) - 1:
+                break
+    raise RuntimeError(
+        "TradingView analytics lookup failed after fallback attempts. "
+        f"requested={symbol!r}, market={market!r}, exchange={exchange!r}. "
+        f"errors={errors[:5]}"
     )
-    rows = scan["rows"]
-    if not rows:
-        raise ValueError(f"TradingView returned no rows for {normalized_symbol}.")
-    row = rows[0]
-    technical_score = row.get("Recommend.All")
-    moving_average_score = row.get("Recommend.MA")
-    oscillator_score = row.get("Recommend.Other")
-    return {
-        "symbol": normalized_symbol,
-        "market": market,
-        "analytics": row,
-        "technicals": {
-            "overall_score": technical_score,
-            "overall_label": recommendation_label(technical_score),
-            "moving_average_score": moving_average_score,
-            "moving_average_label": recommendation_label(moving_average_score),
-            "oscillator_score": oscillator_score,
-            "oscillator_label": recommendation_label(oscillator_score),
-        },
-        "source": "tradingview-scanner",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": False,
-    }
 
 
 def tradingview_heatmap_snapshot(
