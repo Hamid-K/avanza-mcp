@@ -222,49 +222,64 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 
 | Tool | Purpose |
 |---|---|
-| `avanza_status` | MCP bridge status, safety mode, and selected account. |
-| `avanza_accounts` | List available Avanza accounts in the active TUI session. |
-| `avanza_account_performance` | Read Avanza account development/performance for selected or specified account across common periods (including since-start). |
-| `tv_scrape_symbol_analytics` | TradingView free scanner snapshot with technical buy/sell barometer and key performance metrics. |
-| `tv_scrape_symbol_full` | TradingView free rich symbol payload (extended scanner metrics + technical labels + profile metadata) in LLM-friendly JSON. |
-| `tv_auth_session_start` | Open TradingView login page in browser and show next-step session setup instructions. |
-| `tv_auth_session_set` | Save TradingView authenticated session cookie for reuse by `tv_auth_*` tools. |
-| `tv_auth_session_login_auto` | Open instrumented browser, log in normally, and auto-capture/save TradingView session cookie. |
-| `tv_auth_session_status` | Show status of saved TradingView auth session. |
-| `tv_auth_session_clear` | Clear saved TradingView auth session cookie. |
-| `tv_auth_symbol_analytics` | TradingView authenticated scanner snapshot (uses cookie/session for entitlement-aware mode). |
-| `tv_auth_symbol_full` | TradingView authenticated rich symbol payload (extended scanner metrics + technical labels + profile metadata + entitlement context). |
-| `tv_scrape_heatmap` | TradingView heatmap/top movers snapshot for the selected market. |
-| `tv_auth_watchlist` | TradingView authenticated watchlist monitor (best effort; scrapes profile/watchlist context + scanner metrics). |
-| `tv_auth_custom_lists` | TradingView authenticated custom tracking lists (inventory + rows; optional list switch by id/name/URL, deep-scrolled collection, up to configured row cap). |
-| `zacks_scrape_symbol` | Zacks symbol scrape for rank/quick analytics (best effort; can be bot-protected). |
-| `fmp_analyst_recommendations` | Financial Modeling Prep analyst recommendation history for a symbol (strong buy/buy/hold/sell/strong sell counts). |
-| `polygon_analyst_insights` | Polygon Benzinga analyst insights feed for a symbol (firm/rating/action/price target/insight text). |
-| `sec_filings_recent` | Recent SEC EDGAR filings by ticker or CIK. |
-| `fred_series` | FRED macro series observations (requires free FRED API key). |
-| `data_source_status` | Cross-source integration health/freshness/safety status (Avanza, TV, Zacks, SEC, FRED). |
-| `signal_context_bundle` | Unified cross-source bundle for one symbol (TV technicals + optional Zacks/SEC/FRED). |
-| `avanza_portfolio` | Portfolio positions for selected or specified account. |
-| `avanza_stoplosses` | Stop-loss orders for selected or specified account. |
-| `avanza_open_orders` | Live open/pending regular orders with stable fields/IDs for direct edit/cancel workflows. |
-| `avanza_open_orders_raw` | Debug variant of open orders: normalized rows plus raw Avanza payload for schema diagnostics. |
-| `avanza_ongoing_orders` | Ongoing orders view: live stop-losses + live open orders (+ optional paper active orders). |
-| `avanza_transactions` | Executed order/transaction history with account/date/type filters. |
-| `avanza_live_snapshot` | Full polling snapshot (positions, orders, stop-losses, paper state). |
-| `avanza_realtime_quotes` | Real-time quote snapshot for current holdings. |
-| `avanza_search_stock` | Search stocks/order books by name, ticker, or ISIN. |
-| `avanza_paper_stoploss_set` | Create paper stop-loss (no live Avanza mutation). |
-| `avanza_paper_order_set` | Create paper buy/sell order (no live Avanza mutation). |
-| `avanza_paper_orders` | List paper orders/events for selected or specified account. |
-| `avanza_paper_cancel` | Cancel a paper order (local only). |
-| `avanza_stoploss_set` | Dry-run or place stop-loss. |
-| `avanza_stoploss_edit` | Dry-run or edit/replace stop-loss (delete + place). |
-| `avanza_stoploss_delete` | Dry-run or delete stop-loss. |
-| `avanza_order_set` | Dry-run or place regular buy/sell order. |
-| `avanza_order_edit` | Dry-run or edit regular order. |
-| `avanza_order_delete` | Dry-run or delete regular order. |
-| `avanza_open_order_edit` | Dry-run or edit an existing open/pending regular order (alias of `avanza_order_edit`). |
-| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order (alias of `avanza_order_delete`). |
+| `avanza_status` | Show TUI MCP bridge status, selected account, and current safety mode. |
+| `avanza_capabilities` | Return consolidated MCP safety/capability status for automation loops (paper/live guards, account context, and tool availability). |
+| `avanza_live_session_authorize` | Explicitly enable live mutation permission for this active MCP or TUI session. |
+| `avanza_live_session_revoke` | Disable live mutation permission for this MCP or TUI session and force paper-only mode. |
+| `avanza_accounts` | List Avanza accounts currently visible to the authenticated TUI session. |
+| `avanza_select_account` | Safely switch MCP or TUI selected account context. |
+| `avanza_account_performance` | Read Avanza account performance/development for the selected or supplied account_id over a chosen period. |
+| `tv_scrape_symbol_analytics` | Fetch TradingView symbol analytics and technical recommendation barometers from public scanner data. |
+| `tv_scrape_symbol_full` | Fetch rich TradingView symbol payload (scanner analytics + technical labels + symbol profile metadata) in LLM-friendly JSON. |
+| `tv_auth_session_start` | Open TradingView login page in browser and show session setup instructions for authenticated MCP usage. |
+| `tv_auth_session_set` | Persist TradingView session cookie for authenticated tv_auth_* MCP tools. |
+| `tv_auth_session_login_auto` | Open instrumented browser, let user log in normally, and automatically capture/save TradingView session cookies. |
+| `tv_auth_session_status` | Show saved TradingView authenticated session status used by tv_auth_* tools. |
+| `tv_auth_session_clear` | Delete saved TradingView authenticated session cookie. |
+| `tv_auth_symbol_analytics` | Fetch TradingView symbol analytics in authenticated mode (inherits account entitlements from supplied TradingView cookie/session). |
+| `tv_auth_symbol_full` | Fetch rich TradingView symbol payload in authenticated mode (scanner analytics + technical labels + profile metadata + entitlement context). |
+| `tv_scrape_heatmap` | Fetch TradingView market heatmap rows (top movers) using free scanner data. |
+| `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
+| `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
+| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank and quick analytics (best effort; may be blocked without valid browser session/cookies). |
+| `fmp_analyst_recommendations` | Fetch analyst recommendation history for a symbol from Financial Modeling Prep (requires FMP API key). |
+| `polygon_analyst_insights` | Fetch analyst insights/ratings for a symbol from Polygon Benzinga feed (requires Polygon API key). |
+| `sec_filings_recent` | Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data). |
+| `fred_series` | Fetch FRED macro observations (requires a free FRED API key via FRED_API_KEY or api_key input). |
+| `data_source_status` | Return current health, freshness, and safety flags for Avanza, TradingView, Zacks, FMP, Polygon, SEC, and FRED source integrations. |
+| `signal_context_bundle` | Build a compact cross-source signal bundle (TradingView technicals + SEC filings + optional Zacks/FMP/Polygon + optional FRED macro). |
+| `avanza_portfolio` | List portfolio positions for the selected account, or a supplied account_id. |
+| `avanza_stoplosses` | List stop-loss orders for the selected account, or a supplied account_id. |
+| `avanza_open_orders` | List live open/pending regular orders for the selected account, or a supplied account_id, with stable IDs for edit/cancel flows. |
+| `avanza_open_orders_raw` | Debug tool: return normalized open orders plus raw Avanza order payload for schema diagnostics. |
+| `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
+| `avanza_transactions` | List executed orders/history (BUY/SELL by default) with optional account/date/type filters. |
+| `avanza_live_snapshot` | Read a decision-ready snapshot for polling loops: positions, live stop-losses/orders, paper orders, and safety mode. |
+| `avanza_realtime_quotes` | Fetch real-time quote snapshot for selected account holdings (best with a 5s polling loop). |
+| `avanza_orderbook_quotes` | Fetch arbitrary quote snapshots for supplied orderbook IDs (supports 5s polling loops for 20-50 symbols). |
+| `avanza_market_movers` | Fetch Avanza market movers (gainers/losers) with optional country/market/turnover filters. |
+| `avanza_index_constituents` | Fetch index constituents (default OMXS30) with optional quote/spread enrichment for building a liquid scalp universe. |
+| `avanza_fee_estimate` | Estimate courtage/FX costs and break-even move for a planned trade (conservative assumptions when exact class data is unavailable). |
+| `avanza_search_stock` | Search Avanza stock/order book data by name, ticker, or ISIN. |
+| `avanza_paper_stoploss_set` | Create a local paper stop-loss order. |
+| `avanza_paper_orders` | List local paper-trading orders and events for the selected account, or a supplied account_id. |
+| `avanza_paper_positions` | List paper positions for a selected account/session, with optional active-only filter. |
+| `avanza_paper_trades` | List completed paper trades (entry+exit ledger rows) for account/session. |
+| `avanza_paper_session_summary` | Return P/L summary for a paper trading session/account. |
+| `avanza_paper_order_set` | Create a local paper buy/sell order. |
+| `avanza_paper_order_exit` | Close an open paper position by position_id or orderbook_id and create a completed paper trade entry. |
+| `avanza_paper_risk_state` | Evaluate paper-session guardrails before allowing a new trade entry. |
+| `avanza_scalp_watchlist_set` | Store/update a named scalp watchlist (orderbook IDs + optional labels) in local paper session state. |
+| `avanza_scalp_watchlist_get` | Load a named scalp watchlist and optionally include current quotes for all members. |
+| `avanza_paper_cancel` | Cancel a local paper order. |
+| `avanza_stoploss_set` | Dry-run or place a stop-loss order. |
+| `avanza_order_set` | Dry-run or place a regular buy/sell order. |
+| `avanza_order_edit` | Dry-run or update an existing open order (price/volume/valid_until). |
+| `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order (alias of avanza_order_edit). |
+| `avanza_order_delete` | Dry-run or delete a regular open order. |
+| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order (alias of avanza_order_delete). |
+| `avanza_stoploss_delete` | Dry-run or delete a stop-loss order. |
+| `avanza_stoploss_edit` | Dry-run or edit an existing stop-loss (delete old + place new). |
 
 ### TradingView/Zacks scrape mode notes
 
