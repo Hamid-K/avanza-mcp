@@ -24,5 +24,7 @@ Read operations may run after login. Mutating operations must remain explicit:
 - live edits/deletions require explicit confirmation
 - MCP starts read-only; the TUI `R/W` switch must be enabled before live MCP mutations are accepted
 - live MCP mutations also require `confirm: true` in the tool arguments
+- stop-losses are trigger-based controls, not guaranteed fills through after-hours, pre-market, halted, or fast-gap markets
+- catalyst gap risk must be handled through explicit sizing, trim, sell, hedge, or hold-and-accept decisions before relying on stop-loss rows
 
 Future order placement features should follow the same pattern.

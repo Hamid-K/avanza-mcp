@@ -1,0 +1,2 @@
+[   26661ms] [ERROR] Access to fetch at 'http://127.0.0.1:64971/status' from origin 'null' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ about:blank:0
+[   26662ms] [ERROR] Failed to load resource: net::ERR_FAILED @ http://127.0.0.1:64971/status:0

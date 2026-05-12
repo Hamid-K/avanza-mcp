@@ -1,0 +1,298 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - button "Hoppa till huvudinnehållet" [ref=e4] [cursor=pointer]:
+      - generic: Hoppa till huvudinnehållet
+    - generic [ref=e5]:
+      - banner [ref=e6]:
+        - generic [ref=e8]:
+          - list [ref=e10]:
+            - listitem [ref=e11]:
+              - img "Sverige" [ref=e13]
+              - link "OMXS30 :" [ref=e14] [cursor=pointer]:
+                - /url: /index/om-indexet.html/19002/omx-stockholm-30
+              - generic [ref=e16]: 0,83%
+              - generic [ref=e17]: 15:56
+              - text: (
+              - generic [ref=e18]: 6,17%
+              - text: i år)
+            - listitem [ref=e19]:
+              - img "USA" [ref=e21]
+              - link "DJUS :" [ref=e22] [cursor=pointer]:
+                - /url: /index/om-indexet.html/155458/dow-jones-u-s--index
+              - generic [ref=e24]: 0,63%
+              - generic [ref=e25]: 15:56
+              - text: (
+              - generic [ref=e26]: 5,91%
+              - text: i år)
+            - listitem [ref=e27]:
+              - link "Börsen idag" [ref=e28] [cursor=pointer]:
+                - /url: /borsen-idag.html
+                - generic [ref=e29]: Börsen idag
+          - generic [ref=e30]:
+            - link "Bli kund" [ref=e31] [cursor=pointer]:
+              - /url: /bli-kund.html
+              - generic [ref=e32]: Bli kund
+            - button "Logga in" [ref=e33] [cursor=pointer]:
+              - generic: Logga in
+        - navigation "Huvudmeny" [ref=e35]:
+          - link "Välkommen till Avanza" [ref=e37] [cursor=pointer]:
+            - /url: /start
+            - img [ref=e38]
+          - list [ref=e42]:
+            - listitem [ref=e43]:
+              - button "Spara & Investera" [ref=e45] [cursor=pointer]:
+                - generic: Spara & Investera
+            - listitem [ref=e46]:
+              - button "Bolån" [ref=e48] [cursor=pointer]:
+                - generic: Bolån
+            - listitem [ref=e49]:
+              - button "Pension" [ref=e51] [cursor=pointer]:
+                - generic: Pension
+            - listitem [ref=e52]:
+              - link "Nyheter - Extern länk - Öppnas i nytt fönster" [ref=e54] [cursor=pointer]:
+                - /url: https://www.placera.se/placera/forstasidan.html
+                - generic [ref=e55]: Nyheter
+            - listitem [ref=e56]:
+              - button "Lär dig mer" [ref=e58] [cursor=pointer]:
+                - generic: Lär dig mer
+            - listitem [ref=e59]:
+              - link "Kundservice" [ref=e61] [cursor=pointer]:
+                - /url: /kundservice.html
+                - generic [ref=e62]: Kundservice
+          - search "Öppna sök" [ref=e64]:
+            - button "Sök" [ref=e65] [cursor=pointer]:
+              - generic: Sök
+              - generic:
+                - img
+      - generic [ref=e66]:
+        - main [ref=e67]:
+          - generic [ref=e73]:
+            - generic [ref=e74]:
+              - heading "Investeringar innebär en risk" [level=2] [ref=e75]:
+                - button "Investeringar innebär en risk" [expanded] [ref=e76] [cursor=pointer]:
+                  - text: Investeringar innebär en risk
+                  - generic:
+                    - img
+              - paragraph [ref=e79]: Att spara i aktier och fonder har över tid varit ett bra sätt att få pengar att växa, men hur det går i framtiden vet ju ingen. Det kan gå både upp och ner så det är inte säkert att du får tillbaka pengarna du satte in.
+            - generic [ref=e80]:
+              - generic [ref=e81]:
+                - heading "Handla aktier i USA och Kanada" [level=1] [ref=e82]
+                - generic [ref=e83]: Genom att köpa amerikanska eller kanadensiska aktier kan du bli delägare i några av världens största bolag.
+              - generic [ref=e85]:
+                - generic [ref=e89]:
+                  - img "Handla världens största varumärken" [ref=e90]
+                  - heading "Handla världens största varumärken" [level=4] [ref=e91]
+                - generic [ref=e95]:
+                  - img "Courtage från 1 USD eller 1 CAD" [ref=e96]
+                  - heading "Courtage från 1 USD eller 1 CAD" [level=4] [ref=e97]
+                - generic [ref=e101]:
+                  - img "Handla direkt på sajten och i appen" [ref=e102]
+                  - heading "Handla direkt på sajten och i appen" [level=4] [ref=e103]
+              - generic [ref=e105]:
+                - link "Handla amerikanska aktier" [ref=e107] [cursor=pointer]:
+                  - /url: /aktier/hitta.html?mp=us
+                  - generic [ref=e108]: Handla amerikanska aktier
+                - link "Handla kanadensiska aktier" [ref=e110] [cursor=pointer]:
+                  - /url: /aktier/hitta.html?mp=ca
+                  - generic [ref=e111]: Handla kanadensiska aktier
+              - paragraph [ref=e115]:
+                - link "Bli kund gratis på 3 min med BankID" [ref=e117] [cursor=pointer]:
+                  - /url: /bli-kund.html
+              - generic [ref=e120]:
+                - generic [ref=e121]:
+                  - img "Courtage" [ref=e122]
+                  - heading "Courtage" [level=2] [ref=e123]
+                - generic [ref=e124]:
+                  - paragraph [ref=e125]: Hos oss handlar du världens största amerikanska varumärken från bara 1 USD och kanadensiska från 1 CAD.
+                  - paragraph [ref=e126]:
+                    - link "Se vilket pris du betalar i prislistan" [ref=e128] [cursor=pointer]:
+                      - /url: /konton-lan-prislista/prislista/handel-utland.html
+                - generic [ref=e130]:
+                  - link "Handla amerikanska aktier här" [ref=e132] [cursor=pointer]:
+                    - /url: /aktier/hitta.html?mp=us
+                    - generic [ref=e133]: Handla amerikanska aktier här
+                  - link "Handla kanadensiska aktier här" [ref=e135] [cursor=pointer]:
+                    - /url: /aktier/hitta.html?mp=ca
+                    - generic [ref=e136]: Handla kanadensiska aktier här
+              - generic [ref=e139]:
+                - generic [ref=e140]:
+                  - img "Handelsavtal" [ref=e141]
+                  - heading "Avtal för utlandshandel" [level=2] [ref=e142]
+                - paragraph [ref=e144]: Innan du börjar handla amerikanska och kanadensiska värdepapper behöver du läsa igenom och godkänna några avtal. Anledningen till detta är att de amerikanska och kanadensiska myndigheterna kräver att du har ett sådant avtal för att kunna handla på dessa marknader.
+                - link "Signera avtal" [ref=e146] [cursor=pointer]:
+                  - /url: /min-profil/installningar/avtal.html
+                  - generic [ref=e147]: Signera avtal
+              - generic [ref=e150]:
+                - generic [ref=e151]:
+                  - img "Aktieinspiration" [ref=e152]
+                  - heading "Aktieinspiration" [level=2] [ref=e153]
+                - generic [ref=e154]:
+                  - paragraph [ref=e155]:
+                    - text: Låt dig inspireras och hitta nya spännande bolag
+                    - generic:
+                      - strong
+                    - text: Har du alltid drömt om att äga en Ferrari? Många av världens allra största och mest kända varumärken är börsnoterade i USA och det finns många även i Kanada.
+                  - paragraph [ref=e156]: Under Aktieinspiration har vi samlat mängder av intressanta aktier men sorterat dem på ett annorlunda sätt än vad du kanske är van vid. Vissa listor är baserade på popularitet bland våra kunder, andra är baserade på olika teman eller vad intressanta personer har i sin portfölj.
+                - link "Till aktieinspiration" [ref=e158] [cursor=pointer]:
+                  - /url: /aktier/temalistor.html
+                  - generic [ref=e159]: Till aktieinspiration
+              - generic [ref=e162]:
+                - heading "De vanligaste frågorna om handel med amerikanska och kanadensiska aktier" [level=2] [ref=e164]
+                - list [ref=e166]:
+                  - listitem [ref=e167]:
+                    - heading "På vilka konton kan jag handla med amerikanska och kanadensiska aktier?" [level=3] [ref=e168]:
+                      - button "På vilka konton kan jag handla med amerikanska och kanadensiska aktier?" [ref=e169] [cursor=pointer]:
+                        - generic: På vilka konton kan jag handla med amerikanska och kanadensiska aktier?
+                        - generic:
+                          - img
+                  - listitem [ref=e170]:
+                    - heading "Hur lägger jag en order?" [level=3] [ref=e171]:
+                      - button "Hur lägger jag en order?" [ref=e172] [cursor=pointer]:
+                        - generic: Hur lägger jag en order?
+                        - generic:
+                          - img
+                  - listitem [ref=e173]:
+                    - heading "När har börserna i USA och Kanada öppet?" [level=3] [ref=e174]:
+                      - button "När har börserna i USA och Kanada öppet?" [ref=e175] [cursor=pointer]:
+                        - generic: När har börserna i USA och Kanada öppet?
+                        - generic:
+                          - img
+                  - listitem [ref=e176]:
+                    - heading "Aktierna handlas i USD respektive CAD, hur går växlingen till?" [level=3] [ref=e177]:
+                      - button "Aktierna handlas i USD respektive CAD, hur går växlingen till?" [ref=e178] [cursor=pointer]:
+                        - generic: Aktierna handlas i USD respektive CAD, hur går växlingen till?
+                        - generic:
+                          - img
+                  - listitem [ref=e179]:
+                    - heading "Jag vill växla själv, går det?" [level=3] [ref=e180]:
+                      - button "Jag vill växla själv, går det?" [ref=e181] [cursor=pointer]:
+                        - generic: Jag vill växla själv, går det?
+                        - generic:
+                          - img
+                  - listitem [ref=e182]:
+                    - heading "Hur ser jag kurserna i realtid?" [level=3] [ref=e183]:
+                      - button "Hur ser jag kurserna i realtid?" [ref=e184] [cursor=pointer]:
+                        - generic: Hur ser jag kurserna i realtid?
+                        - generic:
+                          - img
+                  - listitem [ref=e185]:
+                    - heading "Har jag rätt till utdelning från mina amerikanska och kanadensiska aktier?" [level=3] [ref=e186]:
+                      - button "Har jag rätt till utdelning från mina amerikanska och kanadensiska aktier?" [ref=e187] [cursor=pointer]:
+                        - generic: Har jag rätt till utdelning från mina amerikanska och kanadensiska aktier?
+                        - generic:
+                          - img
+                  - listitem [ref=e188]:
+                    - heading "Hur beskattas handel med amerikanska och kanadensiska aktier?" [level=3] [ref=e189]:
+                      - button "Hur beskattas handel med amerikanska och kanadensiska aktier?" [ref=e190] [cursor=pointer]:
+                        - generic: Hur beskattas handel med amerikanska och kanadensiska aktier?
+                        - generic:
+                          - img
+                - paragraph [ref=e192]: HANDEL MED VÄRDEPAPPER & FONDER INNEBÄR ALLTID EN RISK. Historisk avkastning är ingen garanti för framtida avkastning. En investering i värdepapper/fonder kan både öka och minska i värde och det är inte säkert att du får tillbaka det investerade kapitalet. Värdepapper som är noterade i annan valuta än SEK påverkas även av valutakurs och kan därför påverka avkastningen positivt och negativt.
+              - generic [ref=e197]:
+                - img "Bilden visar en studenthatt" [ref=e199]
+                - generic [ref=e200]:
+                  - heading "Avanza Akademin - Lär dig allt om aktier" [level=2] [ref=e201]:
+                    - text: Avanza Akademin
+                    - emphasis [ref=e203]: "- Lär dig allt om aktier"
+                  - list [ref=e205]:
+                    - listitem [ref=e206]:
+                      - paragraph [ref=e207]:
+                        - link "Lär dig allt om aktier" [ref=e209] [cursor=pointer]:
+                          - /url: /lar-dig-mer/avanza-akademin.html
+                    - listitem [ref=e210]:
+                      - paragraph [ref=e211]:
+                        - link "Vilken risk passar mig och mitt sparande?" [ref=e213] [cursor=pointer]:
+                          - /url: /lar-dig-mer/avanza-akademin/sparstrategi/vilken-risk-passar-mig-och-mitt-sparande.html
+                    - listitem [ref=e214]:
+                      - paragraph [ref=e215]:
+                        - link "Hur fungerar utländsk källskatt på en kapitalförsäkring?" [ref=e217] [cursor=pointer]:
+                          - /url: /lar-dig-mer/avanza-akademin/skatt-deklaration/hur-beskattas-en-kapitalforsakring.html#hur-gor-man-avrakning-for-utlandsk-kallskatt-pa-kapitalforsakring
+                    - listitem [ref=e218]:
+                      - paragraph [ref=e219]:
+                        - link "Hur beskattas ett ISK?" [ref=e221] [cursor=pointer]:
+                          - /url: /lar-dig-mer/avanza-akademin/skatt-deklaration/hur-beskattas-ett-isk.html
+                  - paragraph
+        - contentinfo [ref=e224]:
+          - heading "Sidfot" [level=2] [ref=e225]
+          - generic [ref=e226]:
+            - generic [ref=e227]:
+              - heading "Vill du ha hjälp?" [level=3] [ref=e228]
+              - list [ref=e229]:
+                - listitem [ref=e230]:
+                  - link "Frågor & Svar" [ref=e231] [cursor=pointer]:
+                    - /url: /kundservice.html
+                - listitem [ref=e232]:
+                  - link "Kontakta oss" [ref=e233] [cursor=pointer]:
+                    - /url: /kundservice/kontakta-oss-nu.html
+            - generic [ref=e234]:
+              - heading "Blogg & podd" [level=3] [ref=e235]
+              - list [ref=e236]:
+                - listitem [ref=e237]:
+                  - link "Avanzabloggen" [ref=e238] [cursor=pointer]:
+                    - /url: https://blogg.avanza.se/
+                - listitem [ref=e239]:
+                  - link "Avanzapodden" [ref=e240] [cursor=pointer]:
+                    - /url: /lar-dig-mer/avanzapodden.html
+                - listitem [ref=e241]:
+                  - link "Youtube" [ref=e242] [cursor=pointer]:
+                    - /url: https://www.youtube.com/user/Avanzabank
+                - listitem [ref=e243]:
+                  - link "Inga dumma frågor om pengar" [ref=e244] [cursor=pointer]:
+                    - /url: /lar-dig-mer/inga-dumma-fragor-om-pengar.html
+            - generic [ref=e245]:
+              - heading "Sociala medier" [level=3] [ref=e246]
+              - list [ref=e247]:
+                - listitem [ref=e248]:
+                  - link "Instagram" [ref=e249] [cursor=pointer]:
+                    - /url: https://www.instagram.com/avanzabank/
+                - listitem [ref=e250]:
+                  - link "TikTok" [ref=e251] [cursor=pointer]:
+                    - /url: https://www.tiktok.com/@avanzabank
+                - listitem [ref=e252]:
+                  - link "Facebook" [ref=e253] [cursor=pointer]:
+                    - /url: https://www.facebook.com/profile.php?id=100064870262383
+                - listitem [ref=e254]:
+                  - link "X" [ref=e255] [cursor=pointer]:
+                    - /url: https://twitter.com/AvanzaBank/
+                - listitem [ref=e256]:
+                  - link "Linkedin" [ref=e257] [cursor=pointer]:
+                    - /url: https://se.linkedin.com/company/avanza-bank
+            - generic [ref=e258]:
+              - heading "Avanza" [level=3] [ref=e259]
+              - list [ref=e260]:
+                - listitem [ref=e261]:
+                  - link "Om Avanza" [ref=e262] [cursor=pointer]:
+                    - /url: https://investors.avanza.se/om/om-avanza/
+                - listitem [ref=e263]:
+                  - link "Investor Relations" [ref=e264] [cursor=pointer]:
+                    - /url: https://investors.avanza.se/sv/ir
+                - listitem [ref=e265]:
+                  - link "Karriär" [ref=e266] [cursor=pointer]:
+                    - /url: https://career.avanza.se/
+            - generic [ref=e267]:
+              - heading "För företag" [level=3] [ref=e268]
+              - list [ref=e269]:
+                - listitem [ref=e270]:
+                  - link "Företagswebben" [ref=e271] [cursor=pointer]:
+                    - /url: https://foretagswebb.avanza.se
+          - heading "Juridisk information" [level=3] [ref=e273]
+          - list [ref=e274]:
+            - listitem [ref=e275]:
+              - link "Användarvillkor" [ref=e276] [cursor=pointer]:
+                - /url: /sakerhet-villkor/anvandarvillkor.html
+            - listitem [ref=e277]:
+              - link "Säkerhet" [ref=e278] [cursor=pointer]:
+                - /url: /sakerhet-villkor/sakerhet.html
+            - listitem [ref=e279]:
+              - link "Reklamationer & Klagomål" [ref=e280] [cursor=pointer]:
+                - /url: /kundservice.html/1193/hur-framfor-jag-ett-klagomal/?categoryId=1587
+            - listitem [ref=e281]:
+              - link "Cookies" [ref=e282] [cursor=pointer]:
+                - /url: /sakerhet-villkor/cookies.html
+            - listitem [ref=e283]:
+              - link "Tillgänglighet på Avanza" [ref=e284] [cursor=pointer]:
+                - /url: /kundservice/tillganglighet-pa-avanza.html
+            - listitem [ref=e285]:
+              - link "Behandling av personuppgifter" [ref=e286] [cursor=pointer]:
+                - /url: /sakerhet-villkor/behandling-av-personuppgifter.html
+  - img [ref=e289]

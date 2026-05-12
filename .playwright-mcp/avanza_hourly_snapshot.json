@@ -1,0 +1,1345 @@
+{
+  "status": {
+    "ok": true,
+    "enabled": true,
+    "read_write": false,
+    "paper_trading": true,
+    "selected_account_id": "5227886",
+    "accounts_loaded": 2,
+    "poll_interval_seconds": 5,
+    "paper_session_file": "/Users/hamid/Documents/Projects/Avanza/.avanza_paper_session.json"
+  },
+  "accounts": {
+    "ok": true,
+    "tool": "avanza_accounts",
+    "read_write": false,
+    "result": [
+      {
+        "ID": "5227851",
+        "Name": "5227851",
+        "Type": "AKTIEFONDKONTO",
+        "Total Value": "0.0 SEK",
+        "Buying Power": "0.0 SEK",
+        "Status": "ACTIVE"
+      },
+      {
+        "ID": "5227886",
+        "Name": "5227886",
+        "Type": "INVESTERINGSSPARKONTO",
+        "Total Value": "1174759.1964 SEK",
+        "Buying Power": "19157.88 SEK",
+        "Status": "ACTIVE"
+      }
+    ]
+  },
+  "snapshot": {
+    "ok": true,
+    "tool": "avanza_live_snapshot",
+    "read_write": false,
+    "result": {
+      "timestamp": "2026-05-04T03:11:27",
+      "account_id": "7616265",
+      "read_write": false,
+      "paper_trading": true,
+      "poll_interval_seconds": 5,
+      "portfolio": {
+        "account_id": "7616265",
+        "positions": []
+      },
+      "stoplosses": {
+        "account_id": "7616265",
+        "stoplosses": []
+      },
+      "open_orders": {
+        "account_id": "7616265",
+        "orders": []
+      },
+      "realtime_quotes": [],
+      "paper_orders": [
+        {
+          "id": "paper-order-20260429212237270430",
+          "kind": "Order",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T21:22:37",
+          "updated_at": "2026-04-29T21:48:42",
+          "instrument": "Apple",
+          "request": {
+            "account_id": "7616265",
+            "order_book_id": "3323",
+            "order_type": "BUY",
+            "price": 2000,
+            "valid_until": "2026-07-28",
+            "volume": 1,
+            "condition": "NORMAL"
+          }
+        },
+        {
+          "id": "paper-order-20260429215001166786",
+          "kind": "Order",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T21:50:01",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "BlackRock",
+          "request": {
+            "account_id": "7616265",
+            "order_book_id": "181312",
+            "order_type": "BUY",
+            "price": 1,
+            "valid_until": "2026-05-28",
+            "volume": 1,
+            "condition": "NORMAL"
+          }
+        },
+        {
+          "id": "paper-20260429231157047701",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Bloom Energy A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "869554",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 26,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 14,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157055490",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Intel",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "3658",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 24,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 99,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157081089",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "DigitalOcean",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1206485",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 27,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 25,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157088688",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Advanced Micro Devices",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "529720",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 27,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 19,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157095901",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Seagate Technology",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "150628",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 22,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 7,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157103931",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "GE Vernova",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1744076",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 6,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157109562",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Western Digital",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "353285",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 21,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 18,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157136083",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Vertiv Holdings A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1042976",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 14,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157142627",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Alphabet Inc Class C",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "4457",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 62,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157149620",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "NVIDIA",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "4478",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 16,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 55,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157156293",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:29",
+          "instrument": "Taiwan Semicond Mfg Co",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "34911",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 81,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157187862",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Gilat Satellite Networks",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "179475",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 84,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157194788",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Broadcom",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "369636",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 16,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157203170",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Morgan Stanley",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "3468",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 12,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 22,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157209543",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "CoinShares XBT Provider Ether Tracker One",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "791709",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 24,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 2877,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157245572",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Cloudflare",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "996637",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 27,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 24,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157257370",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Noble A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "3402",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 49,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157265398",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Astera Labs",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1738607",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 27,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 97,
+              "volume": 9,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157273161",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "CrowdStrike A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "964496",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 13,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157310764",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "F5",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "4069",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 11,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157324453",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Texas Instruments",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "330696",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 19,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157475151",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Fastly A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "956885",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 227,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157488525",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Cadence Design Systems",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "194785",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 9,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157531682",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Exxon Mobil",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "4013",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 19,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157542088",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Meta Platforms A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "350795",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 12,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 4,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157554574",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Apple",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "3323",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 41,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157604002",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Newmont",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "3968",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 24,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157615124",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Palo Alto Networks",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "365155",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 16,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 17,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157625398",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Garmin",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "4140",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 6,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157677843",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Airbus SE",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "745811",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 17,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157688696",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Zoom Communications A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "952518",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 16,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 52,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157743396",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Akamai Technologies",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "3535",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 49,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157761095",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Palantir Technologies",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1138439",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 92,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157823619",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Reddit",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1739445",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 20,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 19,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157838979",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Okta A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "741275",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 16,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 27,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157894520",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Shopify",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "564535",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 21,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 23,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157906997",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Workday A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "378104",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 16,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 24,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157967376",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Tesla",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "238449",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 19,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157978707",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Carnival",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "194652",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 15,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 17,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231157990523",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:57",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "BlackRock",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "181312",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 12,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 99,
+              "volume": 4,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231158052611",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:58",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Coinbase Global, Inc. - Class A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1211627",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 20,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 21,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231158065170",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:58",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "POET Technologies",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "1581461",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 30,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 95,
+              "volume": 393,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231158077720",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:58",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Wayfair A",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "508521",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 20,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 35,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        },
+        {
+          "id": "paper-20260429231158147194",
+          "kind": "Stop-loss",
+          "status": "CANCELLED",
+          "created_at": "2026-04-29T23:11:58",
+          "updated_at": "2026-04-30T03:37:30",
+          "instrument": "Uber Technologies",
+          "request": {
+            "parent_stop_loss_id": "0",
+            "account_id": "7616265",
+            "order_book_id": "954817",
+            "stop_loss_trigger": {
+              "type": "FOLLOW_UPWARDS",
+              "value": 18,
+              "valid_until": "2026-07-28",
+              "value_type": "PERCENTAGE",
+              "trigger_on_market_maker_quote": false
+            },
+            "stop_loss_order_event": {
+              "type": "SELL",
+              "price": 98,
+              "volume": 30,
+              "valid_days": 1,
+              "price_type": "PERCENTAGE",
+              "short_selling_allowed": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "transactions": {
+    "ok": true,
+    "tool": "avanza_transactions",
+    "read_write": false,
+    "result": {
+      "account_id": "7616265",
+      "executed_only": true,
+      "types": [
+        "BUY",
+        "SELL"
+      ],
+      "transactions_from": "2026-04-01",
+      "transactions_to": "2026-05-04",
+      "first_available_date": "2020-09-30",
+      "transactions": []
+    }
+  }
+}

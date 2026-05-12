@@ -3,6 +3,16 @@
 All commands below may be run with `uv run` when using the `uv` workflow.
 Example: `uv run python avanza_cli.py tui`.
 
+## Trading Assistant Context
+
+For Codex trading-assistant sessions, read the local-only context files before analysis:
+
+- `INSTRUCTIONS/INSTRUCTIONS.md` for standing safety, account-switching, stop-loss, re-entry, and earnings pre-positioning rules.
+- `INSTRUCTIONS/MEMORY.md` for timestamped lessons, mistakes, strategy updates, and checklist changes.
+- `INSTRUCTIONS/WARMUP.md` for a clean-session prompt that summarizes the expected workflow.
+
+The `INSTRUCTIONS/` folder is kept visible in git, but its private contents are ignored. `INSTRUCTIONS/MEMORY.md` is historical context only. It must not be used as current account state. Always verify Avanza MCP health, selected account, live holdings, open orders, active stop-losses, and transactions before drawing account-specific conclusions.
+
 ## Login
 
 The tools prompt for:
@@ -68,6 +78,22 @@ python avanza_cli.py stoploss set \
 Add `--confirm` only after reviewing the request.
 If `--valid-until` is omitted, `avanza_cli` auto-fills the longest currently allowed date (today + 90 days).
 If `--order-valid-days` is omitted, `avanza_cli` uses the current Avanza-safe default (`8`).
+
+### Gap and Catalyst Limits
+
+Stop-losses are trigger-based controls, not guaranteed exits. A `FOLLOW_UPWARDS` sell stop with `Kurs 99%` can be useful in normal trading because it avoids accepting a price far below the trigger, but the same tight `Kurs` can fail, remain unfilled, or show `ERROR` when price gaps through the trigger after hours, before open, during a halt, or in a fast market.
+
+For holdings with earnings or another binary catalyst before the next tradable session, review event risk separately from ordinary stop coverage:
+
+- exact report or catalyst timing,
+- current quote freshness,
+- current exposure and `Antal`,
+- active sell-stop `Antal`,
+- every `Max ned / Kurs` pair,
+- stop status and any `ERROR` rows,
+- whether to reduce before the event, hold and accept gap risk, or avoid new exposure.
+
+Treat stop-loss rows with status `ERROR` as unprotected until they are verified and replaced or deleted after explicit authorization. Lower `Kurs` values may improve fill probability but accept worse execution and still do not guarantee a fill.
 
 In the TUI, the largest account by total value is selected after login. The account panel shows total value, buying power, status, and profit in colored metric cards. The P/L metric cycles through `1D P/L`, `1W P/L`, `1M P/L`, `1Y P/L`, and `Total P/L` when clicked, with SEK and % values colored separately. The top-right panel shows current time with seconds and a weekday OMXS open/close countdown. The stocks table has a distinct header row and includes a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. If the position payload does not include that flag, the TUI resolves it from Avanza market/orderbook/instrument details and caches it per order book for five minutes. The order ticket searches as you type by stock name, ticker, or ISIN, and searched symbols stay selected during live portfolio refreshes. `Review Only` validates and logs the request without creating a paper or live order; the submit button follows the `Paper` tick box. Buy/sell side cells are color-coded green/red. The stop-loss/open-orders list and Active Trades panel include a cancel column; paper cancellation is local, while live Avanza cancellation opens a confirmation ticket that requires typing `CANCEL`. Click any table column header to sort by that column; click the same header again to reverse the order. Stop-loss trigger and order price values are labeled with `SEK` or `%`, and the positions/activity divider, Active Trades divider, and order/stop-loss ticket edge can be dragged to resize panes. Selected table rows are restored after live refreshes when the row still exists.
 

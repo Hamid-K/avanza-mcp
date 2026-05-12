@@ -1,0 +1,373 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - button "Hoppa till huvudinnehållet" [ref=e4] [cursor=pointer]:
+      - generic: Hoppa till huvudinnehållet
+    - generic [ref=e5]:
+      - generic [ref=e7]:
+        - img [ref=e9]
+        - paragraph [ref=e14]:
+          - text: Vi använder cookies på vår sajt för att få den att fungera korrekt, personalisera innehåll och annonser och för att analysera hur sajten används. Genom att godkänna accepterar du att cookies används.
+          - link "Läs mer och hantera inställningar" [ref=e15] [cursor=pointer]:
+            - /url: /sakerhet-villkor/cookies.html
+        - generic [ref=e16]:
+          - button "Godkänn alla cookies" [ref=e17] [cursor=pointer]:
+            - generic: Godkänn alla cookies
+          - button "Endast nödvändiga cookies" [ref=e18] [cursor=pointer]:
+            - generic: Endast nödvändiga cookies
+      - banner [ref=e19]:
+        - generic [ref=e21]:
+          - list [ref=e23]:
+            - listitem [ref=e24]:
+              - img "Sverige" [ref=e26]
+              - link "OMXS30 :" [ref=e27] [cursor=pointer]:
+                - /url: /index/om-indexet.html/19002/omx-stockholm-30
+              - generic [ref=e29]: 0,83%
+              - generic [ref=e30]: 15:56
+              - text: (
+              - generic [ref=e31]: 6,16%
+              - text: i år)
+            - listitem [ref=e32]:
+              - img "USA" [ref=e34]
+              - link "DJUS :" [ref=e35] [cursor=pointer]:
+                - /url: /index/om-indexet.html/155458/dow-jones-u-s--index
+              - generic [ref=e37]: 0,64%
+              - generic [ref=e38]: 15:56
+              - text: (
+              - generic [ref=e39]: 5,92%
+              - text: i år)
+            - listitem [ref=e40]:
+              - link "Börsen idag" [ref=e41] [cursor=pointer]:
+                - /url: /borsen-idag.html
+                - generic [ref=e42]: Börsen idag
+          - generic [ref=e43]:
+            - link "Bli kund" [ref=e44] [cursor=pointer]:
+              - /url: /bli-kund.html
+              - generic [ref=e45]: Bli kund
+            - button "Logga in" [ref=e46] [cursor=pointer]:
+              - generic: Logga in
+        - navigation "Huvudmeny" [ref=e48]:
+          - link "Välkommen till Avanza" [ref=e50] [cursor=pointer]:
+            - /url: /start
+            - img [ref=e51]
+          - list [ref=e55]:
+            - listitem [ref=e56]:
+              - button "Spara & Investera" [ref=e58] [cursor=pointer]:
+                - generic: Spara & Investera
+            - listitem [ref=e59]:
+              - button "Bolån" [ref=e61] [cursor=pointer]:
+                - generic: Bolån
+            - listitem [ref=e62]:
+              - button "Pension" [ref=e64] [cursor=pointer]:
+                - generic: Pension
+            - listitem [ref=e65]:
+              - link "Nyheter - Extern länk - Öppnas i nytt fönster" [ref=e67] [cursor=pointer]:
+                - /url: https://www.placera.se/placera/forstasidan.html
+                - generic [ref=e68]: Nyheter
+            - listitem [ref=e69]:
+              - button "Lär dig mer" [ref=e71] [cursor=pointer]:
+                - generic: Lär dig mer
+            - listitem [ref=e72]:
+              - link "Kundservice" [ref=e74] [cursor=pointer]:
+                - /url: /kundservice.html
+                - generic [ref=e75]: Kundservice
+          - search "Öppna sök" [ref=e77]:
+            - button "Sök" [ref=e78] [cursor=pointer]:
+              - generic:
+                - img
+      - generic [ref=e79]:
+        - main [ref=e80]:
+          - generic [ref=e87]:
+            - generic [ref=e88]:
+              - heading "Vad kostar det att spara?" [level=1] [ref=e89]
+              - paragraph [ref=e90]: Vi vill göra det billigare, bättre och enklare för fler människor att spara och investera. Har du ännu inte kommit upp i 50 000 kr i sparande har vi ett erbjudande så att du får bästa tänkbara start. Men oavsett hur långt du har hunnit med ditt sparande så betalar du självklart alltid förmånliga priser hos oss.
+            - link "Bli kund på 3 min med BankID" [ref=e94] [cursor=pointer]:
+              - /url: /bli-kund.html
+              - generic [ref=e95]: Bli kund på 3 min med BankID
+            - generic [ref=e96]:
+              - heading "Våra courtageklasser" [level=2] [ref=e97]
+              - paragraph [ref=e98]:
+                - text: Beroende på vilken så kallad
+                - link "marknadsplats" [ref=e100] [cursor=pointer]:
+                  - /url: /kundservice.html/c362-marknadsplatser.html
+                - text: en aktie är noterad på gäller olika priser för att handla aktien.
+                - strong [ref=e102]: Priserna gäller för aktiehandel på Stockholmsbörsen (och First North för samtliga courtageklasser förutom Start).
+                - text: För priser på andra listor eller värdepapper kan du titta i prislistan för
+                - link "handel i Sverige" [ref=e104] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: och
+                - link "utlandet" [ref=e106] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-utland.html
+                - text: .
+              - paragraph [ref=e107]:
+                - text: Här kan du hitta priser för
+                - link "Private Banking" [ref=e109] [cursor=pointer]:
+                  - /url: /private-banking-pro/private-banking/prislista.html
+                - text: och
+                - link "Pro" [ref=e111] [cursor=pointer]:
+                  - /url: /private-banking-pro/pro/prislista.html
+                - text: .
+            - generic [ref=e115]:
+              - heading "Start" [level=2] [ref=e116]
+              - paragraph [ref=e117]:
+                - strong [ref=e119]: För dig som gör små affärer. 100% återbetalning av fondavgifter. Valbar om du har under 50 000 kr*
+              - paragraph [ref=e120]:
+                - text: Rörligt courtage
+                - strong [ref=e122]: 0 %
+              - paragraph [ref=e123]:
+                - text: Lägsta courtage
+                - strong [ref=e125]: 0 kr
+              - paragraph [ref=e126]:
+                - text: Andra priser gäller på exempelvis
+                - link "Spotlight Stock Market" [ref=e128] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 19 kr) och
+                - link "First North" [ref=e130] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 1 kr)
+                - link "Mer om vårt Starterbjudande" [ref=e132] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/starterbjudande.html
+            - generic [ref=e136]:
+              - heading "Mini" [level=2] [ref=e137]
+              - paragraph [ref=e138]:
+                - strong [ref=e140]: För dig som gör små affärer under 15 600 kr
+              - paragraph [ref=e141]:
+                - text: Rörligt courtage
+                - strong [ref=e143]: 0,25 %
+              - paragraph [ref=e144]:
+                - text: Lägsta courtage
+                - strong [ref=e146]: 1 kr
+              - paragraph [ref=e147]:
+                - text: Andra priser gäller på exempelvis
+                - link "Spotlight Stock Market" [ref=e149] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: ","
+                - link "NGM" [ref=e151] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: och
+                - link "Nordic MTF" [ref=e153] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 19 kr)
+            - generic [ref=e157]:
+              - heading "Small" [level=2] [ref=e158]
+              - paragraph [ref=e159]:
+                - strong [ref=e161]: För dig som gör medelsmå affärer på 15 600 - 46 000 kr
+              - paragraph [ref=e162]:
+                - text: Rörligt courtage
+                - strong [ref=e164]: 0,15 %
+              - paragraph [ref=e165]:
+                - text: Lägsta courtage
+                - strong [ref=e167]: 39 kr
+              - paragraph [ref=e168]:
+                - text: Andra priser gäller på exempelvis
+                - link "Spotlight Stock Market" [ref=e170] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 59 kr),
+                - link "NGM" [ref=e172] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: och
+                - link "Nordic MTF" [ref=e174] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 39 kr)
+            - generic [ref=e178]:
+              - heading "Medium" [level=2] [ref=e179]
+              - paragraph [ref=e180]:
+                - strong [ref=e182]: För dig som gör lite större affärer på 46 000 - 143 500 kr
+              - paragraph [ref=e183]:
+                - text: Rörligt courtage
+                - strong [ref=e185]: 0,069 %
+              - paragraph [ref=e186]:
+                - text: Lägsta courtage
+                - strong [ref=e188]: 69 kr
+              - paragraph [ref=e189]:
+                - text: Andra priser gäller på exempelvis
+                - link "Spotlight Stock Market" [ref=e191] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: ","
+                - link "NGM" [ref=e193] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: och
+                - link "Nordic MTF" [ref=e195] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 69 kr)
+            - generic [ref=e199]:
+              - heading "Fast Pris" [level=2] [ref=e200]
+              - paragraph [ref=e201]:
+                - strong [ref=e203]: Samma pris jämt, passar affärer över 143 500 kr
+              - paragraph [ref=e204]:
+                - text: Rörligt courtage
+                - strong [ref=e206]: 0 %
+              - paragraph [ref=e207]:
+                - text: Lägsta courtage
+                - strong [ref=e209]: 99 kr
+              - paragraph [ref=e210]:
+                - text: Andra priser gäller på exempelvis
+                - link "Spotlight Stock Marke" [ref=e212] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: t,
+                - link "NGM" [ref=e214] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: och
+                - link "Nordic MTF" [ref=e216] [cursor=pointer]:
+                  - /url: /konton-lan-prislista/prislista/handel-sverige.html
+                - text: (från 99 kr)
+            - paragraph [ref=e218]: "* Courtageklass Start kan du välja om du aldrig haft 50 000 kr eller mer i samlat sparande hos oss. När du uppnår 50 000 kr eller gör fler än 500 gratisaffärer under 12 månader så placeras du automatiskt i courtageklass Mini och kan inte välja Start igen."
+            - list [ref=e220]:
+              - listitem [ref=e221]:
+                - heading "Mer information om våra courtageklasser" [level=3] [ref=e222]:
+                  - button "Mer information om våra courtageklasser" [ref=e223] [cursor=pointer]:
+                    - generic: Mer information om våra courtageklasser
+                    - generic:
+                      - img
+            - heading "Så här fungerar våra priser" [level=2] [ref=e225]
+            - list [ref=e227]:
+              - listitem [ref=e228]:
+                - heading "Välj courtageklass om du handlar värdepapper" [level=3] [ref=e229]:
+                  - button "Välj courtageklass om du handlar värdepapper" [ref=e230] [cursor=pointer]:
+                    - generic: Välj courtageklass om du handlar värdepapper
+                    - generic:
+                      - img
+              - listitem [ref=e231]:
+                - heading "Du blir placerad i en förmånsnivå" [level=3] [ref=e232]:
+                  - button "Du blir placerad i en förmånsnivå" [ref=e233] [cursor=pointer]:
+                    - generic: Du blir placerad i en förmånsnivå
+                    - generic:
+                      - img
+            - generic [ref=e236]:
+              - heading "Våra förmånsnivåer" [level=2] [ref=e238]
+              - generic [ref=e240]:
+                - generic [ref=e244]:
+                  - heading "Brons" [level=3] [ref=e245]
+                  - paragraph [ref=e246]: Inget krav på lägsta insättningar eller antal affärer
+                - generic [ref=e250]:
+                  - heading "Silver" [level=3] [ref=e251]
+                  - paragraph [ref=e252]: 100 000 kr i samlat sparande eller 100 kr i courtage per månad
+                - generic [ref=e256]:
+                  - heading "Guld" [level=3] [ref=e257]
+                  - paragraph [ref=e258]: 250 000 kr i samlat sparande eller 250 kr i courtage per månad
+                - generic [ref=e262]:
+                  - heading "Platina" [level=3] [ref=e263]
+                  - paragraph [ref=e264]: 1 000 000 kr i samlat sparande eller 1 000 kr i courtage per månad
+                - generic [ref=e268]:
+                  - heading "Private Banking" [level=3] [ref=e269]
+                  - paragraph [ref=e270]: 3 000 000 kr i samlat sparande
+                  - paragraph [ref=e271]:
+                    - link "Kontakta Private Banking" [ref=e273] [cursor=pointer]:
+                      - /url: /private-banking-pro/private-banking/start.html
+                    - text: för uppgradering
+                - generic [ref=e277]:
+                  - heading "Pro" [level=3] [ref=e278]
+                  - paragraph [ref=e279]: Två affärer till minimicourtage perdag eller daglig omsättning på 280 000 kr
+                  - paragraph [ref=e280]:
+                    - link "Kontakta Pro" [ref=e282] [cursor=pointer]:
+                      - /url: /private-banking-pro/pro/start.html
+                    - text: för uppgradering
+            - heading "De vanligaste frågorna om våra priser och courtageklasser" [level=2] [ref=e284]
+            - list [ref=e286]:
+              - listitem [ref=e287]:
+                - heading "Hur vet jag vilken courtageklass jag ska ha?" [level=3] [ref=e288]:
+                  - button "Hur vet jag vilken courtageklass jag ska ha?" [ref=e289] [cursor=pointer]:
+                    - generic: Hur vet jag vilken courtageklass jag ska ha?
+                    - generic:
+                      - img
+              - listitem [ref=e290]:
+                - heading "Hur byter jag courtageklass?" [level=3] [ref=e291]:
+                  - button "Hur byter jag courtageklass?" [ref=e292] [cursor=pointer]:
+                    - generic: Hur byter jag courtageklass?
+                    - generic:
+                      - img
+              - listitem [ref=e293]:
+                - heading "Vad innebär det att priserna bara gäller på Stockholmsbörsen?" [level=3] [ref=e294]:
+                  - button "Vad innebär det att priserna bara gäller på Stockholmsbörsen?" [ref=e295] [cursor=pointer]:
+                    - generic: Vad innebär det att priserna bara gäller på Stockholmsbörsen?
+                    - generic:
+                      - img
+              - listitem [ref=e296]:
+                - heading "Vad är rörligt courtage?" [level=3] [ref=e297]:
+                  - button "Vad är rörligt courtage?" [ref=e298] [cursor=pointer]:
+                    - generic: Vad är rörligt courtage?
+                    - generic:
+                      - img
+        - contentinfo [ref=e301]:
+          - heading "Sidfot" [level=2] [ref=e302]
+          - generic [ref=e303]:
+            - generic [ref=e304]:
+              - heading "Vill du ha hjälp?" [level=3] [ref=e305]
+              - list [ref=e306]:
+                - listitem [ref=e307]:
+                  - link "Frågor & Svar" [ref=e308] [cursor=pointer]:
+                    - /url: /kundservice.html
+                - listitem [ref=e309]:
+                  - link "Kontakta oss" [ref=e310] [cursor=pointer]:
+                    - /url: /kundservice/kontakta-oss-nu.html
+            - generic [ref=e311]:
+              - heading "Blogg & podd" [level=3] [ref=e312]
+              - list [ref=e313]:
+                - listitem [ref=e314]:
+                  - link "Avanzabloggen" [ref=e315] [cursor=pointer]:
+                    - /url: https://blogg.avanza.se/
+                - listitem [ref=e316]:
+                  - link "Avanzapodden" [ref=e317] [cursor=pointer]:
+                    - /url: /lar-dig-mer/avanzapodden.html
+                - listitem [ref=e318]:
+                  - link "Youtube" [ref=e319] [cursor=pointer]:
+                    - /url: https://www.youtube.com/user/Avanzabank
+                - listitem [ref=e320]:
+                  - link "Inga dumma frågor om pengar" [ref=e321] [cursor=pointer]:
+                    - /url: /lar-dig-mer/inga-dumma-fragor-om-pengar.html
+            - generic [ref=e322]:
+              - heading "Sociala medier" [level=3] [ref=e323]
+              - list [ref=e324]:
+                - listitem [ref=e325]:
+                  - link "Instagram" [ref=e326] [cursor=pointer]:
+                    - /url: https://www.instagram.com/avanzabank/
+                - listitem [ref=e327]:
+                  - link "TikTok" [ref=e328] [cursor=pointer]:
+                    - /url: https://www.tiktok.com/@avanzabank
+                - listitem [ref=e329]:
+                  - link "Facebook" [ref=e330] [cursor=pointer]:
+                    - /url: https://www.facebook.com/profile.php?id=100064870262383
+                - listitem [ref=e331]:
+                  - link "X" [ref=e332] [cursor=pointer]:
+                    - /url: https://twitter.com/AvanzaBank/
+                - listitem [ref=e333]:
+                  - link "Linkedin" [ref=e334] [cursor=pointer]:
+                    - /url: https://se.linkedin.com/company/avanza-bank
+            - generic [ref=e335]:
+              - heading "Avanza" [level=3] [ref=e336]
+              - list [ref=e337]:
+                - listitem [ref=e338]:
+                  - link "Om Avanza" [ref=e339] [cursor=pointer]:
+                    - /url: https://investors.avanza.se/om/om-avanza/
+                - listitem [ref=e340]:
+                  - link "Investor Relations" [ref=e341] [cursor=pointer]:
+                    - /url: https://investors.avanza.se/sv/ir
+                - listitem [ref=e342]:
+                  - link "Karriär" [ref=e343] [cursor=pointer]:
+                    - /url: https://career.avanza.se/
+            - generic [ref=e344]:
+              - heading "För företag" [level=3] [ref=e345]
+              - list [ref=e346]:
+                - listitem [ref=e347]:
+                  - link "Företagswebben" [ref=e348] [cursor=pointer]:
+                    - /url: https://foretagswebb.avanza.se
+          - heading "Juridisk information" [level=3] [ref=e350]
+          - list [ref=e351]:
+            - listitem [ref=e352]:
+              - link "Användarvillkor" [ref=e353] [cursor=pointer]:
+                - /url: /sakerhet-villkor/anvandarvillkor.html
+            - listitem [ref=e354]:
+              - link "Säkerhet" [ref=e355] [cursor=pointer]:
+                - /url: /sakerhet-villkor/sakerhet.html
+            - listitem [ref=e356]:
+              - link "Reklamationer & Klagomål" [ref=e357] [cursor=pointer]:
+                - /url: /kundservice.html/1193/hur-framfor-jag-ett-klagomal/?categoryId=1587
+            - listitem [ref=e358]:
+              - link "Cookies" [ref=e359] [cursor=pointer]:
+                - /url: /sakerhet-villkor/cookies.html
+            - listitem [ref=e360]:
+              - link "Tillgänglighet på Avanza" [ref=e361] [cursor=pointer]:
+                - /url: /kundservice/tillganglighet-pa-avanza.html
+            - listitem [ref=e362]:
+              - link "Behandling av personuppgifter" [ref=e363] [cursor=pointer]:
+                - /url: /sakerhet-villkor/behandling-av-personuppgifter.html
+  - img [ref=e366]

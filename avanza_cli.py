@@ -27,7 +27,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from avanza import Avanza
-from avanza.constants import Condition, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType, TimePeriod, TransactionsDetailsType
+from avanza.constants import Condition, HttpMethod, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType, TimePeriod, TransactionsDetailsType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from rich.console import Console
 from rich.panel import Panel
@@ -83,6 +83,49 @@ LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 QUOTE_CACHE_SECONDS = 8.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
+ORDERBOOK_METADATA_REFRESH_SECONDS = 1800.0
+DEFAULT_COURTAGE_RATE_SE = float(os.getenv("AVANZA_DEFAULT_COURTAGE_RATE_SE", "0.0025"))
+DEFAULT_COURTAGE_MIN_SEK = float(os.getenv("AVANZA_DEFAULT_COURTAGE_MIN_SEK", "1.0"))
+DEFAULT_COURTAGE_RATE_US = float(os.getenv("AVANZA_DEFAULT_COURTAGE_RATE_US", "0.0025"))
+DEFAULT_COURTAGE_MIN_USD = float(os.getenv("AVANZA_DEFAULT_COURTAGE_MIN_USD", "1.0"))
+DEFAULT_FX_FEE_RATE = float(os.getenv("AVANZA_DEFAULT_FX_FEE_RATE", "0.0025"))
+KNOWN_ORDERBOOK_METADATA: dict[str, dict[str, str]] = {
+    "5269": {"name": "Volvo B", "ticker": "VOLV B", "market": "NASDAQ Stockholm", "currency": "SEK", "country_code": "SE", "instrument_type": "STOCK"},
+    "5247": {"name": "Investor B", "ticker": "INVE B", "market": "NASDAQ Stockholm", "currency": "SEK", "country_code": "SE", "instrument_type": "STOCK"},
+    "5401": {"name": "Saab B", "ticker": "SAAB B", "market": "NASDAQ Stockholm", "currency": "SEK", "country_code": "SE", "instrument_type": "STOCK"},
+    "488235": {"name": "HANZA", "ticker": "HANZA", "market": "NASDAQ Stockholm", "currency": "SEK", "country_code": "SE", "instrument_type": "STOCK"},
+    "804998": {"name": "Sivers Semiconductors", "ticker": "SIVE", "market": "NASDAQ Stockholm", "currency": "SEK", "country_code": "SE", "instrument_type": "STOCK"},
+    "4478": {"name": "NVIDIA", "ticker": "NVDA", "market": "NASDAQ", "currency": "USD", "country_code": "US", "instrument_type": "STOCK"},
+    "529720": {"name": "Advanced Micro Devices", "ticker": "AMD", "market": "NASDAQ", "currency": "USD", "country_code": "US", "instrument_type": "STOCK"},
+    "1211627": {"name": "Coinbase Global, Inc. - Class A", "ticker": "COIN", "market": "NASDAQ", "currency": "USD", "country_code": "US", "instrument_type": "STOCK"},
+    "1138439": {"name": "Palantir Technologies", "ticker": "PLTR", "market": "NYSE", "currency": "USD", "country_code": "US", "instrument_type": "STOCK"},
+}
+COUNTRY_CURRENCY_MAP = {
+    "SE": "SEK",
+    "US": "USD",
+    "FI": "EUR",
+    "DK": "DKK",
+    "NO": "NOK",
+    "GB": "GBP",
+}
+MARKET_CURRENCY_HINTS: tuple[tuple[str, str], ...] = (
+    ("stockholm", "SEK"),
+    ("xsto", "SEK"),
+    ("first north", "SEK"),
+    ("ngm", "SEK"),
+    ("spotlight", "SEK"),
+    ("nasdaq", "USD"),
+    ("nyse american", "USD"),
+    ("nyse", "USD"),
+    ("helsinki", "EUR"),
+    ("xhel", "EUR"),
+    ("copenhagen", "DKK"),
+    ("xcse", "DKK"),
+    ("oslo", "NOK"),
+    ("xosl", "NOK"),
+    ("london", "GBP"),
+    ("xlon", "GBP"),
+)
 LOGIN_PROGRESS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 LOGIN_PROGRESS_ROTATE_TICKS = 10
 DEBUG_PROFILE_TOP_DEFAULT = 25
@@ -2194,43 +2237,341 @@ def render_portfolio_summary(positions: dict[str, Any]) -> None:
         )
 
 
+def to_plain_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()
+        except Exception:
+            dumped = None
+        if isinstance(dumped, dict):
+            return dumped
+    if hasattr(value, "dict"):
+        try:
+            dumped = value.dict()
+        except Exception:
+            dumped = None
+        if isinstance(dumped, dict):
+            return dumped
+    return {}
+
+
+def normalize_search_results_payload(results: Any) -> Any:
+    if isinstance(results, list):
+        normalized: list[Any] = []
+        for item in results:
+            if isinstance(item, dict):
+                normalized.append(item)
+                continue
+            as_dict = to_plain_dict(item)
+            if as_dict:
+                normalized.append(as_dict)
+        return normalized
+    if isinstance(results, dict):
+        return results
+    as_dict = to_plain_dict(results)
+    if as_dict:
+        return as_dict
+    return []
+
+
 def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    normalized = normalize_search_results_payload(results)
 
-    if isinstance(results, list):
-        source = results
-    elif isinstance(results, dict):
-        if "hits" in results:
-            source = results.get("hits") or []
-        elif "topHits" in results:
-            source = results.get("topHits") or []
+    if isinstance(normalized, list):
+        source = normalized
+    elif isinstance(normalized, dict):
+        if "hits" in normalized:
+            source = normalized.get("hits") or []
+        elif "topHits" in normalized:
+            source = normalized.get("topHits") or []
+        elif "results" in normalized:
+            source = normalized.get("results") or []
+        elif any(isinstance(value, list) for value in normalized.values()):
+            source = []
+            for group_name, group_items in normalized.items():
+                if not isinstance(group_items, list):
+                    continue
+                for raw_item in group_items:
+                    item = to_plain_dict(raw_item)
+                    if not item:
+                        continue
+                    if group_name and not item.get("instrumentType"):
+                        item["instrumentType"] = str(group_name).rstrip("s").upper()
+                    source.append(item)
         else:
-            source = [results]
+            source = [normalized]
     else:
         return []
 
-    for hit_group in source:
-        if not isinstance(hit_group, dict):
+    for raw_group in source:
+        hit_group = to_plain_dict(raw_group)
+        if not hit_group:
             continue
         group_type = hit_group.get("instrumentType", "")
         top_hits = hit_group.get("topHits") or []
-        if not top_hits:
+        if isinstance(top_hits, list) and top_hits:
+            for raw_hit in top_hits:
+                hit = to_plain_dict(raw_hit)
+                if not hit:
+                    continue
+                row = dict(hit)
+                if group_type:
+                    row.setdefault("instrumentType", group_type)
+                rows.append(row)
+            continue
+
+        if {"title", "urlSlugName", "marketPlaceName"} & set(hit_group.keys()):
             row = dict(hit_group)
-            if group_type:
-                row.setdefault("instrumentType", group_type)
+            row.setdefault("name", row.get("title") or row.get("name") or "")
+            if not row.get("tickerSymbol"):
+                slug = str(row.get("urlSlugName", ""))
+                if slug:
+                    row["tickerSymbol"] = slug.split("-")[-1].upper()
+            price = row.get("price")
+            if isinstance(price, dict):
+                row.setdefault("lastPrice", price.get("last"))
+                row.setdefault("buy", price.get("buy"))
+                row.setdefault("sell", price.get("sell"))
             rows.append(row)
             continue
-        for hit in top_hits:
-            if isinstance(hit, dict):
-                row = dict(hit)
-                row.setdefault("instrumentType", group_type)
-                rows.append(row)
+
+        row = dict(hit_group)
+        if group_type:
+            row.setdefault("instrumentType", group_type)
+        rows.append(row)
     return rows
 
 
 def search_hit_order_book_id(hit: dict[str, Any]) -> str:
     orderbook = hit.get("orderbook") if isinstance(hit.get("orderbook"), dict) else {}
-    return str(hit.get("id") or hit.get("orderbookId") or orderbook.get("id") or "")
+    return str(
+        hit.get("id")
+        or hit.get("orderbookId")
+        or hit.get("orderBookId")
+        or orderbook.get("id")
+        or ""
+    )
+
+
+def search_hit_name(hit: dict[str, Any]) -> str:
+    return str(hit.get("name") or hit.get("title") or hit.get("shortName") or hit.get("description") or "").strip()
+
+
+def trailing_parenthesized_symbol(text: str | None) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return ""
+    match = re.search(r"\(([^()]+)\)\s*$", source)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1).strip()).upper()
+
+
+def normalize_symbol_candidate(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    extracted = trailing_parenthesized_symbol(text)
+    if extracted:
+        text = extracted
+    if ":" in text:
+        text = text.split(":")[-1]
+    text = re.sub(r"\s+", " ", text.strip()).upper()
+    if not text:
+        return ""
+    if len(text) > 18:
+        return ""
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9 .:/-]*", text):
+        return ""
+    words = [token for token in text.split(" ") if token]
+    if len(words) > 2:
+        return ""
+    if all(len(token) == 1 for token in words):
+        return ""
+    return text
+
+
+def search_hit_ticker(hit: dict[str, Any]) -> str:
+    name = search_hit_name(hit)
+    paren_symbol = trailing_parenthesized_symbol(name)
+    if paren_symbol:
+        return paren_symbol
+    for key in ("tickerSymbol", "symbol"):
+        ticker = normalize_symbol_candidate(str(hit.get(key) or "").strip())
+        if ticker:
+            return ticker
+    slug = str(hit.get("urlSlugName") or hit.get("slug") or "").strip()
+    if slug:
+        tail = normalize_symbol_candidate(slug.split("-")[-1])
+        if tail:
+            return tail
+    return ""
+
+
+def search_hit_country(hit: dict[str, Any]) -> str:
+    return str(hit.get("country") or hit.get("countryCode") or hit.get("flagCode") or "").strip().upper()
+
+
+def display_symbol(ticker: str | None, name: str | None = None) -> str | None:
+    name_text = str(name or "").strip()
+    paren_symbol = trailing_parenthesized_symbol(name_text)
+    if paren_symbol:
+        return paren_symbol
+    ticker_text = normalize_symbol_candidate(ticker)
+    if ticker_text:
+        return ticker_text
+    return name_text or None
+
+
+def search_hit_tradeable_flags(hit: dict[str, Any]) -> tuple[bool | None, bool | None, bool | None]:
+    tradeable = hit.get("tradeable")
+    if tradeable is None:
+        tradeable = hit.get("tradable")
+    buyable = hit.get("buyable")
+    sellable = hit.get("sellable")
+    return (
+        bool(tradeable) if isinstance(tradeable, bool) else None,
+        bool(buyable) if isinstance(buyable, bool) else None,
+        bool(sellable) if isinstance(sellable, bool) else None,
+    )
+
+
+def search_hit_price(hit: dict[str, Any], key: str) -> float | None:
+    direct = scalar_number(hit.get(key))
+    if direct is not None:
+        return direct
+    price = hit.get("price")
+    if isinstance(price, dict):
+        return scalar_number(price.get(key))
+    return None
+
+
+def normalized_search_rows(hits: list[dict[str, Any]], query: str = "") -> list[dict[str, Any]]:
+    query_upper = str(query or "").strip().upper()
+    rows: list[dict[str, Any]] = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        order_book_id = search_hit_order_book_id(hit)
+        name = search_hit_name(hit)
+        ticker = search_hit_ticker(hit)
+        market_place = str(hit.get("marketPlaceName") or hit.get("market_place") or "").strip()
+        country = search_hit_country(hit)
+        currency = str(hit.get("currency") or "").strip().upper() or (infer_currency_from_metadata({"country": country, "market": market_place}) or "")
+        instrument_type = str(hit.get("instrumentType") or hit.get("subType") or "").strip().upper()
+        tradeable, buyable, sellable = search_hit_tradeable_flags(hit)
+        last_price = search_hit_price(hit, "lastPrice") or search_hit_price(hit, "last")
+        bid = search_hit_price(hit, "buy")
+        ask = search_hit_price(hit, "sell")
+        if last_price is not None and bid is not None and ask is not None:
+            reference = (bid + ask) / 2.0
+            if reference > 0:
+                ratio = last_price / reference
+                if 90.0 <= ratio <= 110.0:
+                    last_price = last_price / 100.0
+        spread_absolute = (ask - bid) if ask is not None and bid is not None else None
+        spread_percent = ((spread_absolute / bid) * 100.0) if spread_absolute is not None and bid not in (None, 0) else None
+        ticker_or_none = ticker or None
+        rows.append(
+            {
+                "name": name or order_book_id,
+                "ticker": ticker_or_none,
+                "symbol": ticker_or_none,
+                "display_symbol": display_symbol(ticker_or_none, name),
+                "orderbook_id": order_book_id,
+                "market_place": market_place or None,
+                "country": country or None,
+                "currency": currency or None,
+                "instrument_type": instrument_type or None,
+                "tradeable": tradeable,
+                "buyable": buyable,
+                "sellable": sellable,
+                "last_price": last_price,
+                "bid": bid,
+                "ask": ask,
+                "spread_absolute": spread_absolute,
+                "spread_percent": spread_percent,
+                "isin": str(hit.get("isin") or ""),
+                "_source": hit,
+            }
+        )
+
+    def sort_key(row: dict[str, Any]) -> tuple[int, int, int, str, str]:
+        ticker = str(row.get("ticker") or "").upper()
+        name = str(row.get("name") or "").upper()
+        exact = 0
+        starts = 1
+        contains = 2
+        if query_upper:
+            if ticker == query_upper or name == query_upper:
+                exact = 0
+                starts = 0
+                contains = 0
+            elif ticker.startswith(query_upper) or name.startswith(query_upper):
+                exact = 1
+                starts = 0
+                contains = 0
+            elif query_upper in ticker or query_upper in name:
+                exact = 2
+                starts = 1
+                contains = 0
+            else:
+                exact = 3
+                starts = 1
+                contains = 1
+        tradeable = row.get("tradeable")
+        tradeable_rank = 0 if tradeable is True else 1 if tradeable is None else 2
+        return (exact, starts, contains, f"{tradeable_rank}", f"{name}|{ticker}")
+
+    rows.sort(key=sort_key)
+    return rows
+
+
+def search_rows_with_market_data(
+    avanza: Any,
+    rows: list[dict[str, Any]],
+    include_market_data: bool = True,
+) -> list[dict[str, Any]]:
+    if not include_market_data:
+        return rows
+    for row in rows:
+        if row.get("last_price") is not None and row.get("bid") is not None and row.get("ask") is not None:
+            continue
+        order_book_id = str(row.get("orderbook_id") or "")
+        if not order_book_id:
+            continue
+        try:
+            market_data = payload_to_json_safe(avanza.get_market_data(order_book_id))
+        except Exception:
+            continue
+        if not isinstance(market_data, dict):
+            continue
+        quote = market_data.get("quote")
+        if not isinstance(quote, dict):
+            quote = market_data
+        if row.get("last_price") is None:
+            row["last_price"] = scalar_number(quote.get("last"))
+        if row.get("bid") is None:
+            row["bid"] = scalar_number(quote.get("buy"))
+        if row.get("ask") is None:
+            row["ask"] = scalar_number(quote.get("sell"))
+        bid = row.get("bid")
+        ask = row.get("ask")
+        last_price = scalar_number(row.get("last_price"))
+        if last_price is not None and bid is not None and ask is not None:
+            reference = (bid + ask) / 2.0
+            if reference > 0:
+                ratio = last_price / reference
+                # Some Avanza search payloads return last in minor units (100x).
+                if 90.0 <= ratio <= 110.0:
+                    row["last_price"] = last_price / 100.0
+        if ask is not None and bid is not None:
+            row["spread_absolute"] = ask - bid
+            row["spread_percent"] = ((ask - bid) / bid * 100.0) if bid not in (None, 0) else None
+    return rows
 
 
 def search_hit_label(hit: dict[str, Any]) -> str:
@@ -2445,11 +2786,14 @@ def render_transactions_history(
 def empty_paper_session() -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
     return {
-        "version": 1,
+        "version": 2,
         "created_at": now,
         "updated_at": now,
         "orders": [],
         "events": [],
+        "positions": [],
+        "trades": [],
+        "watchlists": {},
     }
 
 
@@ -2466,10 +2810,19 @@ def load_paper_session(path: Path | None = None) -> dict[str, Any]:
     data.setdefault("updated_at", data["created_at"])
     data.setdefault("orders", [])
     data.setdefault("events", [])
+    data.setdefault("positions", [])
+    data.setdefault("trades", [])
+    data.setdefault("watchlists", {})
     if not isinstance(data["orders"], list):
         data["orders"] = []
     if not isinstance(data["events"], list):
         data["events"] = []
+    if not isinstance(data["positions"], list):
+        data["positions"] = []
+    if not isinstance(data["trades"], list):
+        data["trades"] = []
+    if not isinstance(data["watchlists"], dict):
+        data["watchlists"] = {}
     return data
 
 
@@ -2504,6 +2857,231 @@ def paper_orders(session: dict[str, Any], account_id: str | None = None, active_
             continue
         rows.append(item)
     return rows
+
+
+def paper_positions(session: dict[str, Any], account_id: str | None = None, session_id: str | None = None, active_only: bool = False) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in session.get("positions", []):
+        if not isinstance(item, dict):
+            continue
+        if account_id and str(item.get("account_id", "")) != account_id:
+            continue
+        if session_id and str(item.get("session_id", "")) != session_id:
+            continue
+        if active_only and str(item.get("status", "")).upper() != "OPEN":
+            continue
+        rows.append(item)
+    return rows
+
+
+def paper_trades(session: dict[str, Any], account_id: str | None = None, session_id: str | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in session.get("trades", []):
+        if not isinstance(item, dict):
+            continue
+        if account_id and str(item.get("account_id", "")) != account_id:
+            continue
+        if session_id and str(item.get("session_id", "")) != session_id:
+            continue
+        rows.append(item)
+    return rows
+
+
+def paper_session_id(raw: Any | None = None) -> str:
+    text = str(raw or "").strip()
+    if text:
+        return text
+    return datetime.now().strftime("%Y%m%d")
+
+
+def paper_open_position(
+    session: dict[str, Any],
+    *,
+    session_id: str,
+    account_id: str,
+    order_book_id: str,
+    ticker: str,
+    name: str,
+    side: str,
+    entry_price: float,
+    quantity: int,
+    estimated_fees: float,
+    entry_reason: str = "",
+    stop_price: float | None = None,
+    target_price: float | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    position = {
+        "position_id": f"paper-pos-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+        "session_id": session_id,
+        "account_id": account_id,
+        "orderbook_id": str(order_book_id),
+        "ticker": str(ticker or ""),
+        "name": str(name or ""),
+        "side": str(side or "").upper(),
+        "entry_time": now,
+        "exit_time": None,
+        "entry_price": float(entry_price),
+        "exit_price": None,
+        "quantity": int(quantity),
+        "notional": float(entry_price) * float(quantity),
+        "estimated_fees": float(estimated_fees),
+        "gross_pnl_sek": 0.0,
+        "net_pnl_sek": -float(estimated_fees),
+        "pnl_percent": 0.0,
+        "entry_reason": entry_reason or None,
+        "exit_reason": None,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "max_favorable_excursion": 0.0,
+        "max_adverse_excursion": 0.0,
+        "status": "OPEN",
+    }
+    session.setdefault("positions", []).append(position)
+    append_paper_event(session, "paper_position_open", {"position_id": position["position_id"], "orderbook_id": order_book_id})
+    return position
+
+
+def update_position_excursions(position: dict[str, Any], market_price: float) -> None:
+    entry = scalar_number(position.get("entry_price"))
+    if entry in (None, 0):
+        return
+    side = str(position.get("side", "")).upper()
+    move = ((market_price - entry) / entry) * 100.0
+    if side == "SELL":
+        move = -move
+    mfe = scalar_number(position.get("max_favorable_excursion")) or 0.0
+    mae = scalar_number(position.get("max_adverse_excursion")) or 0.0
+    position["max_favorable_excursion"] = max(mfe, move)
+    position["max_adverse_excursion"] = min(mae, move)
+
+
+def paper_exit_position(
+    session: dict[str, Any],
+    *,
+    account_id: str,
+    position_id: str | None,
+    order_book_id: str | None,
+    exit_price: float,
+    estimated_exit_fees: float,
+    exit_reason: str = "",
+) -> dict[str, Any]:
+    candidates = paper_positions(session, account_id=account_id, active_only=True)
+    target = None
+    if position_id:
+        target = next((item for item in candidates if str(item.get("position_id", "")) == position_id), None)
+    elif order_book_id:
+        target = next((item for item in candidates if str(item.get("orderbook_id", "")) == str(order_book_id)), None)
+    if target is None:
+        raise ValueError("No matching open paper position found.")
+
+    entry_price = float(scalar_number(target.get("entry_price")) or 0.0)
+    quantity = int(target.get("quantity", 0) or 0)
+    side = str(target.get("side", "")).upper()
+    notional_entry = entry_price * quantity
+    notional_exit = float(exit_price) * quantity
+    gross = (notional_exit - notional_entry) if side == "BUY" else (notional_entry - notional_exit)
+    fees_total = float(scalar_number(target.get("estimated_fees")) or 0.0) + float(estimated_exit_fees)
+    net = gross - fees_total
+    pnl_percent = (net / notional_entry * 100.0) if notional_entry else 0.0
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    target["exit_time"] = now
+    target["exit_price"] = float(exit_price)
+    target["estimated_fees"] = fees_total
+    target["gross_pnl_sek"] = gross
+    target["net_pnl_sek"] = net
+    target["pnl_percent"] = pnl_percent
+    target["exit_reason"] = exit_reason or None
+    target["status"] = "CLOSED"
+    update_position_excursions(target, float(exit_price))
+
+    trade = dict(target)
+    trade["trade_id"] = f"paper-trade-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    session.setdefault("trades", []).append(trade)
+    append_paper_event(
+        session,
+        "paper_position_close",
+        {"position_id": str(target.get("position_id", "")), "trade_id": trade["trade_id"], "net_pnl_sek": net},
+    )
+    return trade
+
+
+def paper_session_summary(session: dict[str, Any], session_id: str | None = None, account_id: str | None = None) -> dict[str, Any]:
+    positions_open = paper_positions(session, account_id=account_id, session_id=session_id, active_only=True)
+    trades_closed = paper_trades(session, account_id=account_id, session_id=session_id)
+    gross = sum(float(item.get("gross_pnl_sek") or 0.0) for item in trades_closed)
+    net = sum(float(item.get("net_pnl_sek") or 0.0) for item in trades_closed)
+    winners = sum(1 for item in trades_closed if float(item.get("net_pnl_sek") or 0.0) > 0)
+    losers = sum(1 for item in trades_closed if float(item.get("net_pnl_sek") or 0.0) < 0)
+    win_rate = (winners / len(trades_closed) * 100.0) if trades_closed else 0.0
+    return {
+        "session_id": session_id or None,
+        "account_id": account_id or None,
+        "open_positions": len(positions_open),
+        "closed_trades": len(trades_closed),
+        "gross_pnl_sek": gross,
+        "net_pnl_sek": net,
+        "winners": winners,
+        "losers": losers,
+        "win_rate_percent": win_rate,
+    }
+
+
+def paper_risk_state(
+    session: dict[str, Any],
+    *,
+    session_id: str,
+    account_id: str,
+    max_open_trades: int,
+    max_trade_notional_sek: float,
+    max_loss_per_trade_sek: float,
+    max_session_loss_sek: float,
+    stop_after_consecutive_losses: int,
+) -> dict[str, Any]:
+    open_positions = paper_positions(session, account_id=account_id, session_id=session_id, active_only=True)
+    closed = paper_trades(session, account_id=account_id, session_id=session_id)
+    session_pnl = sum(float(item.get("net_pnl_sek") or 0.0) for item in closed)
+    violations: list[str] = []
+    if len(open_positions) >= max_open_trades:
+        violations.append("max_open_trades")
+    if session_pnl <= -abs(max_session_loss_sek):
+        violations.append("max_session_loss")
+
+    consecutive_losses = 0
+    for item in sorted(closed, key=lambda row: str(row.get("exit_time", "") or row.get("entry_time", "")), reverse=True):
+        if float(item.get("net_pnl_sek") or 0.0) < 0:
+            consecutive_losses += 1
+        else:
+            break
+    if stop_after_consecutive_losses > 0 and consecutive_losses >= stop_after_consecutive_losses:
+        violations.append("consecutive_losses")
+
+    largest_open_notional = max((abs(float(item.get("notional") or 0.0)) for item in open_positions), default=0.0)
+    if largest_open_notional > max_trade_notional_sek:
+        violations.append("max_trade_notional")
+
+    large_loss_positions = [
+        item for item in open_positions if float(item.get("net_pnl_sek") or 0.0) <= -abs(max_loss_per_trade_sek)
+    ]
+    if large_loss_positions:
+        violations.append("max_loss_per_trade")
+
+    return {
+        "session_id": session_id,
+        "account_id": account_id,
+        "can_enter_new_trade": len(violations) == 0,
+        "open_trade_count": len(open_positions),
+        "current_session_pnl": session_pnl,
+        "consecutive_losses": consecutive_losses,
+        "max_trade_notional_sek": max_trade_notional_sek,
+        "max_loss_per_trade_sek": max_loss_per_trade_sek,
+        "max_session_loss_sek": max_session_loss_sek,
+        "stop_after_consecutive_losses": stop_after_consecutive_losses,
+        "violations": violations,
+        "open_positions": open_positions,
+        "closed_trades": len(closed),
+    }
 
 
 def create_paper_stop_loss_order(args: dict[str, Any], instrument: str = "") -> dict[str, Any]:
@@ -4097,6 +4675,189 @@ def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
     }
 
 
+def estimate_avanza_fee(
+    *,
+    account_id: str,
+    order_book_id: str,
+    side: str,
+    price: float,
+    quantity: int,
+    currency: str = "SEK",
+    market: str = "",
+    brokerage_class: str = "",
+) -> dict[str, Any]:
+    _ = account_id
+    _ = order_book_id
+    _ = side
+    notional = float(price) * float(quantity)
+    currency_norm = str(currency or "SEK").upper()
+    market_norm = str(market or "").lower()
+    brokerage_norm = str(brokerage_class or "").strip().lower()
+
+    if "fast" in brokerage_norm:
+        courtage_rate = 0.0
+        courtage_min = 99.0 if currency_norm == "SEK" else 9.99
+        notes = ["Using conservative fixed-fee assumption for Fast brokerage class."]
+    else:
+        if currency_norm == "SEK" and ("se" in market_norm or not market_norm):
+            courtage_rate = DEFAULT_COURTAGE_RATE_SE
+            courtage_min = DEFAULT_COURTAGE_MIN_SEK
+        else:
+            courtage_rate = DEFAULT_COURTAGE_RATE_US
+            courtage_min = DEFAULT_COURTAGE_MIN_USD
+        notes = ["Using conservative percentage+minimum estimate; exact fee depends on Avanza courtage class and market."]
+
+    estimated_courtage = max(courtage_min, abs(notional) * courtage_rate)
+    fx_fee = 0.0
+    if currency_norm != "SEK":
+        fx_fee = abs(notional) * DEFAULT_FX_FEE_RATE
+        notes.append("Includes one-way FX fee estimate; round-trip trading incurs FX costs on both entry and exit.")
+
+    estimated_total_cost = estimated_courtage + fx_fee
+    round_trip_cost = estimated_total_cost * 2.0
+    break_even_move_percent = ((round_trip_cost / abs(notional)) * 100.0) if notional not in (0, -0.0) else None
+    return {
+        "account_id": str(account_id),
+        "orderbook_id": str(order_book_id),
+        "side": str(side).upper(),
+        "currency": currency_norm,
+        "market": market,
+        "brokerage_class": brokerage_class or None,
+        "notional": notional,
+        "estimated_courtage": estimated_courtage,
+        "estimated_fx_fee": fx_fee,
+        "estimated_total_cost": estimated_total_cost,
+        "estimated_round_trip_cost": round_trip_cost,
+        "break_even_move_percent": break_even_move_percent,
+        "notes": notes,
+        "assumptions": {
+            "courtage_rate": courtage_rate,
+            "courtage_minimum": courtage_min,
+            "fx_fee_rate": DEFAULT_FX_FEE_RATE if currency_norm != "SEK" else 0.0,
+        },
+    }
+
+
+def avanza_private_get(avanza: Any, path: str, options: dict[str, Any] | None = None) -> Any:
+    caller = getattr(avanza, "_Avanza__call", None)
+    if not callable(caller):
+        raise RuntimeError("Avanza private API call path unavailable in this client version.")
+    return caller(HttpMethod.GET, path, options=options or {})
+
+
+def avanza_private_post(avanza: Any, path: str, body: dict[str, Any] | None = None) -> Any:
+    caller = getattr(avanza, "_Avanza__call", None)
+    if not callable(caller):
+        raise RuntimeError("Avanza private API call path unavailable in this client version.")
+    return caller(HttpMethod.POST, path, options=body or {})
+
+
+def movers_rows_from_payload(items: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not isinstance(items, list):
+        return rows
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("title") or nested_value(item, "orderbook", "name") or "")
+        market = str(item.get("marketPlaceName") or item.get("market") or nested_value(item, "orderbook", "marketPlaceName") or "")
+        country = str(item.get("countryCode") or item.get("country") or item.get("flagCode") or "").upper() or None
+        currency = str(item.get("currency") or "").upper() or infer_currency_from_metadata({"country": country, "market": market})
+        ticker = normalize_symbol_candidate(str(item.get("tickerSymbol") or item.get("symbol") or nested_value(item, "orderbook", "symbol") or ""))
+        rows.append(
+            {
+                "orderbook_id": str(
+                    item.get("orderBookId")
+                    or item.get("orderbookId")
+                    or item.get("id")
+                    or nested_value(item, "orderbook", "id")
+                    or ""
+                ),
+                "name": name,
+                "ticker": ticker or None,
+                "display_symbol": display_symbol(ticker or None, name),
+                "market": market or None,
+                "country": country,
+                "country_code": country,
+                "currency": currency,
+                "instrument_type": str(item.get("instrumentType") or nested_value(item, "orderbook", "instrumentType") or "") or None,
+                "last_price": scalar_number(item.get("lastPrice")) or scalar_number(item.get("last")),
+                "one_day_change_percent": (
+                    scalar_number(item.get("oneDayChangePercent"))
+                    or scalar_number(item.get("changePercent"))
+                    or scalar_number(item.get("change"))
+                ),
+                "total_value_traded": (
+                    scalar_number(item.get("totalValueTraded"))
+                    or scalar_number(item.get("turnover"))
+                    or scalar_number(item.get("valueTraded"))
+                ),
+                "last_price_updated": (
+                    iso_from_any_timestamp(item.get("lastPriceUpdated"))
+                    or iso_from_any_timestamp(item.get("updated"))
+                    or iso_from_any_timestamp(item.get("timestamp"))
+                ),
+            }
+        )
+    return rows
+
+
+def filter_mover_rows(
+    rows: list[dict[str, Any]],
+    *,
+    min_price: float | None = None,
+    min_total_value_traded: float | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        last_price = scalar_number(row.get("last_price"))
+        total_value_traded = scalar_number(row.get("total_value_traded"))
+        if min_price is not None and (last_price is None or last_price < min_price):
+            continue
+        if min_total_value_traded is not None and (total_value_traded is None or total_value_traded < min_total_value_traded):
+            continue
+        filtered.append(row)
+    filtered.sort(key=lambda item: scalar_number(item.get("one_day_change_percent")) or 0.0, reverse=True)
+    return filtered[: max(1, min(int(limit), 200))]
+
+
+def index_constituent_row(item: dict[str, Any]) -> dict[str, Any]:
+    orderbook_id = str(
+        item.get("orderBookId")
+        or item.get("orderbookId")
+        or item.get("id")
+        or nested_value(item, "orderbook", "id")
+        or ""
+    ).strip()
+    name = str(item.get("name") or item.get("title") or nested_value(item, "orderbook", "name") or "").strip()
+    ticker = normalize_symbol_candidate(str(item.get("tickerSymbol") or item.get("symbol") or "").strip())
+    if not ticker:
+        slug = str(item.get("urlSlugName") or "").strip()
+        if slug:
+            ticker = normalize_symbol_candidate(slug.split("-")[-1])
+    market = str(item.get("marketPlaceName") or item.get("market") or nested_value(item, "orderbook", "marketPlaceName") or "").strip()
+    country = str(item.get("countryCode") or item.get("flagCode") or item.get("country") or "").strip().upper() or None
+    return {
+        "name": name,
+        "orderbook_id": orderbook_id,
+        "country_code": country,
+        "country": country,
+        "change_percent": (
+            scalar_number(item.get("changePercent"))
+            or scalar_number(item.get("oneDayChangePercent"))
+            or scalar_number(item.get("change"))
+        ),
+        "ticker": ticker or None,
+        "symbol": ticker or None,
+        "display_symbol": display_symbol(ticker, name),
+        "market": market or None,
+        "currency": str(item.get("currency") or nested_value(item, "orderbook", "currency") or "").strip().upper()
+        or infer_currency_from_metadata({"country": country, "market": market}),
+        "instrument_type": str(item.get("instrumentType") or nested_value(item, "orderbook", "instrumentType") or "").strip().upper() or None,
+    }
+
+
 def fmp_analyst_recommendations_snapshot(
     symbol: str,
     *,
@@ -4245,6 +5006,259 @@ def market_quote_change_percent(payload: dict[str, Any]) -> float | None:
             ("change", "percent"),
         ),
     )
+
+
+def market_quote_first_number(payload: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> float | None:
+    return first_numeric(payload, paths)
+
+
+def market_quote_first_text(payload: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> str:
+    for path in paths:
+        current: Any = payload
+        for key in path:
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                current = None
+            if current is None:
+                break
+        if current is None:
+            continue
+        text = str(current).strip()
+        if text:
+            return text
+    return ""
+
+
+def iso_from_any_timestamp(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+        except Exception:
+            parsed_num = scalar_number(text)
+            if parsed_num is None:
+                return text
+            value = parsed_num
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 10_000_000_000:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
+        except Exception:
+            return None
+    return None
+
+
+def quote_age_ms_from_timestamp(timestamp_iso: str | None) -> int | None:
+    if not timestamp_iso:
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    now = datetime.now(timezone.utc)
+    age = (now - parsed).total_seconds() * 1000.0
+    return int(age) if age >= 0 else 0
+
+
+def orderbook_quote_row(
+    order_book_id: str,
+    payload: dict[str, Any] | None,
+    *,
+    fallback_name: str = "",
+    fallback_ticker: str = "",
+    fallback_market: str = "",
+    fallback_currency: str = "",
+    error: str = "",
+) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    quote = data.get("quote")
+    if not isinstance(quote, dict):
+        quote = data
+
+    last = market_quote_first_number(data, (("quote", "last"), ("last",)))
+    bid = market_quote_first_number(data, (("quote", "buy"), ("buy",)))
+    ask = market_quote_first_number(data, (("quote", "sell"), ("sell",)))
+    spread_absolute = (ask - bid) if ask is not None and bid is not None else None
+    spread_percent = ((spread_absolute / bid) * 100.0) if spread_absolute is not None and bid not in (None, 0) else None
+
+    timestamp_iso = iso_from_any_timestamp(
+        market_quote_first_number(data, (("quote", "updated"), ("updated",), ("quote", "timeOfLast"), ("timeOfLast",)))
+        or market_quote_first_text(data, (("quote", "updated"), ("updated",), ("quote", "timeOfLast"), ("timeOfLast",)))
+    )
+    if not timestamp_iso:
+        timestamp_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    ticker_value = normalize_symbol_candidate(
+        market_quote_first_text(data, (("ticker",), ("symbol",), ("orderbook", "symbol")))
+        or fallback_ticker
+    )
+    return {
+        "orderbook_id": str(order_book_id),
+        "name": market_quote_first_text(data, (("name",), ("orderbook", "name"), ("instrument", "name"))) or fallback_name or None,
+        "ticker": ticker_value or None,
+        "market": market_quote_first_text(data, (("market",), ("marketPlace",), ("marketPlaceName",))) or fallback_market or None,
+        "currency": (
+            str(market_quote_first_text(data, (("quote", "currency"), ("currency",))) or fallback_currency or "").strip().upper()
+            or None
+        ),
+        "timestamp": timestamp_iso,
+        "last": last,
+        "bid": bid,
+        "ask": ask,
+        "spread_absolute": spread_absolute,
+        "spread_percent": spread_percent,
+        "day_change_percent": market_quote_first_number(data, (("quote", "changePercent"), ("changePercent",))),
+        "day_volume": market_quote_first_number(data, (("quote", "totalVolumeTraded"), ("totalVolumeTraded",))),
+        "total_value_traded": market_quote_first_number(data, (("quote", "totalValueTraded"), ("totalValueTraded",))),
+        "turnover": market_quote_first_number(data, (("quote", "turnover"), ("turnover",))),
+        "high": market_quote_first_number(data, (("quote", "highest"), ("highest",))),
+        "low": market_quote_first_number(data, (("quote", "lowest"), ("lowest",))),
+        "open": market_quote_first_number(data, (("quote", "open"), ("open",))),
+        "previous_close": market_quote_first_number(data, (("quote", "previousClose"), ("previousClose",))),
+        "quote_age_ms": quote_age_ms_from_timestamp(timestamp_iso),
+        "trading_status": market_quote_first_text(data, (("quote", "tradingStatus"), ("tradingStatus",), ("status",))) or None,
+        "error": error or None,
+    }
+
+
+def infer_currency_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    data = metadata or {}
+    currency = str(data.get("currency") or "").strip().upper()
+    if currency:
+        return currency
+    country = str(data.get("country_code") or data.get("country") or "").strip().upper()
+    market = str(data.get("market") or data.get("market_place") or "").strip().lower()
+    if country in COUNTRY_CURRENCY_MAP:
+        return COUNTRY_CURRENCY_MAP[country]
+    for hint, mapped_currency in MARKET_CURRENCY_HINTS:
+        if hint in market:
+            return mapped_currency
+    return None
+
+
+def infer_country_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    data = metadata or {}
+    country = str(data.get("country_code") or data.get("country") or "").strip().upper()
+    if country:
+        return country
+    market = str(data.get("market") or "").strip().lower()
+    if "stockholm" in market or "xsto" in market:
+        return "SE"
+    if "nasdaq" in market or "nyse" in market:
+        return "US"
+    if "helsinki" in market or "xhel" in market:
+        return "FI"
+    if "copenhagen" in market or "xcse" in market:
+        return "DK"
+    if "oslo" in market or "xosl" in market:
+        return "NO"
+    if "london" in market or "xlon" in market:
+        return "GB"
+    return None
+
+
+def merged_orderbook_metadata(base: dict[str, Any] | None = None, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key in ("name", "ticker", "market", "currency", "country_code", "country", "instrument_type", "orderbook_id", "display_symbol"):
+        value = (updates or {}).get(key)
+        if value is None:
+            continue
+        text = str(value).strip() if not isinstance(value, (int, float, bool)) else str(value)
+        if text:
+            merged[key] = text
+    if not merged.get("display_symbol"):
+        merged["display_symbol"] = display_symbol(str(merged.get("ticker") or ""), str(merged.get("name") or ""))
+    if not merged.get("country"):
+        merged["country"] = merged.get("country_code")
+    if not merged.get("country_code"):
+        merged["country_code"] = merged.get("country")
+    inferred_country = infer_country_from_metadata(merged)
+    if inferred_country:
+        merged["country"] = merged.get("country") or inferred_country
+        merged["country_code"] = merged.get("country_code") or inferred_country
+    if not merged.get("instrument_type"):
+        market = str(merged.get("market") or "").strip().lower()
+        if market:
+            merged["instrument_type"] = "STOCK"
+    inferred_currency = infer_currency_from_metadata(merged)
+    if inferred_currency and not merged.get("currency"):
+        merged["currency"] = inferred_currency
+    return merged
+
+
+def metadata_from_market_guide_payload(orderbook_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    orderbook = data.get("orderbook")
+    if not isinstance(orderbook, dict):
+        orderbook = {}
+    instrument = data.get("instrument")
+    if not isinstance(instrument, dict):
+        instrument = {}
+    name = str(
+        data.get("name")
+        or orderbook.get("name")
+        or instrument.get("name")
+        or nested_value(data, "stock", "name")
+        or ""
+    ).strip()
+    ticker = normalize_symbol_candidate(
+        str(
+            data.get("tickerSymbol")
+            or data.get("symbol")
+            or orderbook.get("symbol")
+            or instrument.get("tickerSymbol")
+            or ""
+        ).strip()
+    )
+    if not ticker:
+        ticker = trailing_parenthesized_symbol(name)
+    return {
+        "orderbook_id": orderbook_id,
+        "name": name or None,
+        "ticker": ticker or None,
+        "display_symbol": display_symbol(ticker or None, name or None),
+        "market": str(
+            data.get("marketPlaceName")
+            or data.get("market")
+            or orderbook.get("marketPlaceName")
+            or instrument.get("market")
+            or ""
+        ).strip()
+        or None,
+        "currency": str(
+            data.get("currency")
+            or nested_value(data, "quote", "currency")
+            or orderbook.get("currency")
+            or instrument.get("currency")
+            or ""
+        ).strip()
+        or None,
+        "country_code": str(
+            data.get("countryCode")
+            or data.get("country")
+            or data.get("flagCode")
+            or orderbook.get("countryCode")
+            or instrument.get("countryCode")
+            or ""
+        ).strip()
+        or None,
+        "instrument_type": str(
+            data.get("instrumentType")
+            or instrument.get("instrumentType")
+            or instrument.get("type")
+            or orderbook.get("instrumentType")
+            or ""
+        ).strip()
+        or None,
+    }
 
 
 def paper_order_request(item: dict[str, Any]) -> dict[str, Any]:
@@ -4404,9 +5418,41 @@ MCP_TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "avanza_capabilities",
+        "description": "Return consolidated MCP safety/capability status for automation loops (paper/live guards, account context, and tool availability).",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "avanza_live_session_authorize",
+        "description": "Explicitly enable live mutation permission for this active MCP/TUI session. Requires read_write mode and acknowledge=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "acknowledge": {"type": "boolean", "default": False},
+                "reason": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_live_session_revoke",
+        "description": "Disable live mutation permission for this MCP/TUI session and force paper-only mode.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "avanza_accounts",
         "description": "List Avanza accounts currently visible to the authenticated TUI session.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "avanza_select_account",
+        "description": "Safely switch MCP/TUI selected account context. Read-only context switch; no order mutations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}},
+            "required": ["account_id"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "avanza_account_performance",
@@ -4775,6 +5821,71 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_orderbook_quotes",
+        "description": "Fetch arbitrary quote snapshots for supplied orderbook IDs (supports 5s polling loops for 20-50 symbols).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "orderbook_ids": {
+                    "type": "array",
+                    "items": {"type": ["string", "integer"]},
+                },
+                "fields": {"type": "array", "items": {"type": "string"}},
+                "refresh": {"type": "boolean", "default": True},
+            },
+            "required": ["orderbook_ids"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_market_movers",
+        "description": "Fetch Avanza market movers (gainers/losers) with optional country/market/turnover filters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "countryCodes": {"type": "array", "items": {"type": "string"}, "default": ["SE"]},
+                "marketPlaces": {"type": "array", "items": {"type": "string"}},
+                "min_price": {"type": "number"},
+                "min_total_value_traded": {"type": "number"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 30},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_index_constituents",
+        "description": "Fetch index constituents (default OMXS30) with optional quote/spread enrichment for building a liquid scalp universe.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "index_id": {"type": ["string", "integer"], "default": "19002"},
+                "index_name": {"type": "string", "default": "OMXS30"},
+                "include_quotes": {"type": "boolean", "default": False},
+                "include_spread": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_fee_estimate",
+        "description": "Estimate courtage/FX costs and break-even move for a planned trade (conservative assumptions when exact class data is unavailable).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "orderbook_id": {"type": "string"},
+                "side": {"type": "string"},
+                "price": {"type": "number"},
+                "quantity": {"type": "integer"},
+                "currency": {"type": "string"},
+                "market": {"type": "string"},
+                "brokerage_class": {"type": "string"},
+            },
+            "required": ["account_id", "orderbook_id", "side", "price", "quantity"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_search_stock",
         "description": "Search Avanza stock/order book data by name, ticker, or ISIN.",
         "inputSchema": {
@@ -4831,6 +5942,43 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_paper_positions",
+        "description": "List paper positions for a selected account/session, with optional active-only filter.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "active_only": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_trades",
+        "description": "List completed paper trades (entry+exit ledger rows) for account/session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_session_summary",
+        "description": "Return P/L summary for a paper trading session/account.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_paper_order_set",
         "description": "Create a local paper buy/sell order. This never places an Avanza order and is allowed in MCP read-only mode.",
         "inputSchema": {
@@ -4844,8 +5992,85 @@ MCP_TOOLS = [
                 "valid_until": {"type": "string"},
                 "volume": {"type": "integer"},
                 "condition": {"type": "string", "default": "normal"},
+                "session_id": {"type": "string"},
+                "fill_immediately": {"type": "boolean", "default": False},
+                "entry_reason": {"type": "string"},
+                "stop_price": {"type": "number"},
+                "target_price": {"type": "number"},
             },
             "required": ["account_id", "order_book_id", "price", "valid_until", "volume"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_order_exit",
+        "description": "Close an open paper position by position_id or orderbook_id and create a completed paper trade entry.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "position_id": {"type": "string"},
+                "orderbook_id": {"type": "string"},
+                "exit_price": {"type": "number"},
+                "exit_reason": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+            "required": ["account_id", "exit_price"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_paper_risk_state",
+        "description": "Evaluate paper-session guardrails before allowing a new trade entry.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+                "max_open_trades": {"type": "integer", "default": 3},
+                "max_trade_notional_sek": {"type": "number", "default": 5000},
+                "max_loss_per_trade_sek": {"type": "number", "default": 250},
+                "max_session_loss_sek": {"type": "number", "default": 800},
+                "stop_after_consecutive_losses": {"type": "integer", "default": 3},
+            },
+            "required": ["account_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_scalp_watchlist_set",
+        "description": "Store/update a named scalp watchlist (orderbook IDs + optional labels) in local paper session state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "watchlist_id": {"type": "string"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "orderbook_id": {"type": ["string", "integer"]},
+                            "label": {"type": "string"},
+                        },
+                        "required": ["orderbook_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["watchlist_id", "items"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_scalp_watchlist_get",
+        "description": "Load a named scalp watchlist and optionally include current quotes for all members.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "watchlist_id": {"type": "string"},
+                "include_quotes": {"type": "boolean", "default": True},
+            },
+            "required": ["watchlist_id"],
             "additionalProperties": False,
         },
     },
@@ -5855,6 +7080,8 @@ class AvanzaTradingTui(App):
         self.realtime_status_checked_at: dict[str, datetime] = {}
         self.quote_payload_by_order_book: dict[str, dict[str, Any]] = {}
         self.quote_payload_checked_at: dict[str, datetime] = {}
+        self.orderbook_metadata_by_id: dict[str, dict[str, Any]] = {}
+        self.orderbook_metadata_checked_at: dict[str, datetime] = {}
         self.live_refresh_thread: threading.Thread | None = None
         self.live_refresh_inflight = False
         self.live_refresh_pending = False
@@ -5863,6 +7090,7 @@ class AvanzaTradingTui(App):
         self.mcp_thread: threading.Thread | None = None
         self.mcp_token: str | None = None
         self.mcp_write_enabled = False
+        self.live_trading_allowed_for_session = False
         self.paper_mode_enabled = True
         self.paper_session_path = PAPER_SESSION_FILE
         self.paper_session = load_paper_session(self.paper_session_path)
@@ -7006,15 +8234,35 @@ class AvanzaTradingTui(App):
             self.update_check_inflight = False
 
     def mcp_status_payload(self) -> dict[str, Any]:
+        account = self.account_by_id(self.selected_account_id or "") if self.selected_account_id else None
+        available_tools = sorted(tool.get("name", "") for tool in MCP_TOOLS if isinstance(tool, dict) and tool.get("name"))
         return {
             "ok": True,
             "app_version": APP_VERSION,
             "enabled": self.mcp_server is not None,
+            "mcp_enabled": self.mcp_server is not None,
             "read_write": self.mcp_write_enabled,
+            "read_write_enabled": self.mcp_write_enabled,
             "paper_trading": True,
+            "paper_trading_enabled": self.paper_mode_enabled,
+            "live_trading_allowed_for_this_session": self.live_trading_allowed_for_session,
             "selected_account_id": self.selected_account_id,
+            "selected_account_name": account_display_name(account) if isinstance(account, dict) else None,
+            "account_type": str(account.get("type", "") or "") if isinstance(account, dict) else None,
             "accounts_loaded": len(self.accounts),
             "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+            "available_tools": available_tools,
+            "can_read_quotes": True,
+            "can_place_paper_orders": True,
+            "can_place_live_orders": bool(self.mcp_write_enabled and self.live_trading_allowed_for_session),
+            "can_cancel_live_orders": bool(self.mcp_write_enabled and self.live_trading_allowed_for_session),
+            "warning": (
+                "Live mutation tools are enabled for this session. Use with extreme caution."
+                if (self.mcp_write_enabled and self.live_trading_allowed_for_session)
+                else "MCP R/W is enabled but live mutation is still blocked until explicitly authorized."
+                if self.mcp_write_enabled
+                else ""
+            ),
             "paper_session_file": str(self.paper_session_path),
             "update_available": self.update_status_outdated,
             "latest_version": self.update_status_latest or APP_VERSION,
@@ -7584,6 +8832,10 @@ class AvanzaTradingTui(App):
             return
         if not self.mcp_write_enabled:
             raise PermissionError("TUI MCP mode is read-only. Enable R/W in the TUI for live mutations.")
+        if not self.live_trading_allowed_for_session:
+            raise PermissionError(
+                "Live trading is blocked for this MCP session. Explicitly authorize live mode first."
+            )
 
     def handle_mcp_tool_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         marker = self.mcp_stock_marker_for_call(arguments)
@@ -7617,13 +8869,67 @@ class AvanzaTradingTui(App):
         avanza = self.require_connection()
         account_id = str(arguments.get("account_id") or self.selected_account_id or "")
 
-        if tool == "avanza_status":
+        if tool in {"avanza_status", "avanza_capabilities"}:
             return self.mcp_status_payload()
+
+        if tool == "avanza_live_session_authorize":
+            acknowledge = bool(arguments.get("acknowledge", False))
+            reason = str(arguments.get("reason", "") or "").strip() or None
+            if not acknowledge:
+                raise PermissionError("Set acknowledge=true to explicitly authorize live trading for this active session.")
+            if not self.mcp_write_enabled:
+                raise PermissionError("Enable MCP R/W mode in the TUI before authorizing live trading.")
+            self.live_trading_allowed_for_session = True
+            self.write_mcp_log("[yellow]Live mutation mode authorized for this session.[/yellow]")
+            self.record_event("mcp", "live_session_authorized", {"reason": reason})
+            return {
+                "ok": True,
+                "live_trading_allowed_for_this_session": True,
+                "read_write_enabled": self.mcp_write_enabled,
+                "warning": "Live mutation tools are now enabled for this active session.",
+                "reason": reason,
+            }
+
+        if tool == "avanza_live_session_revoke":
+            self.live_trading_allowed_for_session = False
+            self.write_mcp_log("[green]Live mutation mode revoked. MCP is paper-safe again.[/green]")
+            self.record_event("mcp", "live_session_revoked", {})
+            return {
+                "ok": True,
+                "live_trading_allowed_for_this_session": False,
+                "read_write_enabled": self.mcp_write_enabled,
+            }
 
         if tool == "avanza_accounts":
             overview = avanza.get_overview()
             accounts = account_rows_from_overview(overview) if isinstance(overview, dict) else []
             return rows_as_dicts(["ID", "Name", "Type", "Total Value", "Buying Power", "Status"], [account_row(account) for account in accounts])
+
+        if tool == "avanza_select_account":
+            requested_account_id = str(arguments["account_id"]).strip()
+            if not requested_account_id:
+                raise ValueError("account_id is required.")
+            if not self.accounts:
+                overview = avanza.get_overview()
+                if isinstance(overview, dict):
+                    self.accounts = account_rows_from_overview(overview)
+            account = self.account_by_id(requested_account_id)
+            if not account:
+                raise ValueError(f"Unknown account id: {requested_account_id}")
+            self.selected_account_id = requested_account_id
+            try:
+                self.select_account(requested_account_id)
+            except Exception:
+                # Keep MCP account context updated even if UI is not mounted.
+                self.selected_account_id = requested_account_id
+            return {
+                "ok": True,
+                "selected_account_id": requested_account_id,
+                "selected_account_name": account_display_name(account),
+                "account_type": str(account.get("type", "") or ""),
+                "status": str(account.get("status", "") or ""),
+                "capabilities": self.mcp_status_payload(),
+            }
 
         if tool == "avanza_account_performance":
             requested_period = arguments.get("period", "SINCE_START")
@@ -7907,13 +9213,17 @@ class AvanzaTradingTui(App):
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "account_id": account_id,
                 "read_write": self.mcp_write_enabled,
-                "paper_trading": True,
+                "paper_trading": self.paper_mode_enabled,
+                "live_trading_allowed_for_this_session": self.live_trading_allowed_for_session,
                 "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+                "capabilities": self.mcp_status_payload(),
                 "portfolio": self.portfolio_snapshot(avanza, account_id),
                 "stoplosses": self.stoploss_snapshot(avanza, account_id),
                 "open_orders": self.open_orders_snapshot(avanza, account_id),
                 "realtime_quotes": realtime_quotes,
                 "paper_orders": paper_orders(self.paper_session, account_id),
+                "paper_positions": paper_positions(self.paper_session, account_id=account_id, active_only=False),
+                "paper_trades": paper_trades(self.paper_session, account_id=account_id),
             }
 
         if tool == "avanza_realtime_quotes":
@@ -7925,21 +9235,357 @@ class AvanzaTradingTui(App):
                 "quotes": self.realtime_quotes_snapshot(account_id),
             }
 
+        if tool == "avanza_orderbook_quotes":
+            raw_ids = arguments.get("orderbook_ids")
+            if not isinstance(raw_ids, list) or not raw_ids:
+                raise ValueError("orderbook_ids must be a non-empty array.")
+            requested_fields = arguments.get("fields")
+            refresh = bool(arguments.get("refresh", True))
+            ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+            if not ids:
+                raise ValueError("No valid orderbook IDs supplied.")
+            if len(ids) > 100:
+                raise ValueError("Limit orderbook_ids to <= 100 per request.")
+            started = time.monotonic()
+            rows: list[dict[str, Any]] = []
+            errors: list[dict[str, Any]] = []
+            for orderbook_id in ids:
+                payload = None
+                err = ""
+                try:
+                    payload = self.quote_payload_for_order_book(orderbook_id, refresh=refresh)
+                except Exception as exc:
+                    err = str(exc)
+                if payload is None and not err:
+                    err = "quote_unavailable"
+                row = orderbook_quote_row(
+                    orderbook_id,
+                    payload,
+                    fallback_name=self.holding_labels_by_order_book.get(orderbook_id, ""),
+                    error=err,
+                )
+                metadata = self.orderbook_metadata_for_quote(
+                    orderbook_id,
+                    payload if isinstance(payload, dict) else None,
+                    allow_remote_lookup=refresh,
+                )
+                row["name"] = row.get("name") or metadata.get("name")
+                row["ticker"] = normalize_symbol_candidate(row.get("ticker") or metadata.get("ticker")) or None
+                row["market"] = row.get("market") or metadata.get("market")
+                row["currency"] = row.get("currency") or metadata.get("currency") or infer_currency_from_metadata(metadata)
+                row["country"] = metadata.get("country") or metadata.get("country_code") or infer_country_from_metadata(metadata)
+                row["instrument_type"] = metadata.get("instrument_type")
+                row["display_symbol"] = metadata.get("display_symbol") or display_symbol(row.get("ticker"), row.get("name"))
+                if not row.get("currency"):
+                    row["metadata_warnings"] = ["Currency unresolved from quote/search/index/mover metadata."]
+                rows.append(row)
+                if err:
+                    errors.append({"orderbook_id": orderbook_id, "error": err})
+            if isinstance(requested_fields, list) and requested_fields:
+                normalized_fields = [str(field).strip() for field in requested_fields if str(field).strip()]
+                keep = {"orderbook_id", "error"}
+                keep.update(normalized_fields)
+                filtered_rows: list[dict[str, Any]] = []
+                for row in rows:
+                    filtered_rows.append({key: row.get(key) for key in row.keys() if key in keep})
+                rows = filtered_rows
+            elapsed_ms = int((time.monotonic() - started) * 1000.0)
+            return {
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "count": len(rows),
+                "requested_count": len(ids),
+                "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+                "quotes": rows,
+                "errors": errors,
+                "error_count": len(errors),
+                "rate_limit": {
+                    "recommended_max_ids_per_call": 50,
+                    "recommended_poll_interval_seconds": LIVE_REFRESH_SECONDS,
+                    "elapsed_ms": elapsed_ms,
+                },
+            }
+
+        if tool == "avanza_market_movers":
+            country_codes_raw = arguments.get("countryCodes", ["SE"])
+            market_places_raw = arguments.get("marketPlaces")
+            min_price = scalar_number(arguments.get("min_price"))
+            min_total_value_traded = scalar_number(arguments.get("min_total_value_traded"))
+            limit = int(arguments.get("limit", 30))
+            country_codes = [str(item).strip().upper() for item in country_codes_raw if str(item).strip()] if isinstance(country_codes_raw, list) else ["SE"]
+            market_places = [str(item).strip() for item in market_places_raw if str(item).strip()] if isinstance(market_places_raw, list) else []
+
+            gainers_losers_payload = payload_to_json_safe(
+                avanza_private_post(
+                    avanza,
+                    "/_api/market-stock-filter/stocks/gainers-losers",
+                    body={
+                        "filter": {
+                            "countryCodes": country_codes,
+                            "marketPlaces": market_places,
+                            "sectors": [],
+                        }
+                    },
+                )
+            )
+            filter_options_payload = payload_to_json_safe(
+                avanza_private_get(
+                    avanza,
+                    "/_api/market-stock-filter/stocks/filter-options",
+                    options={"countryCodes": country_codes},
+                )
+            )
+            if not isinstance(gainers_losers_payload, dict):
+                gainers_losers_payload = {}
+
+            gainers_rows = movers_rows_from_payload(gainers_losers_payload.get("gainers"))
+            losers_rows = movers_rows_from_payload(gainers_losers_payload.get("losers"))
+            gainers_rows = filter_mover_rows(
+                gainers_rows,
+                min_price=min_price,
+                min_total_value_traded=min_total_value_traded,
+                limit=limit,
+            )
+            losers_rows = filter_mover_rows(
+                losers_rows,
+                min_price=min_price,
+                min_total_value_traded=min_total_value_traded,
+                limit=limit,
+            )
+            losers_rows.sort(key=lambda item: scalar_number(item.get("one_day_change_percent")) or 0.0)
+            for row in gainers_rows + losers_rows:
+                orderbook_id = str(row.get("orderbook_id") or "").strip()
+                if not orderbook_id:
+                    continue
+                self._cache_orderbook_metadata(
+                    orderbook_id,
+                    {
+                        "orderbook_id": orderbook_id,
+                        "name": row.get("name"),
+                        "currency": row.get("currency"),
+                        "country_code": row.get("country"),
+                    },
+                )
+            return {
+                "countryCodes": country_codes,
+                "marketPlaces": market_places,
+                "min_price": min_price,
+                "min_total_value_traded": min_total_value_traded,
+                "numberOfGainers": int(gainers_losers_payload.get("numberOfGainers") or len(gainers_rows)),
+                "numberOfLosers": int(gainers_losers_payload.get("numberOfLosers") or len(losers_rows)),
+                "numberOfNeutrals": int(gainers_losers_payload.get("numberOfNeutrals") or 0),
+                "gainers": gainers_rows,
+                "losers": losers_rows,
+                "filter_options": filter_options_payload,
+                "raw": gainers_losers_payload,
+            }
+
+        if tool == "avanza_index_constituents":
+            index_id = str(arguments.get("index_id", "19002") or "19002").strip()
+            index_name = str(arguments.get("index_name", "OMXS30") or "OMXS30").strip()
+            include_quotes = bool(arguments.get("include_quotes", False))
+            include_spread = bool(arguments.get("include_spread", False))
+            if not index_id:
+                raise ValueError("index_id is required.")
+
+            raw_payload = payload_to_json_safe(
+                avanza_private_get(
+                    avanza,
+                    f"/_api/market-index/{index_id}/constituents",
+                    options={},
+                )
+            )
+            items: list[dict[str, Any]] = []
+            if isinstance(raw_payload, list):
+                items = [item for item in raw_payload if isinstance(item, dict)]
+            elif isinstance(raw_payload, dict):
+                for key in ("constituents", "items", "stocks", "results"):
+                    candidate = raw_payload.get(key)
+                    if isinstance(candidate, list):
+                        items = [item for item in candidate if isinstance(item, dict)]
+                        break
+            rows = [index_constituent_row(item) for item in items]
+            rows = [row for row in rows if row.get("orderbook_id")]
+            for row in rows:
+                orderbook_id = str(row.get("orderbook_id") or "").strip()
+                if not orderbook_id:
+                    continue
+                self._cache_orderbook_metadata(
+                    orderbook_id,
+                    {
+                        "orderbook_id": orderbook_id,
+                        "name": row.get("name"),
+                        "ticker": row.get("ticker"),
+                        "country_code": row.get("country_code"),
+                    },
+                )
+
+            if include_quotes:
+                enriched: list[dict[str, Any]] = []
+                for row in rows:
+                    orderbook_id = str(row.get("orderbook_id") or "")
+                    quote_payload = self.quote_payload_for_order_book(orderbook_id, refresh=True)
+                    quote_row = orderbook_quote_row(
+                        orderbook_id,
+                        quote_payload,
+                        fallback_name=str(row.get("name") or ""),
+                        fallback_ticker=str(row.get("ticker") or ""),
+                        fallback_currency="SEK" if str(row.get("country_code") or "").upper() == "SE" else "",
+                    )
+                    merged = {
+                        **row,
+                        "last": quote_row.get("last"),
+                        "bid": quote_row.get("bid"),
+                        "ask": quote_row.get("ask"),
+                    }
+                    if include_spread:
+                        merged["spread_absolute"] = quote_row.get("spread_absolute")
+                        merged["spread_percent"] = quote_row.get("spread_percent")
+                    enriched.append(merged)
+                rows = enriched
+            elif include_spread:
+                enriched = []
+                for row in rows:
+                    orderbook_id = str(row.get("orderbook_id") or "")
+                    quote_payload = self.quote_payload_for_order_book(orderbook_id, refresh=False)
+                    quote_row = orderbook_quote_row(
+                        orderbook_id,
+                        quote_payload,
+                        fallback_name=str(row.get("name") or ""),
+                        fallback_ticker=str(row.get("ticker") or ""),
+                    )
+                    merged = {
+                        **row,
+                        "last": quote_row.get("last"),
+                        "bid": quote_row.get("bid"),
+                        "ask": quote_row.get("ask"),
+                        "spread_absolute": quote_row.get("spread_absolute"),
+                        "spread_percent": quote_row.get("spread_percent"),
+                    }
+                    enriched.append(merged)
+                rows = enriched
+
+            return {
+                "index_id": index_id,
+                "index_name": index_name,
+                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "constituent_count": len(rows),
+                "constituents": rows,
+                "include_quotes": include_quotes,
+                "include_spread": include_spread,
+                "raw": raw_payload,
+            }
+
+        if tool == "avanza_fee_estimate":
+            side = str(arguments.get("side", "")).strip()
+            if not side:
+                raise ValueError("side is required.")
+            orderbook_id = str(arguments.get("orderbook_id") or arguments.get("order_book_id") or "").strip()
+            if not orderbook_id:
+                raise ValueError("orderbook_id is required.")
+            price = scalar_number(arguments.get("price"))
+            quantity = int(arguments.get("quantity", 0) or 0)
+            if price is None or price <= 0:
+                raise ValueError("price must be > 0.")
+            if quantity <= 0:
+                raise ValueError("quantity must be > 0.")
+            market = str(arguments.get("market", "")).strip()
+            metadata = self.orderbook_metadata_for_quote(orderbook_id, quote_payload=None, allow_remote_lookup=True)
+            warnings: list[str] = []
+            currency_input = str(arguments.get("currency", "")).strip().upper()
+            resolved_currency = currency_input or infer_currency_from_metadata(
+                {
+                    "currency": metadata.get("currency"),
+                    "country_code": metadata.get("country_code") or metadata.get("country"),
+                    "market": market or metadata.get("market"),
+                }
+            )
+            if not resolved_currency:
+                market_lower = (market or str(metadata.get("market", ""))).lower()
+                country_code = str(metadata.get("country_code") or metadata.get("country") or "").upper()
+                fallback = infer_currency_from_metadata({"country_code": country_code, "market": market_lower})
+                if fallback:
+                    resolved_currency = fallback
+                    warnings.append(f"Currency missing; inferred {fallback} from market/country metadata.")
+                elif country_code == "SE" or "stockholm" in market_lower or "xsto" in market_lower:
+                    resolved_currency = "SEK"
+                    warnings.append("Currency missing; inferred SEK from Swedish market context.")
+                else:
+                    resolved_currency = "USD"
+                    warnings.append("Currency unknown for non-Swedish context; using conservative USD + FX estimate.")
+            estimate = estimate_avanza_fee(
+                account_id=str(arguments["account_id"]),
+                order_book_id=orderbook_id,
+                side=side,
+                price=price,
+                quantity=quantity,
+                currency=resolved_currency,
+                market=market or str(metadata.get("market", "") or ""),
+                brokerage_class=str(arguments.get("brokerage_class", "")),
+            )
+            if warnings:
+                estimate.setdefault("warnings", [])
+                if isinstance(estimate["warnings"], list):
+                    estimate["warnings"].extend(warnings)
+            estimate["resolved_currency"] = resolved_currency
+            estimate["metadata"] = {
+                "name": metadata.get("name"),
+                "ticker": metadata.get("ticker"),
+                "market": metadata.get("market"),
+                "country": metadata.get("country") or metadata.get("country_code"),
+                "instrument_type": metadata.get("instrument_type"),
+            }
+            return estimate
+
         if tool == "avanza_search_stock":
             query = str(arguments["query"])
             limit = int(arguments.get("limit", 10))
-            hits = flattened_search_hits(avanza.search_for_stock(query, limit))
-            return [
-                {
-                    "name": hit.get("name", ""),
-                    "ticker": hit.get("tickerSymbol", ""),
-                    "instrument_type": hit.get("instrumentType", ""),
-                    "order_book_id": search_hit_order_book_id(hit),
-                    "isin": hit.get("isin", ""),
-                    "currency": hit.get("currency", ""),
-                }
-                for hit in hits
-            ]
+            hits = flattened_search_hits(avanza.search_for_stock(query, max(10, limit * 3)))
+            rows = normalized_search_rows(hits, query=query)
+            rows = search_rows_with_market_data(avanza, rows, include_market_data=True)
+            trimmed: list[dict[str, Any]] = []
+            for row in rows[: max(1, min(limit, 50))]:
+                orderbook_id = str(row.get("orderbook_id") or "").strip()
+                if orderbook_id:
+                    self._cache_orderbook_metadata(
+                        orderbook_id,
+                        {
+                            "orderbook_id": orderbook_id,
+                            "name": row.get("name"),
+                            "ticker": row.get("ticker"),
+                            "display_symbol": row.get("display_symbol"),
+                            "market": row.get("market_place"),
+                            "currency": row.get("currency"),
+                            "country_code": row.get("country"),
+                            "instrument_type": row.get("instrument_type"),
+                        },
+                    )
+                trimmed.append(
+                    {
+                        "name": row.get("name"),
+                        "ticker": row.get("ticker"),
+                        "symbol": row.get("symbol"),
+                        "display_symbol": row.get("display_symbol"),
+                        "orderbook_id": row.get("orderbook_id"),
+                        "market_place": row.get("market_place"),
+                        "country": row.get("country"),
+                        "currency": row.get("currency"),
+                        "instrument_type": row.get("instrument_type"),
+                        "tradeable": row.get("tradeable"),
+                        "buyable": row.get("buyable"),
+                        "sellable": row.get("sellable"),
+                        "last_price": row.get("last_price"),
+                        "bid": row.get("bid"),
+                        "ask": row.get("ask"),
+                        "spread_absolute": row.get("spread_absolute"),
+                        "spread_percent": row.get("spread_percent"),
+                        "isin": row.get("isin"),
+                    }
+                )
+            return {
+                "query": query,
+                "count": len(trimmed),
+                "results": trimmed,
+            }
 
         if tool == "avanza_stoploss_set":
             confirmed = bool(arguments.get("confirm", False))
@@ -8015,9 +9661,87 @@ class AvanzaTradingTui(App):
             paper_order = create_paper_order(arguments, instrument=str(arguments.get("instrument", "")))
             self.paper_session.setdefault("orders", []).append(paper_order)
             append_paper_event(self.paper_session, "paper_order_set", {"id": paper_order["id"], "request": paper_order["request"]})
+            if bool(arguments.get("fill_immediately", False)):
+                request = paper_order.get("request", {}) if isinstance(paper_order.get("request"), dict) else {}
+                session_id = paper_session_id(arguments.get("session_id"))
+                price = scalar_number(request.get("price")) or 0.0
+                quantity = int(request.get("volume", 0) or 0)
+                if quantity <= 0 or price <= 0:
+                    raise ValueError("Paper fill_immediately requires price > 0 and volume > 0.")
+                fee = estimate_avanza_fee(
+                    account_id=str(request.get("account_id", "")),
+                    order_book_id=str(request.get("order_book_id", "")),
+                    side=str(request.get("order_type", "buy")),
+                    price=price,
+                    quantity=quantity,
+                    currency="SEK",
+                )
+                position = paper_open_position(
+                    self.paper_session,
+                    session_id=session_id,
+                    account_id=str(request.get("account_id", "")),
+                    order_book_id=str(request.get("order_book_id", "")),
+                    ticker=str(arguments.get("ticker", "") or ""),
+                    name=str(paper_order.get("instrument", "") or arguments.get("instrument", "")),
+                    side=str(request.get("order_type", "buy")),
+                    entry_price=price,
+                    quantity=quantity,
+                    estimated_fees=float(fee.get("estimated_total_cost", 0.0) or 0.0),
+                    entry_reason=str(arguments.get("entry_reason", "") or ""),
+                    stop_price=scalar_number(arguments.get("stop_price")),
+                    target_price=scalar_number(arguments.get("target_price")),
+                )
+                paper_order["status"] = "FILLED"
+                paper_order["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                append_paper_event(
+                    self.paper_session,
+                    "paper_order_filled",
+                    {"order_id": paper_order["id"], "position_id": position["position_id"]},
+                )
             self.save_paper_state()
             self.record_event("trading", "paper_order_set", {"order": paper_order})
             return {"paper": True, "order": paper_order}
+
+        if tool == "avanza_paper_order_exit":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            if not requested_account_id:
+                raise ValueError("account_id is required.")
+            position_id = str(arguments.get("position_id", "") or "") or None
+            orderbook_id = str(arguments.get("orderbook_id", "") or "") or None
+            exit_price = scalar_number(arguments.get("exit_price"))
+            if exit_price is None or exit_price <= 0:
+                raise ValueError("exit_price must be > 0.")
+            session_id = paper_session_id(arguments.get("session_id"))
+            candidate_positions = paper_positions(self.paper_session, account_id=requested_account_id, session_id=None, active_only=True)
+            target_position = None
+            if position_id:
+                target_position = next((item for item in candidate_positions if str(item.get("position_id", "")) == position_id), None)
+            elif orderbook_id:
+                target_position = next((item for item in candidate_positions if str(item.get("orderbook_id", "")) == str(orderbook_id)), None)
+            if target_position is None:
+                raise ValueError("No matching open paper position found.")
+            quantity = max(1, int(target_position.get("quantity", 0) or 1))
+            exit_fee = estimate_avanza_fee(
+                account_id=requested_account_id,
+                order_book_id=str(target_position.get("orderbook_id", "") or orderbook_id or ""),
+                side="sell",
+                price=float(exit_price),
+                quantity=quantity,
+                currency="SEK",
+            )
+            trade = paper_exit_position(
+                self.paper_session,
+                account_id=requested_account_id,
+                position_id=position_id,
+                order_book_id=orderbook_id,
+                exit_price=float(exit_price),
+                estimated_exit_fees=float(exit_fee.get("estimated_total_cost", 0.0) or 0.0),
+                exit_reason=str(arguments.get("exit_reason", "") or ""),
+            )
+            trade["session_id"] = trade.get("session_id") or session_id
+            self.save_paper_state()
+            self.record_event("trading", "paper_order_exit", {"trade": trade})
+            return {"paper": True, "trade": trade}
 
         if tool == "avanza_paper_orders":
             requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
@@ -8028,6 +9752,121 @@ class AvanzaTradingTui(App):
                 "orders": paper_orders(self.paper_session, requested_account_id or None, active_only),
                 "events": self.paper_session.get("events", []),
             }
+
+        if tool == "avanza_paper_positions":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            if not requested_account_id:
+                raise ValueError("account_id is required.")
+            session_id = str(arguments.get("session_id", "") or "") or None
+            active_only = bool(arguments.get("active_only", False))
+            return {
+                "paper": True,
+                "account_id": requested_account_id,
+                "session_id": session_id,
+                "positions": paper_positions(
+                    self.paper_session,
+                    account_id=requested_account_id,
+                    session_id=session_id,
+                    active_only=active_only,
+                ),
+            }
+
+        if tool == "avanza_paper_trades":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            if not requested_account_id:
+                raise ValueError("account_id is required.")
+            session_id = str(arguments.get("session_id", "") or "") or None
+            return {
+                "paper": True,
+                "account_id": requested_account_id,
+                "session_id": session_id,
+                "trades": paper_trades(self.paper_session, account_id=requested_account_id, session_id=session_id),
+            }
+
+        if tool == "avanza_paper_session_summary":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            if not requested_account_id:
+                raise ValueError("account_id is required.")
+            session_id = str(arguments.get("session_id", "") or "") or None
+            summary = paper_session_summary(self.paper_session, session_id=session_id, account_id=requested_account_id)
+            summary["paper"] = True
+            return summary
+
+        if tool == "avanza_paper_risk_state":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            if not requested_account_id:
+                raise ValueError("account_id is required.")
+            session_id = paper_session_id(arguments.get("session_id"))
+            return {
+                "paper": True,
+                **paper_risk_state(
+                    self.paper_session,
+                    session_id=session_id,
+                    account_id=requested_account_id,
+                    max_open_trades=max(1, int(arguments.get("max_open_trades", 3))),
+                    max_trade_notional_sek=max(0.0, float(arguments.get("max_trade_notional_sek", 5000) or 0.0)),
+                    max_loss_per_trade_sek=max(0.0, float(arguments.get("max_loss_per_trade_sek", 250) or 0.0)),
+                    max_session_loss_sek=max(0.0, float(arguments.get("max_session_loss_sek", 800) or 0.0)),
+                    stop_after_consecutive_losses=max(0, int(arguments.get("stop_after_consecutive_losses", 3))),
+                ),
+            }
+
+        if tool == "avanza_scalp_watchlist_set":
+            watchlist_id = str(arguments.get("watchlist_id", "")).strip()
+            if not watchlist_id:
+                raise ValueError("watchlist_id is required.")
+            items = arguments.get("items")
+            if not isinstance(items, list) or not items:
+                raise ValueError("items must be a non-empty array.")
+            normalized: list[dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                orderbook_id = str(item.get("orderbook_id", "")).strip()
+                if not orderbook_id:
+                    continue
+                normalized.append(
+                    {
+                        "orderbook_id": orderbook_id,
+                        "label": str(item.get("label", "") or "").strip() or None,
+                    }
+                )
+            if not normalized:
+                raise ValueError("No valid watchlist items.")
+            watchlists = self.paper_session.setdefault("watchlists", {})
+            watchlists[watchlist_id] = normalized
+            append_paper_event(self.paper_session, "watchlist_set", {"watchlist_id": watchlist_id, "count": len(normalized)})
+            self.save_paper_state()
+            return {"paper": True, "watchlist_id": watchlist_id, "count": len(normalized), "items": normalized}
+
+        if tool == "avanza_scalp_watchlist_get":
+            watchlist_id = str(arguments.get("watchlist_id", "")).strip()
+            if not watchlist_id:
+                raise ValueError("watchlist_id is required.")
+            include_quotes = bool(arguments.get("include_quotes", True))
+            watchlists = self.paper_session.setdefault("watchlists", {})
+            items = watchlists.get(watchlist_id)
+            if not isinstance(items, list):
+                raise ValueError(f"Unknown watchlist_id: {watchlist_id}")
+            payload: dict[str, Any] = {
+                "paper": True,
+                "watchlist_id": watchlist_id,
+                "count": len(items),
+                "items": items,
+            }
+            if include_quotes:
+                orderbook_ids = [str(item.get("orderbook_id", "")).strip() for item in items if str(item.get("orderbook_id", "")).strip()]
+                quotes: list[dict[str, Any]] = []
+                for orderbook_id in orderbook_ids:
+                    quote_payload = self.quote_payload_for_order_book(orderbook_id, refresh=True)
+                    fallback_name = ""
+                    for item in items:
+                        if str(item.get("orderbook_id", "")).strip() == orderbook_id:
+                            fallback_name = str(item.get("label", "") or "")
+                            break
+                    quotes.append(orderbook_quote_row(orderbook_id, quote_payload, fallback_name=fallback_name))
+                payload["quotes"] = quotes
+            return payload
 
         if tool == "avanza_paper_cancel":
             paper_order = cancel_paper_order(self.paper_session, str(arguments["paper_order_id"]))
@@ -8141,6 +9980,105 @@ class AvanzaTradingTui(App):
                 self.quote_payload_checked_at[order_book_id] = datetime.now()
                 return dumped
         return None
+
+    def _cache_orderbook_metadata(self, orderbook_id: str, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+        current = self.orderbook_metadata_by_id.get(orderbook_id, {})
+        merged = merged_orderbook_metadata(current, updates or {})
+        if not merged.get("name"):
+            cached_name = self.holding_labels_by_order_book.get(orderbook_id, "")
+            if cached_name:
+                merged["name"] = cached_name
+        merged["orderbook_id"] = orderbook_id
+        self.orderbook_metadata_by_id[orderbook_id] = merged
+        self.orderbook_metadata_checked_at[orderbook_id] = datetime.now()
+        return merged
+
+    def _search_metadata_for_orderbook(self, orderbook_id: str) -> dict[str, Any]:
+        avanza = self.require_connection()
+        try:
+            results = avanza.search_for_stock(orderbook_id, 15)
+        except Exception:
+            return {}
+        hits = flattened_search_hits(results)
+        rows = normalized_search_rows(hits, query=orderbook_id)
+        match = next((row for row in rows if str(row.get("orderbook_id") or "") == orderbook_id), None)
+        if not match and rows:
+            match = rows[0]
+        if not isinstance(match, dict):
+            return {}
+        return {
+            "orderbook_id": orderbook_id,
+            "name": str(match.get("name") or "").strip() or None,
+            "ticker": normalize_symbol_candidate(str(match.get("ticker") or match.get("symbol") or "").strip()) or None,
+            "market": str(match.get("market_place") or "").strip() or None,
+            "currency": str(match.get("currency") or "").strip() or None,
+            "country_code": str(match.get("country") or "").strip() or None,
+            "country": str(match.get("country") or "").strip() or None,
+            "instrument_type": str(match.get("instrument_type") or "").strip() or None,
+            "display_symbol": str(match.get("display_symbol") or "").strip()
+            or display_symbol(str(match.get("ticker") or match.get("symbol") or ""), str(match.get("name") or "")),
+        }
+
+    def _market_guide_metadata_for_orderbook(self, orderbook_id: str) -> dict[str, Any]:
+        try:
+            payload = payload_to_json_safe(avanza_private_get(self.require_connection(), f"/_api/market-guide/stock/{orderbook_id}", options={}))
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return metadata_from_market_guide_payload(orderbook_id, payload)
+
+    def orderbook_metadata_for_quote(
+        self,
+        orderbook_id: str,
+        quote_payload: dict[str, Any] | None = None,
+        allow_remote_lookup: bool = True,
+    ) -> dict[str, Any]:
+        now = datetime.now()
+        cached = self.orderbook_metadata_by_id.get(orderbook_id, {})
+        known = KNOWN_ORDERBOOK_METADATA.get(orderbook_id, {})
+        checked_at = self.orderbook_metadata_checked_at.get(orderbook_id)
+        merged = merged_orderbook_metadata(
+            known,
+            {"orderbook_id": orderbook_id, "name": self.holding_labels_by_order_book.get(orderbook_id, "")},
+        )
+        merged = merged_orderbook_metadata(merged, cached)
+
+        if isinstance(quote_payload, dict):
+            merged = merged_orderbook_metadata(
+                merged,
+                {
+                    "name": market_quote_first_text(quote_payload, (("name",), ("orderbook", "name"), ("instrument", "name"))),
+                    "ticker": market_quote_first_text(quote_payload, (("ticker",), ("symbol",), ("orderbook", "symbol"))),
+                    "market": market_quote_first_text(quote_payload, (("market",), ("marketPlace",), ("marketPlaceName",))),
+                    "currency": market_quote_first_text(quote_payload, (("quote", "currency"), ("currency",))),
+                    "country_code": market_quote_first_text(quote_payload, (("countryCode",), ("country",), ("flagCode",), ("orderbook", "countryCode"))),
+                    "instrument_type": market_quote_first_text(quote_payload, (("instrumentType",), ("orderbook", "instrumentType"), ("instrument", "instrumentType"))),
+                },
+            )
+
+        missing_core = (
+            not merged.get("name")
+            or not merged.get("ticker")
+            or not merged.get("market")
+            or not merged.get("currency")
+            or not merged.get("country_code")
+            or not merged.get("instrument_type")
+        )
+        stale = checked_at is None or (now - checked_at) > timedelta(seconds=ORDERBOOK_METADATA_REFRESH_SECONDS)
+        if allow_remote_lookup and missing_core and stale:
+            merged = merged_orderbook_metadata(merged, self._search_metadata_for_orderbook(orderbook_id))
+            if (
+                not merged.get("name")
+                or not merged.get("ticker")
+                or not merged.get("market")
+                or not merged.get("currency")
+                or not merged.get("country_code")
+                or not merged.get("instrument_type")
+            ):
+                merged = merged_orderbook_metadata(merged, self._market_guide_metadata_for_orderbook(orderbook_id))
+
+        return self._cache_orderbook_metadata(orderbook_id, merged)
 
     def realtime_quotes_snapshot(self, account_id: str) -> list[dict[str, Any]]:
         avanza = self.require_connection()
@@ -8779,6 +10717,8 @@ class AvanzaTradingTui(App):
                 self.update_mode_toggles()
             elif button_id == "mcp-write-toggle":
                 self.mcp_write_enabled = not self.mcp_write_enabled
+                if not self.mcp_write_enabled:
+                    self.live_trading_allowed_for_session = False
                 self.update_mcp_session_file()
                 self.update_mode_toggles()
                 mode = "read/write" if self.mcp_write_enabled else "read-only"

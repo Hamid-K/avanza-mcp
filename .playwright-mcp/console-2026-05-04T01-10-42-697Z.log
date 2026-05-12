@@ -1,0 +1,2 @@
+[      48ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://127.0.0.1:64971/status:0
+[      60ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:64971/favicon.ico:0

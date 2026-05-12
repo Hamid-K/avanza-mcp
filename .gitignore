@@ -20,5 +20,10 @@ htmlcov/
 avanza-cli/logs/
 avanza-cli/backups/
 
-# Local assistant preferences and trading workflow notes
-INSTRUCTIONS.md
+# Local assistant preferences and trading workflow notes.
+# Keep the folder visible in git, but keep all private contents local-only.
+INSTRUCTIONS/*
+!INSTRUCTIONS/.gitkeep
+/INSTRUCTIONS.md
+/MEMORY.md
+/WARMUP.md

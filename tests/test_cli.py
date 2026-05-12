@@ -890,6 +890,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     },
                 )
             app.mcp_write_enabled = True
+            app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
             deletion = app.execute_mcp_tool(
                 "avanza_stoploss_delete",
                 {"account_id": "acc-2", "stop_loss_id": "sl-1", "confirm": True},
@@ -1231,6 +1232,665 @@ def test_mcp_open_orders_include_ids_side_and_raw_shapes():
     live_ids = {row["Order ID"]: row for row in live["open_orders"]["orders"]}
     assert live_ids["ord-buy-1"]["Side"] == "BUY"
     assert live_ids["ord-sell-1"]["Side"] == "SELL"
+
+
+def test_mcp_capabilities_and_live_session_authorization():
+    from avanza_cli import AvanzaTradingTui, account_rows_from_overview
+
+    class FakeAvanza:
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {
+                        "id": "acc-1",
+                        "name": {"defaultName": "ISK", "userDefinedName": "DayTrading"},
+                        "type": "ISK",
+                        "totalValue": {"value": 10000, "unit": "SEK"},
+                        "buyingPower": {"value": 4000, "unit": "SEK"},
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": [], "cashPositions": []}
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.accounts = account_rows_from_overview(app.avanza.get_overview())
+    app.selected_account_id = "acc-1"
+    status = app.execute_mcp_tool("avanza_capabilities", {})
+    assert status["live_trading_allowed_for_this_session"] is False
+    assert status["can_place_live_orders"] is False
+    with pytest.raises(PermissionError):
+        app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
+
+    app.mcp_write_enabled = True
+    auth = app.execute_mcp_tool(
+        "avanza_live_session_authorize",
+        {"acknowledge": True, "reason": "unit test authorization"},
+    )
+    assert auth["live_trading_allowed_for_this_session"] is True
+    status_after = app.execute_mcp_tool("avanza_status", {})
+    assert status_after["can_place_live_orders"] is True
+    revoked = app.execute_mcp_tool("avanza_live_session_revoke", {})
+    assert revoked["live_trading_allowed_for_this_session"] is False
+
+
+def test_mcp_search_stock_returns_structured_results():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, _query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "title": "Broadcom",
+                        "urlSlugName": "broadcom-avgo",
+                        "id": "369636",
+                        "marketPlaceName": "NASDAQ",
+                        "currency": "USD",
+                        "countryCode": "US",
+                        "instrumentType": "stock",
+                    }
+                ]
+            }
+
+        def get_market_data(self, order_book_id):
+            assert order_book_id == "369636"
+            return {"quote": {"last": 421.2, "buy": 421.1, "sell": 421.4}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("avanza_search_stock", {"query": "Broad", "limit": 5})
+    assert result["count"] >= 1
+    first = result["results"][0]
+    assert first["name"] == "Broadcom"
+    assert first["ticker"] == "AVGO"
+    assert first["display_symbol"] == "AVGO"
+    assert first["orderbook_id"] == "369636"
+    assert first["bid"] == 421.1
+    assert first["ask"] == 421.4
+
+
+def test_mcp_orderbook_quotes_supports_arbitrary_ids():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, order_book_id):
+            payloads = {
+                "111": {
+                    "name": "Volvo B",
+                    "quote": {
+                        "last": 310.0,
+                        "buy": 309.9,
+                        "sell": 310.1,
+                        "changePercent": 1.2,
+                        "currency": "SEK",
+                    },
+                },
+                "222": {
+                    "name": "NVIDIA",
+                    "quote": {
+                        "last": 905.0,
+                        "buy": 904.5,
+                        "sell": 905.4,
+                        "changePercent": -0.4,
+                        "currency": "USD",
+                    },
+                },
+            }
+            return payloads.get(order_book_id, {})
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("avanza_orderbook_quotes", {"orderbook_ids": ["111", "222"]})
+    assert result["count"] == 2
+    assert result["error_count"] == 0
+    rows = {row["orderbook_id"]: row for row in result["quotes"]}
+    assert rows["111"]["name"] == "Volvo B"
+    assert rows["111"]["spread_absolute"] == pytest.approx(0.2)
+    assert "total_value_traded" in rows["222"]
+    assert rows["222"]["total_value_traded"] is None
+
+
+def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    calls = {"post": 0, "get": 0}
+
+    def fake_private_post(_avanza, path, body=None):
+        calls["post"] += 1
+        assert path == "/_api/market-stock-filter/stocks/gainers-losers"
+        assert body["filter"]["countryCodes"] == ["SE"]
+        return {
+            "numberOfGainers": 2,
+            "numberOfLosers": 1,
+            "numberOfNeutrals": 0,
+            "gainers": [
+                {
+                    "orderBookId": "1",
+                    "name": "HANZA",
+                    "countryCode": "SE",
+                    "currency": "SEK",
+                    "lastPrice": 75.0,
+                    "oneDayChangePercent": 4.2,
+                    "totalValueTraded": 5_000_000,
+                },
+                {
+                    "orderBookId": "2",
+                    "name": "Illiquid",
+                    "countryCode": "SE",
+                    "currency": "SEK",
+                    "lastPrice": 1.0,
+                    "oneDayChangePercent": 12.0,
+                    "totalValueTraded": 100,
+                },
+            ],
+            "losers": [
+                {
+                    "orderBookId": "3",
+                    "name": "Loser AB",
+                    "countryCode": "SE",
+                    "currency": "SEK",
+                    "lastPrice": 44.0,
+                    "oneDayChangePercent": -3.1,
+                    "totalValueTraded": 4_000_000,
+                }
+            ],
+        }
+
+    def fake_private_get(_avanza, path, options=None):
+        calls["get"] += 1
+        _ = options
+        assert path == "/_api/market-stock-filter/stocks/filter-options"
+        return {"marketPlaces": ["se.xsto.large cap stockholm"]}
+
+    monkeypatch.setattr("avanza_cli.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool(
+        "avanza_market_movers",
+        {"countryCodes": ["SE"], "min_total_value_traded": 1_000_000, "limit": 10},
+    )
+    assert result["numberOfGainers"] == 2
+    assert result["gainers"][0]["name"] == "HANZA"
+    assert all(float(item["total_value_traded"] or 0.0) >= 1_000_000 for item in result["gainers"])
+    assert result["losers"][0]["orderbook_id"] == "3"
+    assert "filter_options" in result
+    assert calls["post"] == 1
+    assert calls["get"] == 1
+
+
+def test_mcp_market_movers_supports_market_place_filter(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    captured = {}
+
+    def fake_private_post(_avanza, path, body=None):
+        captured["path"] = path
+        captured["body"] = body
+        return {"gainers": [], "losers": [], "numberOfGainers": 0, "numberOfLosers": 0, "numberOfNeutrals": 0}
+
+    monkeypatch.setattr("avanza_cli.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_cli.avanza_private_get", lambda *_args, **_kwargs: {"marketPlaces": []})
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.execute_mcp_tool(
+        "avanza_market_movers",
+        {
+            "countryCodes": ["SE"],
+            "marketPlaces": ["se.xsto.large cap stockholm"],
+            "min_price": 5,
+            "min_total_value_traded": 5_000_000,
+            "limit": 10,
+        },
+    )
+    assert captured["path"] == "/_api/market-stock-filter/stocks/gainers-losers"
+    assert captured["body"]["filter"]["marketPlaces"] == ["se.xsto.large cap stockholm"]
+
+
+def test_mcp_index_constituents_omxs30_shape(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    fake_rows = [
+        {
+            "orderBookId": str(1000 + index),
+            "name": f"Stock {index}",
+            "countryCode": "SE",
+            "changePercent": index / 10.0,
+            "tickerSymbol": f"S{index}",
+        }
+        for index in range(1, 31)
+    ]
+
+    def fake_private_get(_avanza, path, options=None):
+        _ = options
+        assert path == "/_api/market-index/19002/constituents"
+        return fake_rows
+
+    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("avanza_index_constituents", {"index_id": "19002", "index_name": "OMXS30"})
+    assert result["index_id"] == "19002"
+    assert result["index_name"] == "OMXS30"
+    assert result["constituent_count"] == 30
+    assert len(result["constituents"]) == 30
+    first = result["constituents"][0]
+    assert first["orderbook_id"] == "1001"
+    assert first["name"] == "Stock 1"
+    assert first["country_code"] == "SE"
+    assert first["ticker"] == "S1"
+
+
+def test_mcp_index_constituents_include_quotes_and_spread(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, order_book_id):
+            return {
+                "quote": {
+                    "last": 100.0 + int(order_book_id),
+                    "buy": 99.5 + int(order_book_id),
+                    "sell": 100.5 + int(order_book_id),
+                }
+            }
+
+    def fake_private_get(_avanza, path, options=None):
+        _ = options
+        assert path == "/_api/market-index/19002/constituents"
+        return [
+            {"orderBookId": "2001", "name": "Volvo B", "countryCode": "SE", "tickerSymbol": "VOLV B"},
+            {"orderBookId": "2002", "name": "NVIDIA", "countryCode": "US", "tickerSymbol": "NVDA"},
+        ]
+
+    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool(
+        "avanza_index_constituents",
+        {"index_id": "19002", "include_quotes": True, "include_spread": True},
+    )
+    assert result["constituent_count"] == 2
+    rows = {row["orderbook_id"]: row for row in result["constituents"]}
+    assert rows["2001"]["last"] == 2101.0
+    assert rows["2001"]["bid"] == 2100.5
+    assert rows["2001"]["ask"] == 2101.5
+    assert rows["2001"]["spread_absolute"] == pytest.approx(1.0)
+    assert rows["2001"]["spread_percent"] == pytest.approx((1.0 / 2100.5) * 100.0)
+
+
+def test_mcp_search_stock_normalizes_last_price_scale_to_bid_ask():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, query, _limit):
+            q = str(query).upper()
+            if "VOLV" in q:
+                return {"stocks": [{"name": "Volvo B", "tickerSymbol": "VOLV B", "id": "5269", "lastPrice": 31600.0}]}
+            if "HANZA" in q:
+                return {"stocks": [{"name": "HANZA", "tickerSymbol": "HANZA", "id": "5401", "lastPrice": 17520.0}]}
+            if "NVIDIA" in q:
+                return {"stocks": [{"name": "NVIDIA", "tickerSymbol": "NVDA", "id": "804998", "lastPrice": 19848.0}]}
+            return {"stocks": []}
+
+        def get_market_data(self, order_book_id):
+            prices = {
+                "5269": {"quote": {"buy": 316.0, "sell": 316.2, "last": 316.1}},
+                "5401": {"quote": {"buy": 175.1, "sell": 175.3, "last": 175.2}},
+                "804998": {"quote": {"buy": 198.4, "sell": 198.6, "last": 198.5}},
+            }
+            return prices[order_book_id]
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    for query in ("VOLV B", "HANZA", "NVIDIA"):
+        result = app.execute_mcp_tool("avanza_search_stock", {"query": query, "limit": 5})
+        first = result["results"][0]
+        assert first["last_price"] is not None
+        assert first["bid"] is not None
+        assert first["ask"] is not None
+        mid = (first["bid"] + first["ask"]) / 2.0
+        assert first["last_price"] == pytest.approx(mid, rel=0.02)
+
+
+def test_mcp_orderbook_quotes_enriches_metadata_from_cache():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.9, "sell": 100.1}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app._cache_orderbook_metadata(
+        "5269",
+        {
+            "name": "Volvo B",
+            "ticker": "VOLV B",
+            "market": "NASDAQ Stockholm",
+            "currency": "SEK",
+            "country_code": "SE",
+            "instrument_type": "STOCK",
+        },
+    )
+    result = app.execute_mcp_tool("avanza_orderbook_quotes", {"orderbook_ids": ["5269"], "refresh": False})
+    row = result["quotes"][0]
+    assert row["name"] == "Volvo B"
+    assert row["ticker"] == "VOLV B"
+    assert row["market"] == "NASDAQ Stockholm"
+    assert row["currency"] == "SEK"
+    assert row["country"] == "SE"
+    assert row["instrument_type"] == "STOCK"
+    assert row["display_symbol"] == "VOLV B"
+
+
+def test_mcp_orderbook_quotes_enriches_known_scalp_ids():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, order_book_id):
+            return {"quote": {"last": float(int(order_book_id) % 1000) + 1.0, "buy": 10.0, "sell": 10.2}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    ids = ["5269", "5247", "5401", "488235", "804998", "4478", "529720", "1211627", "1138439"]
+    result = app.execute_mcp_tool("avanza_orderbook_quotes", {"orderbook_ids": ids, "refresh": False})
+    rows = {row["orderbook_id"]: row for row in result["quotes"]}
+    expected_currencies = {
+        "5269": "SEK",
+        "5247": "SEK",
+        "5401": "SEK",
+        "488235": "SEK",
+        "804998": "SEK",
+        "4478": "USD",
+        "529720": "USD",
+        "1211627": "USD",
+        "1138439": "USD",
+    }
+    for orderbook_id in ids:
+        row = rows[orderbook_id]
+        assert row["name"]
+        assert row["ticker"]
+        assert row["market"]
+        assert row["currency"] == expected_currencies[orderbook_id]
+        assert row["country"] in {"SE", "US"}
+        assert row["instrument_type"] == "STOCK"
+        assert row["display_symbol"]
+
+
+def test_mcp_fee_estimate_infers_currency_from_metadata_and_warns_if_unknown():
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.avanza = object()
+
+    swedish = app.execute_mcp_tool(
+        "avanza_fee_estimate",
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "5269",
+            "side": "buy",
+            "price": 100.0,
+            "quantity": 10,
+        },
+    )
+    assert swedish["resolved_currency"] == "SEK"
+
+    us = app.execute_mcp_tool(
+        "avanza_fee_estimate",
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "4478",
+            "side": "buy",
+            "price": 100.0,
+            "quantity": 10,
+        },
+    )
+    assert us["resolved_currency"] == "USD"
+    assert us["estimated_fx_fee"] > 0
+
+    for orderbook_id in ("529720", "1211627", "1138439"):
+        us_row = app.execute_mcp_tool(
+            "avanza_fee_estimate",
+            {
+                "account_id": "acc-1",
+                "orderbook_id": orderbook_id,
+                "side": "buy",
+                "price": 100.0,
+                "quantity": 10,
+            },
+        )
+        assert us_row["resolved_currency"] == "USD"
+        assert us_row["estimated_fx_fee"] > 0
+
+    unknown = app.execute_mcp_tool(
+        "avanza_fee_estimate",
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "99999999",
+            "side": "buy",
+            "price": 100.0,
+            "quantity": 10,
+        },
+    )
+    assert unknown["resolved_currency"] == "USD"
+    assert unknown["estimated_fx_fee"] > 0
+    assert any("conservative" in str(item).lower() for item in unknown.get("warnings", []))
+
+
+def test_mcp_search_stock_parses_display_symbol_from_parenthesized_name():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, query, _limit):
+            q = str(query).upper()
+            rows = [
+                {"name": "NVIDIA (NVDA)", "id": "4478", "marketPlaceName": "NASDAQ", "countryCode": "US", "instrumentType": "stock"},
+                {
+                    "name": "Advanced Micro Devices (AMD)",
+                    "id": "529720",
+                    "marketPlaceName": "NASDAQ",
+                    "countryCode": "US",
+                    "instrumentType": "stock",
+                },
+                {
+                    "name": "Coinbase Global, Inc. - Class A (COIN)",
+                    "id": "1211627",
+                    "marketPlaceName": "NASDAQ",
+                    "countryCode": "US",
+                    "instrumentType": "stock",
+                },
+                {
+                    "name": "Palantir Technologies (PLTR)",
+                    "id": "1138439",
+                    "marketPlaceName": "NYSE",
+                    "countryCode": "US",
+                    "instrumentType": "stock",
+                },
+                {
+                    "name": "Sivers Semiconductors (SIVE)",
+                    "id": "804998",
+                    "marketPlaceName": "NASDAQ Stockholm",
+                    "countryCode": "SE",
+                    "instrumentType": "stock",
+                },
+                {
+                    "name": "Volvo B (VOLV B)",
+                    "id": "5269",
+                    "marketPlaceName": "NASDAQ Stockholm",
+                    "countryCode": "SE",
+                    "instrumentType": "stock",
+                },
+                {
+                    "name": "Investor B (INVE B)",
+                    "id": "5247",
+                    "marketPlaceName": "NASDAQ Stockholm",
+                    "countryCode": "SE",
+                    "instrumentType": "stock",
+                },
+            ]
+            return {"stocks": [row for row in rows if q.split()[0] in row["name"].upper()]}
+
+        def get_market_data(self, order_book_id):
+            return {"quote": {"buy": 100.0, "sell": 100.5, "last": 100.2}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    expectations = {
+        "NVIDIA": "NVDA",
+        "AMD": "AMD",
+        "Coinbase": "COIN",
+        "Palantir": "PLTR",
+        "Sivers": "SIVE",
+        "VOLV B": "VOLV B",
+        "Investor B": "INVE B",
+    }
+    for query, symbol in expectations.items():
+        result = app.execute_mcp_tool("avanza_search_stock", {"query": query, "limit": 5})
+        assert result["results"], query
+        row = result["results"][0]
+        assert row["display_symbol"] == symbol
+        assert row["ticker"] == symbol
+        assert row["currency"] in {"SEK", "USD"}
+
+
+def test_mcp_quote_metadata_flows_from_search_cache():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, query, _limit):
+            _ = query
+            return {
+                "stocks": [
+                    {
+                        "name": "NVIDIA (NVDA)",
+                        "id": "4478",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                        "instrumentType": "stock",
+                    }
+                ]
+            }
+
+        def get_market_data(self, order_book_id):
+            assert order_book_id == "4478"
+            return {"quote": {"buy": 198.4, "sell": 198.6, "last": 198.5}}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    _ = app.execute_mcp_tool("avanza_search_stock", {"query": "NVIDIA", "limit": 5})
+    quotes = app.execute_mcp_tool("avanza_orderbook_quotes", {"orderbook_ids": ["4478"], "refresh": False})
+    row = quotes["quotes"][0]
+    assert row["name"] == "NVIDIA (NVDA)"
+    assert row["display_symbol"] == "NVDA"
+    assert row["market"] == "NASDAQ"
+    assert row["country"] == "US"
+    assert row["currency"] == "USD"
+
+
+def test_mcp_select_account_switches_context():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {"id": "7616265", "name": {"defaultName": "Main"}, "type": "KF", "status": "ACTIVE"},
+                    {"id": "931965", "name": {"defaultName": "DayTrading"}, "type": "ISK", "status": "ACTIVE"},
+                ]
+            }
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    switched = app.execute_mcp_tool("avanza_select_account", {"account_id": "931965"})
+    assert switched["selected_account_id"] == "931965"
+    assert switched["selected_account_name"] == "DayTrading"
+    status = app.execute_mcp_tool("avanza_status", {})
+    assert status["selected_account_id"] == "931965"
+
+
+def test_mcp_paper_ledger_flow_with_risk_state():
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.avanza = object()
+    app.selected_account_id = "acc-1"
+    create = app.execute_mcp_tool(
+        "avanza_paper_order_set",
+        {
+            "account_id": "acc-1",
+            "order_book_id": "111",
+            "instrument": "NVIDIA",
+            "order_type": "buy",
+            "price": 100.0,
+            "valid_until": "2026-05-28",
+            "volume": 2,
+            "condition": "normal",
+            "session_id": "scalp-1",
+            "entry_reason": "breakout",
+            "fill_immediately": True,
+        },
+    )
+    assert create["paper"] is True
+    positions = app.execute_mcp_tool(
+        "avanza_paper_positions",
+        {"account_id": "acc-1", "session_id": "scalp-1", "active_only": True},
+    )
+    assert len(positions["positions"]) == 1
+    position_id = positions["positions"][0]["position_id"]
+
+    risk = app.execute_mcp_tool(
+        "avanza_paper_risk_state",
+        {
+            "account_id": "acc-1",
+            "session_id": "scalp-1",
+            "max_open_trades": 1,
+            "max_trade_notional_sek": 1000,
+            "max_loss_per_trade_sek": 200,
+            "max_session_loss_sek": 500,
+            "stop_after_consecutive_losses": 2,
+        },
+    )
+    assert risk["open_trade_count"] == 1
+    assert risk["can_enter_new_trade"] is False
+    assert "max_open_trades" in risk["violations"]
+
+    closed = app.execute_mcp_tool(
+        "avanza_paper_order_exit",
+        {
+            "account_id": "acc-1",
+            "position_id": position_id,
+            "exit_price": 102.0,
+            "session_id": "scalp-1",
+            "exit_reason": "target hit",
+        },
+    )
+    assert closed["paper"] is True
+    assert closed["trade"]["status"] == "CLOSED"
+    trades = app.execute_mcp_tool("avanza_paper_trades", {"account_id": "acc-1", "session_id": "scalp-1"})
+    assert len(trades["trades"]) == 1
+    summary = app.execute_mcp_tool("avanza_paper_session_summary", {"account_id": "acc-1", "session_id": "scalp-1"})
+    assert summary["closed_trades"] == 1
 
 
 def test_tui_tracks_terminal_resize():

@@ -10,6 +10,16 @@
 
 Single-script CLI + Textual TUI for Avanza portfolio monitoring, regular buy/sell orders, stop-loss management, MCP integration, and paper trading.
 
+Trading-assistant context lives in:
+
+- `INSTRUCTIONS/INSTRUCTIONS.md`: standing operating rules and safety constraints.
+- `INSTRUCTIONS/MEMORY.md`: timestamped lessons, mistakes, strategy updates, and checklist changes. This is historical context, not live portfolio state.
+- `INSTRUCTIONS/WARMUP.md`: prompt for starting a fresh Codex trading session with the right context.
+
+The `INSTRUCTIONS/` folder is kept visible in git, but its private contents are ignored and should remain local-only.
+
+For trading analysis, always refresh live Avanza MCP data. Do not treat markdown memory as current holdings, orders, prices, account IDs, or stop-loss IDs.
+
 Credentials are prompted at runtime:
 
 - username: visible prompt, unless passed with `--username`
@@ -304,6 +314,8 @@ TUI sessions write structured JSONL logs under `avanza-cli/logs/`: a timestamped
 ## Safety
 
 This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of `%` and gliding stop-loss fields with very small size before trusting it for meaningful orders.
+
+Stop-losses are not guaranteed earnings-gap or overnight protection. A tight `Kurs 99%` can avoid a bad normal-session fill, but it can also fail, remain unfilled, or show `ERROR` if price gaps through the trigger after hours, before open, during a halt, or in a fast market. Treat `ERROR` rows as unprotected, and handle after-close/before-open catalysts with explicit sizing, trim, sell, hedge, or hold-and-accept decisions.
 
 ## Credits
 

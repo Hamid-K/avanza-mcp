@@ -1,0 +1,1067 @@
+{
+  "status": {
+    "ok": true,
+    "enabled": true,
+    "read_write": false,
+    "paper_trading": true,
+    "selected_account_id": "5227886",
+    "accounts_loaded": 2,
+    "poll_interval_seconds": 5,
+    "paper_session_file": "/Users/hamid/Documents/Projects/Avanza/.avanza_paper_session.json"
+  },
+  "accounts": {
+    "ok": true,
+    "tool": "avanza_accounts",
+    "read_write": false,
+    "result": [
+      {
+        "ID": "5227851",
+        "Name": "5227851",
+        "Type": "AKTIEFONDKONTO",
+        "Total Value": "0.0 SEK",
+        "Buying Power": "0.0 SEK",
+        "Status": "ACTIVE"
+      },
+      {
+        "ID": "5227886",
+        "Name": "5227886",
+        "Type": "INVESTERINGSSPARKONTO",
+        "Total Value": "1174678.6406 SEK",
+        "Buying Power": "19157.88 SEK",
+        "Status": "ACTIVE"
+      }
+    ]
+  },
+  "snapshot": {
+    "ok": true,
+    "tool": "avanza_live_snapshot",
+    "read_write": false,
+    "result": {
+      "timestamp": "2026-05-04T03:11:52",
+      "account_id": "5227886",
+      "read_write": false,
+      "paper_trading": true,
+      "poll_interval_seconds": 5,
+      "portfolio": {
+        "account_id": "5227886",
+        "positions": [
+          {
+            "Stock": "Advanced Micro Devices",
+            "Order Book ID": "529720",
+            "Volume": "19",
+            "Value": "63205.979 SEK",
+            "Avg Price": "1893.935582 SEK",
+            "Day %": "+1.71%",
+            "Day SEK": "+1,060.62 SEK",
+            "Profit %": "+75.65%",
+            "Profit": "+27,221.20 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Alphabet Inc Class C",
+            "Order Book ID": "4457",
+            "Volume": "26",
+            "Value": "91933.2517 SEK",
+            "Avg Price": "2347.786944 SEK",
+            "Day %": "+0.34%",
+            "Day SEK": "+307.07 SEK",
+            "Profit %": "+50.61%",
+            "Profit": "+30,890.79 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Apple",
+            "Order Book ID": "3323",
+            "Volume": "12",
+            "Value": "31017.549 SEK",
+            "Avg Price": "2372.231841 SEK",
+            "Day %": "+3.24%",
+            "Day SEK": "+973.24 SEK",
+            "Profit %": "+8.96%",
+            "Profit": "+2,550.77 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "BAE Systems PLC",
+            "Order Book ID": "2165771",
+            "Volume": "50",
+            "Value": "12746.1425 SEK",
+            "Avg Price": "253.586949 SEK",
+            "Day %": "-0.02%",
+            "Day SEK": "-3.13 SEK",
+            "Profit %": "+0.53%",
+            "Profit": "+66.80 SEK",
+            "Real-time": "No"
+          },
+          {
+            "Stock": "BlackRock",
+            "Order Book ID": "181312",
+            "Volume": "5",
+            "Value": "48979.5451 SEK",
+            "Avg Price": "10512.513251 SEK",
+            "Day %": "-0.37%",
+            "Day SEK": "-180.85 SEK",
+            "Profit %": "-6.82%",
+            "Profit": "-3,583.02 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Cloudflare",
+            "Order Book ID": "996637",
+            "Volume": "31",
+            "Value": "62211.699 SEK",
+            "Avg Price": "1737.284275 SEK",
+            "Day %": "+6.11%",
+            "Day SEK": "+3,583.97 SEK",
+            "Profit %": "+15.52%",
+            "Profit": "+8,355.89 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "CoinShares XBT Provider Ether Tracker One",
+            "Order Book ID": "791709",
+            "Volume": "1239",
+            "Value": "213764.67 SEK",
+            "Avg Price": "155.53731 SEK",
+            "Day %": "-1.65%",
+            "Day SEK": "-3,580.71 SEK",
+            "Profit %": "+10.93%",
+            "Profit": "+21,053.94 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "D-Wave Quantum",
+            "Order Book ID": "1445340",
+            "Volume": "85",
+            "Value": "16069.8562 SEK",
+            "Avg Price": "239.573078 SEK",
+            "Day %": "+1.04%",
+            "Day SEK": "+164.70 SEK",
+            "Profit %": "-21.09%",
+            "Profit": "-4,293.86 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Exxon Mobil",
+            "Order Book ID": "4013",
+            "Volume": "19",
+            "Value": "26778.4803 SEK",
+            "Avg Price": "1383.784449 SEK",
+            "Day %": "-1.02%",
+            "Day SEK": "-276.99 SEK",
+            "Profit %": "+1.85%",
+            "Profit": "+486.58 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "F5",
+            "Order Book ID": "4069",
+            "Volume": "11",
+            "Value": "32803.1194 SEK",
+            "Avg Price": "2758.551345 SEK",
+            "Day %": "-0.22%",
+            "Day SEK": "-71.05 SEK",
+            "Profit %": "+8.10%",
+            "Profit": "+2,459.05 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Fastly A",
+            "Order Book ID": "956885",
+            "Volume": "329",
+            "Value": "85209.7748 SEK",
+            "Avg Price": "206.646651 SEK",
+            "Day %": "+11.12%",
+            "Day SEK": "+8,530.08 SEK",
+            "Profit %": "+25.33%",
+            "Profit": "+17,223.03 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Intel",
+            "Order Book ID": "3658",
+            "Volume": "30",
+            "Value": "27575.2145 SEK",
+            "Avg Price": "342.546436 SEK",
+            "Day %": "+5.44%",
+            "Day SEK": "+1,422.77 SEK",
+            "Profit %": "+168.34%",
+            "Profit": "+17,298.82 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "IonQ",
+            "Order Book ID": "1284389",
+            "Volume": "38",
+            "Value": "16198.5701 SEK",
+            "Avg Price": "518.356645 SEK",
+            "Day %": "+2.39%",
+            "Day SEK": "+378.67 SEK",
+            "Profit %": "-17.76%",
+            "Profit": "-3,498.98 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Morgan Stanley",
+            "Order Book ID": "3468",
+            "Volume": "10",
+            "Value": "17546.6056 SEK",
+            "Avg Price": "1568.936847 SEK",
+            "Day %": "-0.22%",
+            "Day SEK": "-38.75 SEK",
+            "Profit %": "+11.84%",
+            "Profit": "+1,857.24 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "NVIDIA",
+            "Order Book ID": "4478",
+            "Volume": "26",
+            "Value": "47607.52 SEK",
+            "Avg Price": "1599.578147 SEK",
+            "Day %": "-0.56%",
+            "Day SEK": "-268.68 SEK",
+            "Profit %": "+14.47%",
+            "Profit": "+6,018.49 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Okta A",
+            "Order Book ID": "741275",
+            "Volume": "35",
+            "Value": "24472.2416 SEK",
+            "Avg Price": "741.115883 SEK",
+            "Day %": "+2.89%",
+            "Day SEK": "+687.86 SEK",
+            "Profit %": "-5.65%",
+            "Profit": "-1,466.81 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "POET Technologies",
+            "Order Book ID": "1581461",
+            "Volume": "1",
+            "Value": "67.4479 SEK",
+            "Avg Price": "73.447022 SEK",
+            "Day %": "+2.67%",
+            "Day SEK": "+1.75 SEK",
+            "Profit %": "-8.17%",
+            "Profit": "-6.00 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Palantir Technologies",
+            "Order Book ID": "1138439",
+            "Volume": "59",
+            "Value": "78428.9995 SEK",
+            "Avg Price": "1355.58912 SEK",
+            "Day %": "+3.57%",
+            "Day SEK": "+2,700.13 SEK",
+            "Profit %": "-1.94%",
+            "Profit": "-1,550.76 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Rigetti Computing",
+            "Order Book ID": "1356668",
+            "Volume": "74",
+            "Value": "11948.706 SEK",
+            "Avg Price": "339.094773 SEK",
+            "Day %": "+0.29%",
+            "Day SEK": "+34.14 SEK",
+            "Profit %": "-52.38%",
+            "Profit": "-13,144.31 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Shopify",
+            "Order Book ID": "564535",
+            "Volume": "20",
+            "Value": "23559.7111 SEK",
+            "Avg Price": "1216.228304 SEK",
+            "Day %": "+5.40%",
+            "Day SEK": "+1,206.87 SEK",
+            "Profit %": "-3.14%",
+            "Profit": "-764.85 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "SoundHound AI",
+            "Order Book ID": "1393460",
+            "Volume": "436",
+            "Value": "38458.7787 SEK",
+            "Avg Price": "140.236646 SEK",
+            "Day %": "+20.10%",
+            "Day SEK": "+6,436.62 SEK",
+            "Profit %": "-37.10%",
+            "Profit": "-22,684.40 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Taiwan Semicond Mfg Co",
+            "Order Book ID": "34911",
+            "Volume": "27",
+            "Value": "99068.982 SEK",
+            "Avg Price": "2519.691151 SEK",
+            "Day %": "+0.41%",
+            "Day SEK": "+401.09 SEK",
+            "Profit %": "+45.62%",
+            "Profit": "+31,037.32 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Uber Technologies",
+            "Order Book ID": "954817",
+            "Volume": "6",
+            "Value": "4158.7033 SEK",
+            "Avg Price": "911.304429 SEK",
+            "Day %": "+0.68%",
+            "Day SEK": "+28.23 SEK",
+            "Profit %": "-23.94%",
+            "Profit": "-1,309.12 SEK",
+            "Real-time": "Yes"
+          },
+          {
+            "Stock": "Vertiv Holdings A",
+            "Order Book ID": "1042976",
+            "Volume": "27",
+            "Value": "81789.7691 SEK",
+            "Avg Price": "2793.059635 SEK",
+            "Day %": "-0.05%",
+            "Day SEK": "-44.84 SEK",
+            "Profit %": "+8.46%",
+            "Profit": "+6,377.16 SEK",
+            "Real-time": "Yes"
+          }
+        ]
+      },
+      "stoplosses": {
+        "account_id": "5227886",
+        "stoplosses": [
+          {
+            "Stop Loss ID": "A3^1776317958155^852012",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Vertiv Holdings A",
+            "Order Book ID": "1042976",
+            "Trigger": "FOLLOW_UPWARDS 10.0%",
+            "Order": "SELL 13.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^852008",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Vertiv Holdings A",
+            "Order Book ID": "1042976",
+            "Trigger": "FOLLOW_UPWARDS 6.5%",
+            "Order": "SELL 13.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^852003",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "SoundHound AI",
+            "Order Book ID": "1393460",
+            "Trigger": "FOLLOW_UPWARDS 25.0%",
+            "Order": "SELL 145.0 @ 97.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851999",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "SoundHound AI",
+            "Order Book ID": "1393460",
+            "Trigger": "FOLLOW_UPWARDS 18.0%",
+            "Order": "SELL 145.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851995",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "SoundHound AI",
+            "Order Book ID": "1393460",
+            "Trigger": "FOLLOW_UPWARDS 12.0%",
+            "Order": "SELL 145.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851990",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Fastly A",
+            "Order Book ID": "956885",
+            "Trigger": "FOLLOW_UPWARDS 18.0%",
+            "Order": "SELL 109.0 @ 97.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851986",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Fastly A",
+            "Order Book ID": "956885",
+            "Trigger": "FOLLOW_UPWARDS 14.0%",
+            "Order": "SELL 109.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851982",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Fastly A",
+            "Order Book ID": "956885",
+            "Trigger": "FOLLOW_UPWARDS 10.0%",
+            "Order": "SELL 110.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851978",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "CoinShares XBT Provider Ether Tracker One",
+            "Order Book ID": "791709",
+            "Trigger": "FOLLOW_UPWARDS 14.0%",
+            "Order": "SELL 412.0 @ 97.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851974",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "CoinShares XBT Provider Ether Tracker One",
+            "Order Book ID": "791709",
+            "Trigger": "FOLLOW_UPWARDS 11.0%",
+            "Order": "SELL 413.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851969",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "CoinShares XBT Provider Ether Tracker One",
+            "Order Book ID": "791709",
+            "Trigger": "FOLLOW_UPWARDS 8.5%",
+            "Order": "SELL 413.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851965",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Cloudflare",
+            "Order Book ID": "996637",
+            "Trigger": "FOLLOW_UPWARDS 14.0%",
+            "Order": "SELL 15.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851961",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Cloudflare",
+            "Order Book ID": "996637",
+            "Trigger": "FOLLOW_UPWARDS 10.0%",
+            "Order": "SELL 15.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851956",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Uber Technologies",
+            "Order Book ID": "954817",
+            "Trigger": "FOLLOW_UPWARDS 12.0%",
+            "Order": "SELL 5.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851952",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Taiwan Semicond Mfg Co",
+            "Order Book ID": "34911",
+            "Trigger": "FOLLOW_UPWARDS 12.0%",
+            "Order": "SELL 26.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851948",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Shopify",
+            "Order Book ID": "564535",
+            "Trigger": "FOLLOW_UPWARDS 16.0%",
+            "Order": "SELL 19.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851944",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Rigetti Computing",
+            "Order Book ID": "1356668",
+            "Trigger": "FOLLOW_UPWARDS 30.0%",
+            "Order": "SELL 73.0 @ 96.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851940",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Palantir Technologies",
+            "Order Book ID": "1138439",
+            "Trigger": "FOLLOW_UPWARDS 17.0%",
+            "Order": "SELL 58.0 @ 97.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851936",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Okta A",
+            "Order Book ID": "741275",
+            "Trigger": "FOLLOW_UPWARDS 14.0%",
+            "Order": "SELL 34.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851931",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "NVIDIA",
+            "Order Book ID": "4478",
+            "Trigger": "FOLLOW_UPWARDS 11.0%",
+            "Order": "SELL 25.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851927",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Morgan Stanley",
+            "Order Book ID": "3468",
+            "Trigger": "FOLLOW_UPWARDS 9.0%",
+            "Order": "SELL 9.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851923",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "IonQ",
+            "Order Book ID": "1284389",
+            "Trigger": "FOLLOW_UPWARDS 25.0%",
+            "Order": "SELL 37.0 @ 95.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851919",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Intel",
+            "Order Book ID": "3658",
+            "Trigger": "FOLLOW_UPWARDS 10.0%",
+            "Order": "SELL 29.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851915",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "F5",
+            "Order Book ID": "4069",
+            "Trigger": "FOLLOW_UPWARDS 6.0%",
+            "Order": "SELL 10.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851911",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Exxon Mobil",
+            "Order Book ID": "4013",
+            "Trigger": "FOLLOW_UPWARDS 8.0%",
+            "Order": "SELL 18.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851907",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "D-Wave Quantum",
+            "Order Book ID": "1445340",
+            "Trigger": "FOLLOW_UPWARDS 30.0%",
+            "Order": "SELL 84.0 @ 95.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851903",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "BlackRock",
+            "Order Book ID": "181312",
+            "Trigger": "FOLLOW_UPWARDS 9.0%",
+            "Order": "SELL 4.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851899",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "BAE Systems PLC",
+            "Order Book ID": "2165771",
+            "Trigger": "FOLLOW_UPWARDS 8.0%",
+            "Order": "SELL 49.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851892",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Apple",
+            "Order Book ID": "3323",
+            "Trigger": "FOLLOW_UPWARDS 7.0%",
+            "Order": "SELL 11.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851888",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Alphabet Inc Class C",
+            "Order Book ID": "4457",
+            "Trigger": "FOLLOW_UPWARDS 10.0%",
+            "Order": "SELL 25.0 @ 99.0%",
+            "Valid Until": "2026-07-27"
+          },
+          {
+            "Stop Loss ID": "A3^1776317958155^851884",
+            "Status": "ACTIVE",
+            "Account": "5227886",
+            "Stock": "Advanced Micro Devices",
+            "Order Book ID": "529720",
+            "Trigger": "FOLLOW_UPWARDS 12.0%",
+            "Order": "SELL 18.0 @ 98.0%",
+            "Valid Until": "2026-07-27"
+          }
+        ]
+      },
+      "open_orders": {
+        "account_id": "5227886",
+        "orders": []
+      },
+      "realtime_quotes": [
+        {
+          "stock": "Advanced Micro Devices",
+          "order_book_id": "529720",
+          "last": 360.54,
+          "change_percent": 1.71,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Alphabet Inc Class C",
+          "order_book_id": "4457",
+          "last": 383.22,
+          "change_percent": 0.34,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Apple",
+          "order_book_id": "3323",
+          "last": 280.14,
+          "change_percent": 3.24,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "BAE Systems PLC",
+          "order_book_id": "2165771",
+          "last": 20.345,
+          "change_percent": -0.02,
+          "realtime_status": "No",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "BlackRock",
+          "order_book_id": "181312",
+          "last": 1061.68,
+          "change_percent": -0.37,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Cloudflare",
+          "order_book_id": "996637",
+          "last": 217.5,
+          "change_percent": 6.11,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "CoinShares XBT Provider Ether Tracker One",
+          "order_book_id": "791709",
+          "last": 172.53,
+          "change_percent": -1.65,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "D-Wave Quantum",
+          "order_book_id": "1445340",
+          "last": 20.49,
+          "change_percent": 1.04,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Exxon Mobil",
+          "order_book_id": "4013",
+          "last": 152.75,
+          "change_percent": -1.02,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "F5",
+          "order_book_id": "4069",
+          "last": 323.2,
+          "change_percent": -0.22,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Fastly A",
+          "order_book_id": "956885",
+          "last": 28.07,
+          "change_percent": 11.12,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Intel",
+          "order_book_id": "3658",
+          "last": 99.62,
+          "change_percent": 5.44,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "IonQ",
+          "order_book_id": "1284389",
+          "last": 46.2,
+          "change_percent": 2.39,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Morgan Stanley",
+          "order_book_id": "3468",
+          "last": 190.17,
+          "change_percent": -0.22,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "NVIDIA",
+          "order_book_id": "4478",
+          "last": 198.45,
+          "change_percent": -0.56,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Okta A",
+          "order_book_id": "741275",
+          "last": 75.78,
+          "change_percent": 2.89,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "POET Technologies",
+          "order_book_id": "1581461",
+          "last": 7.31,
+          "change_percent": 2.67,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Palantir Technologies",
+          "order_book_id": "1138439",
+          "last": 144.07,
+          "change_percent": 3.57,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Rigetti Computing",
+          "order_book_id": "1356668",
+          "last": 17.5,
+          "change_percent": 0.29,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Shopify",
+          "order_book_id": "564535",
+          "last": 127.67,
+          "change_percent": 5.4,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "SoundHound AI",
+          "order_book_id": "1393460",
+          "last": 9.56,
+          "change_percent": 20.1,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Taiwan Semicond Mfg Co",
+          "order_book_id": "34911",
+          "last": 397.67,
+          "change_percent": 0.41,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Uber Technologies",
+          "order_book_id": "954817",
+          "last": 75.12,
+          "change_percent": 0.68,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        },
+        {
+          "stock": "Vertiv Holdings A",
+          "order_book_id": "1042976",
+          "last": 328.31,
+          "change_percent": -0.05,
+          "realtime_status": "Yes",
+          "updated_at": "2026-05-04T03:11:52"
+        }
+      ],
+      "paper_orders": []
+    }
+  },
+  "transactions": {
+    "ok": true,
+    "tool": "avanza_transactions",
+    "read_write": false,
+    "result": {
+      "account_id": "5227886",
+      "executed_only": true,
+      "types": [
+        "BUY",
+        "SELL"
+      ],
+      "transactions_from": "2026-04-01",
+      "transactions_to": "2026-05-04",
+      "first_available_date": "2020-09-30",
+      "transactions": [
+        {
+          "Trade Date": "2026-04-30",
+          "Account": "5227886",
+          "Stock": "VERTIV HOLDING CO",
+          "Type": "BUY",
+          "Volume": "13.0",
+          "Price": "2901.998855 SEK",
+          "Amount": "-37782.58 SEK",
+          "Commission": "56.59 SEK",
+          "Result": "None",
+          "ISIN": "US92537N1081",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-29",
+          "Account": "5227886",
+          "Stock": "Virgin Galactic Holdings Inc",
+          "Type": "SELL",
+          "Volume": "-350.0",
+          "Price": "21.239575 SEK",
+          "Amount": "7378.08 SEK",
+          "Commission": "55.77 SEK",
+          "Result": "-17875.848452 SEK",
+          "ISIN": "US92766K4031",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-28",
+          "Account": "5227886",
+          "Stock": "POET TECHNOLOGIES INC",
+          "Type": "SELL",
+          "Volume": "-273.0",
+          "Price": "74.920704 SEK",
+          "Amount": "20397.89 SEK",
+          "Commission": "55.46 SEK",
+          "Result": "346.85272 SEK",
+          "ISIN": "CA73044W3021",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-27",
+          "Account": "5227886",
+          "Stock": "POET TECHNOLOGIES INC",
+          "Type": "BUY",
+          "Volume": "273.0",
+          "Price": "73.256986 SEK",
+          "Amount": "-20054.66 SEK",
+          "Commission": "55.5 SEK",
+          "Result": "None",
+          "ISIN": "CA73044W3021",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-27",
+          "Account": "5227886",
+          "Stock": "FASTLY INC",
+          "Type": "BUY",
+          "Volume": "164.0",
+          "Price": "230.13053 SEK",
+          "Amount": "-37798.02 SEK",
+          "Commission": "56.61 SEK",
+          "Result": "None",
+          "ISIN": "US31188V1008",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-27",
+          "Account": "5227886",
+          "Stock": "POET TECHNOLOGIES INC",
+          "Type": "SELL",
+          "Volume": "-216.0",
+          "Price": "92.67911 SEK",
+          "Amount": "19963.47 SEK",
+          "Commission": "55.22 SEK",
+          "Result": "4880.337909 SEK",
+          "ISIN": "CA73044W3021",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-24",
+          "Account": "5227886",
+          "Stock": "FASTLY INC",
+          "Type": "BUY",
+          "Volume": "46.0",
+          "Price": "218.447621 SEK",
+          "Amount": "-10104.06 SEK",
+          "Commission": "55.47 SEK",
+          "Result": "None",
+          "ISIN": "US31188V1008",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-24",
+          "Account": "5227886",
+          "Stock": "VERTIV HOLDING CO",
+          "Type": "BUY",
+          "Volume": "9.0",
+          "Price": "3018.330434 SEK",
+          "Amount": "-27220.44 SEK",
+          "Commission": "55.47 SEK",
+          "Result": "None",
+          "ISIN": "US92537N1081",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-24",
+          "Account": "5227886",
+          "Stock": "POET TECHNOLOGIES INC",
+          "Type": "SELL",
+          "Volume": "-286.0",
+          "Price": "139.539673 SEK",
+          "Amount": "39848.47 SEK",
+          "Commission": "59.88 SEK",
+          "Result": "19877.284878 SEK",
+          "ISIN": "CA73044W3021",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-20",
+          "Account": "5227886",
+          "Stock": "ETHEREUM XBT",
+          "Type": "BUY",
+          "Volume": "285.0",
+          "Price": "175.6 SEK",
+          "Amount": "-50121.07 SEK",
+          "Commission": "75.07 SEK",
+          "Result": "None",
+          "ISIN": "SE0010296574",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-13",
+          "Account": "5227886",
+          "Stock": "ETHEREUM XBT",
+          "Type": "BUY",
+          "Volume": "150.0",
+          "Price": "166.68 SEK",
+          "Amount": "-25041.0 SEK",
+          "Commission": "39.0 SEK",
+          "Result": "None",
+          "ISIN": "SE0010296574",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-09",
+          "Account": "5227886",
+          "Stock": "PALANTIR TECHNOLOGIES INC",
+          "Type": "BUY",
+          "Volume": "17.0",
+          "Price": "1199.793135 SEK",
+          "Amount": "-20452.28 SEK",
+          "Commission": "55.8 SEK",
+          "Result": "None",
+          "ISIN": "US69608A1088",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-08",
+          "Account": "5227886",
+          "Stock": "EXXON MOBIL CORP",
+          "Type": "BUY",
+          "Volume": "11.0",
+          "Price": "1410.834516 SEK",
+          "Amount": "-15575.24 SEK",
+          "Commission": "56.06 SEK",
+          "Result": "None",
+          "ISIN": "US30231G1022",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-02",
+          "Account": "5227886",
+          "Stock": "MORGAN STANLEY",
+          "Type": "BUY",
+          "Volume": "10.0",
+          "Price": "1563.262572 SEK",
+          "Amount": "-15689.37 SEK",
+          "Commission": "56.74 SEK",
+          "Result": "None",
+          "ISIN": "US6174464486",
+          "Description": ""
+        },
+        {
+          "Trade Date": "2026-04-02",
+          "Account": "5227886",
+          "Stock": "FASTLY INC",
+          "Type": "SELL",
+          "Volume": "-150.0",
+          "Price": "319.938509 SEK",
+          "Amount": "47918.79 SEK",
+          "Commission": "71.99 SEK",
+          "Result": "22601.971789 SEK",
+          "ISIN": "US31188V1008",
+          "Description": ""
+        }
+      ]
+    }
+  }
+}
