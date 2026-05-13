@@ -2625,6 +2625,47 @@ def test_execute_mcp_signal_context_bundle_with_fmp_and_polygon(monkeypatch):
     assert "polygon" in result["sources"]
 
 
+def test_execute_mcp_signal_context_bundle_uses_raw_symbol_for_tradingview_fallback(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    captured: dict[str, Any] = {}
+
+    def fake_tv(symbol, **kwargs):
+        captured["symbol"] = symbol
+        captured["market"] = kwargs.get("market")
+        captured["exchange"] = kwargs.get("exchange")
+        return {
+            "symbol": "CRYPTO:ETHUSD",
+            "technicals": {"overall_label": "Buy"},
+            "unsafe_for_execution": False,
+        }
+
+    def fake_zacks(symbol, **kwargs):
+        captured["zacks_symbol"] = symbol
+        return {"symbol": symbol, "blocked": False, "rank": {"value": 3, "label": "Hold"}}
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr("avanza_cli.zacks_symbol_snapshot", fake_zacks)
+    monkeypatch.setattr(
+        "avanza_cli.sec_recent_filings_snapshot",
+        lambda *args, **kwargs: {"ticker": "ETHUSD", "filings": [], "unsafe_for_execution": False},
+    )
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("signal_context_bundle", {"symbol": "ETHUSD", "include_zacks": True, "include_sec": True})
+
+    assert captured["symbol"] == "ETHUSD"
+    assert captured["market"] == "america"
+    assert captured["exchange"] == "NASDAQ"
+    assert captured["zacks_symbol"] == "ETHUSD"
+    assert result["symbol"] == "CRYPTO:ETHUSD"
+    assert result["unsafe_for_execution"] is False
+
+
 def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
     from avanza_cli import (
         clear_tradingview_session,

@@ -8528,17 +8528,22 @@ class AvanzaTradingTui(App):
         exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
         market: str = TRADINGVIEW_DEFAULT_MARKET,
     ) -> dict[str, Any]:
-        normalized_symbol = normalize_tv_symbol(symbol, exchange)
+        symbol_input = str(symbol or "").strip()
+        normalized_symbol = normalize_tv_symbol(symbol_input, exchange)
         as_of = datetime.now(timezone.utc).isoformat(timespec="seconds")
         sources: list[dict[str, Any]] = []
+        effective_symbol = normalized_symbol
+        symbol_token = tv_symbol_core(normalized_symbol)
 
         try:
             tv = tradingview_symbol_snapshot(
-                normalized_symbol,
+                symbol_input,
                 market=market,
                 exchange=exchange,
                 cookie="",
             )
+            effective_symbol = str(tv.get("symbol") or normalized_symbol)
+            symbol_token = tv_symbol_core(effective_symbol) or symbol_token
             sources.append(
                 {
                     "source": "tradingview",
@@ -8559,7 +8564,7 @@ class AvanzaTradingTui(App):
             )
 
         try:
-            zacks = zacks_symbol_snapshot(normalized_symbol.split(":", 1)[-1])
+            zacks = zacks_symbol_snapshot(symbol_token)
             status = "blocked" if zacks.get("blocked") else "ok"
             sources.append(
                 {
@@ -8582,7 +8587,7 @@ class AvanzaTradingTui(App):
         fmp_key = os.getenv("FMP_API_KEY", "").strip()
         if fmp_key:
             try:
-                fmp = fmp_analyst_recommendations_snapshot(normalized_symbol.split(":", 1)[-1], limit=1, api_key=fmp_key)
+                fmp = fmp_analyst_recommendations_snapshot(symbol_token, limit=1, api_key=fmp_key)
                 latest = fmp.get("latest") if isinstance(fmp.get("latest"), dict) else {}
                 sources.append(
                     {
@@ -8619,7 +8624,7 @@ class AvanzaTradingTui(App):
         polygon_key = os.getenv("POLYGON_API_KEY", "").strip()
         if polygon_key:
             try:
-                polygon = polygon_analyst_insights_snapshot(normalized_symbol.split(":", 1)[-1], limit=1, api_key=polygon_key)
+                polygon = polygon_analyst_insights_snapshot(symbol_token, limit=1, api_key=polygon_key)
                 first = polygon.get("rows", [{}])[0] if polygon.get("rows") else {}
                 sources.append(
                     {
@@ -8652,7 +8657,7 @@ class AvanzaTradingTui(App):
             )
 
         try:
-            sec = sec_recent_filings_snapshot(ticker=normalized_symbol.split(":", 1)[-1], cik=None, limit=5)
+            sec = sec_recent_filings_snapshot(ticker=symbol_token, cik=None, limit=5)
             sources.append(
                 {
                     "source": "sec",
@@ -8717,7 +8722,8 @@ class AvanzaTradingTui(App):
 
         return {
             "as_of": as_of,
-            "symbol": normalized_symbol,
+            "symbol": effective_symbol,
+            "requested_symbol": normalized_symbol,
             "market": market,
             "sources": sources,
             "unsafe_for_execution": any(bool(item.get("unsafe_for_execution")) for item in sources),
@@ -8738,26 +8744,31 @@ class AvanzaTradingTui(App):
         fmp_api_key: str | None = None,
         polygon_api_key: str | None = None,
     ) -> dict[str, Any]:
-        normalized_symbol = normalize_tv_symbol(symbol, exchange)
+        symbol_input = str(symbol or "").strip()
+        normalized_symbol = normalize_tv_symbol(symbol_input, exchange)
+        symbol_token = tv_symbol_core(normalized_symbol)
         payload: dict[str, Any] = {
             "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "symbol": normalized_symbol,
+            "requested_symbol": normalized_symbol,
             "market": market,
             "sources": [],
         }
 
         tv = tradingview_symbol_snapshot(
-            normalized_symbol,
+            symbol_input,
             market=market,
             exchange=exchange,
             cookie="",
         )
         payload["tradingview"] = tv
+        payload["symbol"] = str(tv.get("symbol") or normalized_symbol)
+        symbol_token = tv_symbol_core(payload["symbol"]) or symbol_token
         payload["sources"].append("tradingview")
 
         if include_zacks:
             try:
-                zacks = zacks_symbol_snapshot(normalized_symbol.split(":", 1)[-1])
+                zacks = zacks_symbol_snapshot(symbol_token)
                 payload["zacks"] = zacks
                 payload["sources"].append("zacks")
             except Exception as exc:
@@ -8767,7 +8778,7 @@ class AvanzaTradingTui(App):
         if include_fmp:
             try:
                 fmp = fmp_analyst_recommendations_snapshot(
-                    normalized_symbol.split(":", 1)[-1],
+                    symbol_token,
                     limit=52,
                     api_key=fmp_api_key,
                 )
@@ -8780,7 +8791,7 @@ class AvanzaTradingTui(App):
         if include_polygon:
             try:
                 polygon = polygon_analyst_insights_snapshot(
-                    normalized_symbol.split(":", 1)[-1],
+                    symbol_token,
                     limit=50,
                     api_key=polygon_api_key,
                 )
@@ -8792,7 +8803,7 @@ class AvanzaTradingTui(App):
 
         if include_sec:
             try:
-                sec = sec_recent_filings_snapshot(ticker=normalized_symbol.split(":", 1)[-1], cik=None, limit=10)
+                sec = sec_recent_filings_snapshot(ticker=symbol_token, cik=None, limit=10)
                 payload["sec"] = sec
                 payload["sources"].append("sec")
             except Exception as exc:
