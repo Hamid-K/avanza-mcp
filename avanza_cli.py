@@ -211,6 +211,44 @@ TRADINGVIEW_CRYPTO_MARKET = "crypto"
 TRADINGVIEW_FOREX_MARKET = "forex"
 TRADINGVIEW_CRYPTO_EXCHANGE_FALLBACKS = ("CRYPTO", "BINANCE", "COINBASE", "BITSTAMP", "KRAKEN", "BYBIT", "OKX")
 TRADINGVIEW_FOREX_EXCHANGE_FALLBACKS = ("FX_IDC", "OANDA", "FOREXCOM")
+TRADINGVIEW_EXCHANGE_MARKET_HINTS = {
+    "NASDAQ": "america",
+    "NYSE": "america",
+    "NYSEARCA": "america",
+    "NYSEAMERICAN": "america",
+    "AMEX": "america",
+    "CBOE": "america",
+    "IEX": "america",
+    "OTC": "america",
+    "OTCBB": "america",
+    "LSE": "uk",
+    "TSX": "canada",
+    "TSXV": "canada",
+    "ASX": "australia",
+    "XETR": "germany",
+    "FWB": "germany",
+    "EPA": "france",
+    "BME": "spain",
+    "MIL": "italy",
+    "AMS": "netherlands",
+    "NSE": "india",
+    "BSE": "india",
+    "BIST": "turkey",
+}
+TRADINGVIEW_MARKET_EXCHANGE_FALLBACKS = {
+    "america": ("NASDAQ", "NYSE", "NYSEARCA", "NYSEAMERICAN", "AMEX", "OTC"),
+    "uk": ("LSE",),
+    "canada": ("TSX", "TSXV"),
+    "australia": ("ASX",),
+    "germany": ("XETR", "FWB"),
+    "france": ("EPA",),
+    "spain": ("BME",),
+    "italy": ("MIL",),
+    "netherlands": ("AMS",),
+    "india": ("NSE", "BSE"),
+    "turkey": ("BIST",),
+}
+TRADINGVIEW_MARKET_FALLBACKS = ("global",)
 TRADINGVIEW_FIAT_CODES = {"USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SEK", "NOK", "DKK"}
 TRADINGVIEW_CRYPTO_QUOTE_SUFFIXES = ("USDT", "USDC", "USD", "BTC", "ETH", "EUR", "TRY", "BUSD")
 TRADINGVIEW_PROFILE_URL_TEMPLATE = "https://www.tradingview.com/symbols/{symbol_slug}/"
@@ -3886,8 +3924,27 @@ def normalize_tv_symbol(symbol: str, exchange: str = TRADINGVIEW_DEFAULT_EXCHANG
     if not text:
         raise ValueError("symbol is required.")
     if ":" in text:
-        return text
+        exchange_part, symbol_part = text.split(":", 1)
+        normalized_exchange = re.sub(r"[^A-Z0-9_]", "", exchange_part.strip().upper()) or exchange.strip().upper()
+        normalized_symbol = symbol_part.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("symbol is required.")
+        return f"{normalized_exchange}:{normalized_symbol}"
     return f"{exchange}:{text}"
+
+
+def tradingview_market_hint_for_exchange(exchange: str) -> str | None:
+    exchange_text = str(exchange or "").strip().upper()
+    if not exchange_text:
+        return None
+    if exchange_text in TRADINGVIEW_CRYPTO_EXCHANGE_FALLBACKS:
+        return TRADINGVIEW_CRYPTO_MARKET
+    if exchange_text in TRADINGVIEW_FOREX_EXCHANGE_FALLBACKS:
+        return TRADINGVIEW_FOREX_MARKET
+    for prefix, market in TRADINGVIEW_EXCHANGE_MARKET_HINTS.items():
+        if exchange_text == prefix or exchange_text.startswith(f"{prefix}_") or exchange_text.startswith(f"{prefix}."):
+            return market
+    return None
 
 
 def tv_symbol_core(symbol: str) -> str:
@@ -3936,7 +3993,40 @@ def tradingview_symbol_attempts(
         attempts.append(key)
 
     if ":" in symbol_text:
-        push(symbol_text, market_text)
+        normalized_qualified = normalize_tv_symbol(symbol_text, exchange_text)
+        qualified_exchange, qualified_symbol = normalized_qualified.split(":", 1)
+        inferred_market = tradingview_market_hint_for_exchange(qualified_exchange)
+        market_candidates = unique_strings(
+            [
+                market_text,
+                inferred_market or "",
+                *TRADINGVIEW_MARKET_FALLBACKS,
+            ]
+        )
+        if not market_candidates:
+            market_candidates = [market_text]
+
+        core = tv_symbol_core(qualified_symbol)
+        symbol_variants = [normalized_qualified]
+        if core and core != qualified_symbol:
+            symbol_variants.append(f"{qualified_exchange}:{core}")
+
+        for candidate_market in market_candidates:
+            for variant in symbol_variants:
+                push(variant, candidate_market)
+
+        if not is_probable_crypto_pair(core) and not is_probable_forex_pair(core):
+            fallback_exchanges = unique_strings(
+                [
+                    qualified_exchange,
+                    *(TRADINGVIEW_MARKET_EXCHANGE_FALLBACKS.get(inferred_market or market_text, ())),
+                    *(TRADINGVIEW_MARKET_EXCHANGE_FALLBACKS.get(market_text, ())),
+                ]
+            )
+            if core:
+                for candidate_exchange in fallback_exchanges:
+                    for candidate_market in market_candidates:
+                        push(f"{candidate_exchange}:{core}", candidate_market)
         return attempts
 
     core = tv_symbol_core(symbol_text)
@@ -3961,9 +4051,11 @@ def tradingview_symbol_attempts(
 
 def should_retry_tv_scan_error(exc: Exception) -> bool:
     if isinstance(exc, HTTPError):
-        return exc.code in {400, 404}
+        return exc.code in {400, 404, 405}
     message = str(exc).lower()
     if "http error 400" in message or "http error 404" in message:
+        return True
+    if "http error 405" in message:
         return True
     if "returned no rows" in message:
         return True

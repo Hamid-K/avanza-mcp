@@ -2427,6 +2427,81 @@ def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monk
     assert any("crypto/scan" in url for url, _ in calls)
 
 
+def test_tradingview_symbol_attempts_for_qualified_symbols_include_market_and_exchange_fallbacks():
+    from avanza_cli import tradingview_symbol_attempts
+
+    attempts = tradingview_symbol_attempts("LSE:BA.", exchange="NASDAQ", market="america")
+    assert ("LSE:BA.", "america") in attempts
+    assert ("LSE:BA.", "uk") in attempts
+
+    us_attempts = tradingview_symbol_attempts("NASDAQ:W", exchange="NASDAQ", market="america")
+    assert ("NASDAQ:W", "america") in us_attempts
+    assert any(symbol == "NYSE:W" for symbol, _ in us_attempts)
+
+
+def test_tradingview_symbol_snapshot_falls_back_from_america_to_exchange_market(monkeypatch):
+    from avanza_cli import tradingview_symbol_snapshot
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_fetch_json(url, **kwargs):
+        payload = kwargs.get("payload", {})
+        calls.append((url, payload))
+        ticker = payload.get("symbols", {}).get("tickers", [""])[0]
+        if "scanner.tradingview.com/america/scan" in url and ticker == "LSE:BA.":
+            raise HTTPError(url, 400, "Bad Request", hdrs=None, fp=io.BytesIO(b'{"error":"bad request"}'))
+        if "scanner.tradingview.com/uk/scan" in url and ticker == "LSE:BA.":
+            return {
+                "totalCount": 1,
+                "data": [
+                    {
+                        "s": "LSE:BA.",
+                        "d": [
+                            "BA.",
+                            "BAE Systems plc",
+                            "LSE",
+                            "Electronic Technology",
+                            "Aerospace & Defense",
+                            16.43,
+                            1.82,
+                            0.29,
+                            15_500_000,
+                            49_300_000_000,
+                            "GBP",
+                            16.52,
+                            16.08,
+                            16.14,
+                            2.9,
+                            -4.3,
+                            -8.4,
+                            5.1,
+                            49.6,
+                            39.5,
+                            0.18,
+                            0.12,
+                            0.07,
+                            58.0,
+                            0.5,
+                            0.4,
+                            61.0,
+                            52.0,
+                        ],
+                    }
+                ],
+            }
+        return {"totalCount": 0, "data": []}
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = tradingview_symbol_snapshot("LSE:BA.", exchange="NASDAQ", market="america")
+
+    assert snapshot["fallback_used"] is True
+    assert snapshot["symbol"] == "LSE:BA."
+    assert snapshot["market"] == "uk"
+    assert snapshot["technicals"]["overall_label"] in {"Buy", "Neutral", "Strong Buy"}
+    assert any("america/scan" in url for url, _ in calls)
+    assert any("uk/scan" in url for url, _ in calls)
+
+
 def test_tradingview_watchlist_entry_matches_target_variants():
     from avanza_cli import tradingview_watchlist_entry_matches_target
 
