@@ -49,6 +49,7 @@ python avanza_cli.py tui
 ```
 
 After login, the TUI hides the credential screen and loads the trading workspace. Use the account selector in the top bar to switch accounts. The position and stop-loss/open-order tables are filtered to the selected account and refresh live every 5 seconds. Use `Reload TUI` in the top control bar to hard-restart the app process with the same CLI arguments so local code changes are reloaded without manual quit/relaunch.
+Use `Login extra account` to add additional authenticated Avanza sessions. Switch sessions from the session selector; account list and table data follow the active session.
 The top-left app label includes the running version (`Avanza vX.Y.Z`) so the active build is always visible during trading sessions.
 The bottom status bar includes an automatic GitHub release check; if your build is outdated it flashes an update warning. Set `AVANZA_UPDATE_CHECK_ENABLED=0` to disable, or `AVANZA_GITHUB_REPO=owner/repo` to change the repository source.
 
@@ -178,6 +179,12 @@ python avanza_cli.py mcp
 
 The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, paper-trading, and stock-search tools. MCP starts read-only. To allow live order or stop-loss placement/deletion, enable the TUI `Live R/W` tick box and require the MCP tool call to include `confirm: true`. Dry-run previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
 
+Multi-session MCP behavior:
+- `avanza_sessions` lists loaded tenant sessions.
+- `avanza_select_session` switches active tenant context.
+- Most `avanza_*` tools can be scoped by `account_id` and auto-route to the matching tenant session.
+- Paper-ledger tools reserve `session_id` for paper strategy sessions; use `tenant_session_id` there for explicit tenant scoping.
+
 ### Available MCP tools
 
 | Tool | Purpose |
@@ -187,6 +194,8 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 | `avanza_live_session_authorize` | Explicitly enable live mutation permission for this active MCP or TUI session. |
 | `avanza_live_session_revoke` | Disable live mutation permission for this MCP or TUI session and force paper-only mode. |
 | `avanza_accounts` | List Avanza accounts currently visible to the authenticated TUI session. |
+| `avanza_sessions` | List loaded authenticated Avanza tenant sessions in the running TUI. |
+| `avanza_select_session` | Switch active MCP/TUI tenant session context. |
 | `avanza_select_account` | Safely switch MCP or TUI selected account context. |
 | `avanza_account_performance` | Read Avanza account performance/development for the selected or supplied account_id over a chosen period. |
 | `tv_scrape_symbol_analytics` | Fetch TradingView symbol analytics and technical recommendation barometers from public scanner data. |

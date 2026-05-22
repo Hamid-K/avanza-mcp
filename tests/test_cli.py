@@ -1830,6 +1830,118 @@ def test_mcp_select_account_switches_context():
     assert status["selected_account_id"] == "931965"
 
 
+def test_mcp_sessions_list_and_select_session_without_mounted_tui():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, account_id: str, account_name: str):
+            self._account_id = account_id
+            self._account_name = account_name
+
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {
+                        "id": self._account_id,
+                        "name": {"defaultName": self._account_name},
+                        "type": "ISK",
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        FakeAvanza("acc-1", "Personal"),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Personal"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Personal",
+    )
+    second = app.register_tenant_session(
+        FakeAvanza("acc-2", "Company"),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Company"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Company",
+    )
+    app.load_active_state_from_tenant(first)
+
+    listed = app.execute_mcp_tool("avanza_sessions", {})
+    assert listed["sessions_loaded"] == 2
+    assert listed["active_session_id"] == first.session_id
+    assert {row["session_id"] for row in listed["sessions"]} == {first.session_id, second.session_id}
+
+    switched = app.execute_mcp_tool("avanza_select_session", {"session_id": second.session_id})
+    assert switched["active_session_id"] == second.session_id
+    assert app.active_session_id == second.session_id
+
+
+def test_mcp_account_scoped_portfolio_uses_matching_tenant_session():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, account_id: str, stock_name: str, orderbook_id: str):
+            self._account_id = account_id
+            self._stock_name = stock_name
+            self._orderbook_id = orderbook_id
+
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": f"pos-{self._account_id}",
+                        "account": {"id": self._account_id, "name": self._account_id},
+                        "instrument": {"name": self._stock_name, "orderbook": {"id": self._orderbook_id}},
+                        "volume": {"value": 1, "unit": "st"},
+                        "value": {"value": 100.0, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 90.0, "unit": "SEK"},
+                        "acquiredValue": {"value": 90.0, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 1.0, "unit": "%"},
+                            "absolute": {"value": 1.0, "unit": "SEK"},
+                        },
+                        "profit": {
+                            "absolute": {"value": 10.0, "unit": "SEK"},
+                            "relative": {"value": 11.11, "unit": "%"},
+                        },
+                    }
+                ],
+                "withoutOrderbook": [],
+            }
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        FakeAvanza("acc-1", "Stock A", "ob-a"),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Personal"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Personal",
+    )
+    second = app.register_tenant_session(
+        FakeAvanza("acc-2", "Stock B", "ob-b"),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Company"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Company",
+    )
+    app.load_active_state_from_tenant(first)
+
+    snapshot = app.execute_mcp_tool("avanza_portfolio", {"account_id": "acc-2"})
+    assert snapshot["account_id"] == "acc-2"
+    assert snapshot["positions"][0]["Stock"] == "Stock B"
+
+    # Scoped execution should not change the currently active session context.
+    assert app.active_session_id == first.session_id
+    assert app.active_tenant_session() is not None
+    assert app.active_tenant_session().selected_account_id == "acc-1"
+    assert second.selected_account_id == "acc-2"
+
+
 def test_mcp_paper_ledger_flow_with_risk_state():
     from avanza_cli import AvanzaTradingTui
 

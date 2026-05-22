@@ -19,6 +19,7 @@ htmlcov/
 .avanza_tradingview_profile/
 avanza-cli/logs/
 avanza-cli/backups/
+.playwright-mcp/
 
 # Local assistant preferences and trading workflow notes.
 # Keep the folder visible in git, but keep all private contents local-only.

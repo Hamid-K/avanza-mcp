@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import cProfile
+from dataclasses import dataclass, field
 import getpass
 import hashlib
 import html
@@ -18,10 +19,11 @@ import threading
 import time
 import textwrap
 import webbrowser
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -406,6 +408,34 @@ GITHUB_RELEASE_REPO = os.getenv("AVANZA_GITHUB_REPO", "Hamid-K/avanza-mcp")
 UPDATE_CHECK_INTERVAL_SECONDS = float(os.getenv("AVANZA_UPDATE_CHECK_INTERVAL_SECONDS", "1800"))
 UPDATE_CHECK_TIMEOUT_SECONDS = float(os.getenv("AVANZA_UPDATE_CHECK_TIMEOUT_SECONDS", "10"))
 UPDATE_BLINK_INTERVAL_SECONDS = float(os.getenv("AVANZA_UPDATE_BLINK_INTERVAL_SECONDS", "0.7"))
+SESSION_ACCENT_COLORS: tuple[str, ...] = (
+    "#3b82f6",
+    "#22c55e",
+    "#f59e0b",
+    "#ef4444",
+    "#a855f7",
+    "#14b8a6",
+    "#f97316",
+    "#84cc16",
+    "#06b6d4",
+    "#eab308",
+)
+
+
+@dataclass
+class AvanzaTenantSession:
+    session_id: str
+    label: str
+    color: str
+    avanza: Avanza
+    accounts: list[dict[str, Any]] = field(default_factory=list)
+    selected_account_id: str | None = None
+    latest_portfolio_data: dict[str, Any] | None = None
+    latest_stoploss_items: list[dict[str, Any]] = field(default_factory=list)
+    latest_open_order_items: list[dict[str, Any]] = field(default_factory=list)
+    holding_volumes_by_order_book: dict[str, str] = field(default_factory=dict)
+    holding_labels_by_order_book: dict[str, str] = field(default_factory=dict)
+    order_search_labels_by_order_book: dict[str, str] = field(default_factory=dict)
 
 
 def update_check_enabled() -> bool:
@@ -5651,14 +5681,36 @@ MCP_TOOLS = [
     {
         "name": "avanza_accounts",
         "description": "List Avanza accounts currently visible to the authenticated TUI session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"session_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_sessions",
+        "description": "List authenticated Avanza tenant sessions currently loaded in TUI.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "avanza_select_session",
+        "description": "Switch active MCP/TUI session context to a loaded tenant session (read-only context switch).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"session_id": {"type": "string"}},
+            "required": ["session_id"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "avanza_select_account",
         "description": "Safely switch MCP/TUI selected account context. Read-only context switch; no order mutations.",
         "inputSchema": {
             "type": "object",
-            "properties": {"account_id": {"type": "string"}},
+            "properties": {
+                "session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+            },
             "required": ["account_id"],
             "additionalProperties": False,
         },
@@ -6158,6 +6210,7 @@ MCP_TOOLS = [
             "properties": {
                 "account_id": {"type": "string"},
                 "session_id": {"type": "string"},
+                "tenant_session_id": {"type": "string"},
                 "active_only": {"type": "boolean", "default": False},
             },
             "additionalProperties": False,
@@ -6171,6 +6224,7 @@ MCP_TOOLS = [
             "properties": {
                 "account_id": {"type": "string"},
                 "session_id": {"type": "string"},
+                "tenant_session_id": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -6183,6 +6237,7 @@ MCP_TOOLS = [
             "properties": {
                 "account_id": {"type": "string"},
                 "session_id": {"type": "string"},
+                "tenant_session_id": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -6202,6 +6257,7 @@ MCP_TOOLS = [
                 "volume": {"type": "integer"},
                 "condition": {"type": "string", "default": "normal"},
                 "session_id": {"type": "string"},
+                "tenant_session_id": {"type": "string"},
                 "fill_immediately": {"type": "boolean", "default": False},
                 "entry_reason": {"type": "string"},
                 "stop_price": {"type": "number"},
@@ -6223,6 +6279,7 @@ MCP_TOOLS = [
                 "exit_price": {"type": "number"},
                 "exit_reason": {"type": "string"},
                 "session_id": {"type": "string"},
+                "tenant_session_id": {"type": "string"},
             },
             "required": ["account_id", "exit_price"],
             "additionalProperties": False,
@@ -6235,6 +6292,7 @@ MCP_TOOLS = [
             "type": "object",
             "properties": {
                 "session_id": {"type": "string"},
+                "tenant_session_id": {"type": "string"},
                 "account_id": {"type": "string"},
                 "max_open_trades": {"type": "integer", "default": 3},
                 "max_trade_notional_sek": {"type": "number", "default": 5000},
@@ -6723,9 +6781,18 @@ class AvanzaTradingTui(App):
         text-style: bold;
     }
 
-    #account-select {
-        width: 48;
+    #session-select {
+        width: 26;
         margin-right: 1;
+    }
+
+    #account-select {
+        width: 40;
+        margin-right: 1;
+    }
+
+    #open-extra-login {
+        min-width: 18;
     }
 
     #metric-grid {
@@ -7058,6 +7125,37 @@ class AvanzaTradingTui(App):
         background: $panel;
     }
 
+    #extra-login-modal {
+        display: none;
+        layer: overlay;
+        align: center middle;
+        width: 1fr;
+        height: 1fr;
+        background: rgba(0, 0, 0, 0.45);
+    }
+
+    #extra-login-card {
+        width: 56;
+        height: auto;
+        border: tall $primary;
+        padding: 1 3;
+        background: $panel;
+    }
+
+    #extra-login-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #extra-login-subtitle {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #extra-login-card Input {
+        margin-bottom: 1;
+    }
+
     #orders-overlay,
     #transactions-overlay,
     #tv-lists-overlay {
@@ -7262,6 +7360,9 @@ class AvanzaTradingTui(App):
         self.debug_profile_depth = 0
         self.debug_session_log_path = create_session_log_path("debug") if self.debug_mode else None
         self.avanza: Avanza | None = None
+        self.tenant_sessions: dict[str, AvanzaTenantSession] = {}
+        self.active_session_id: str | None = None
+        self.session_label_counter = 1
         self.accounts: list[dict[str, Any]] = []
         self.selected_account_id: str | None = None
         self.live_refresh_timer = None
@@ -7279,6 +7380,10 @@ class AvanzaTradingTui(App):
         self.login_progress_messages: tuple[str, ...] = ()
         self.login_progress_index = 0
         self.login_stage_message = ""
+        self.login_target_mode = "initial"
+        self.login_target_session_id: str | None = None
+        self.login_target_session_label: str | None = None
+        self.mcp_scope_original_session_id: str | None = None
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
@@ -7310,6 +7415,7 @@ class AvanzaTradingTui(App):
         self.latest_tv_lists: list[dict[str, Any]] = []
         self.latest_tv_list_items: list[dict[str, Any]] = []
         self.tv_list_option_refs: dict[str, dict[str, str]] = {}
+        self.session_select_updating = False
         self.tv_lists_loaded_value = ""
         self.tv_lists_select_updating = False
         self.tv_lists_refresh_thread: threading.Thread | None = None
@@ -7395,7 +7501,9 @@ class AvanzaTradingTui(App):
                 with Vertical(id="left-info"):
                     with Horizontal(id="account-row"):
                         yield Static(f"Avanza v{APP_VERSION}", id="app-title")
+                        yield Select([], prompt="Session", allow_blank=True, id="session-select")
                         yield Select([], prompt="Select account", allow_blank=True, id="account-select")
+                        yield Button("Login extra", id="open-extra-login", variant="primary")
                     with Horizontal(id="metric-grid"):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
                         yield Static("Buying\n-", id="metric-buying", classes="metric-card")
@@ -7577,6 +7685,29 @@ class AvanzaTradingTui(App):
                     yield Select([], prompt="Select TradingView list", allow_blank=True, id="tv-lists-select")
                     yield Button("Reload Lists", id="reload-tv-lists", variant="default")
                 yield DataTable(id="tv-lists-table")
+            with Vertical(id="extra-login-modal"):
+                with Vertical(id="extra-login-card"):
+                    yield Static("Login to extra accounts", id="extra-login-title")
+                    yield Static("Add another tenant session without leaving the TUI.", id="extra-login-subtitle")
+                    yield Input(placeholder="Session label (e.g. Personal, DarkCell AB)", id="extra-session-label")
+                    yield Input(placeholder="Username", id="extra-username")
+                    yield Input(placeholder="Password", id="extra-password", password=True)
+                    yield Input(
+                        placeholder="Current TOTP code",
+                        id="extra-totp",
+                        password=True,
+                        restrict=r"[0-9]*",
+                        max_length=8,
+                    )
+                    with Horizontal():
+                        yield Button("Login extra account", id="extra-login-submit", variant="primary")
+                        yield Button("Cancel", id="extra-login-cancel", variant="default")
+                    yield Static("Or use 1Password CLI", id="extra-onepassword-title")
+                    yield Input(placeholder="1Password item name or ID", id="extra-onepassword-item")
+                    yield Input(placeholder="1Password vault (optional)", id="extra-onepassword-vault")
+                    with Horizontal():
+                        yield Button("Login with 1Password", id="extra-onepassword-login", variant="primary")
+                        yield Button("Cancel", id="extra-login-cancel-2", variant="default")
         with Horizontal(id="status-bar"):
             yield Static("Update: checking...", id="update-status")
         yield Footer()
@@ -7937,12 +8068,31 @@ class AvanzaTradingTui(App):
         self.query_one("#totp", Input).value = ""
 
     def set_login_controls_enabled(self, enabled: bool) -> None:
-        for widget_id in ("username", "password", "totp", "onepassword-item", "onepassword-vault"):
+        for widget_id in (
+            "username",
+            "password",
+            "totp",
+            "onepassword-item",
+            "onepassword-vault",
+            "extra-session-label",
+            "extra-username",
+            "extra-password",
+            "extra-totp",
+            "extra-onepassword-item",
+            "extra-onepassword-vault",
+        ):
             try:
                 self.query_one(f"#{widget_id}", Input).disabled = not enabled
             except Exception:
                 pass
-        for widget_id in ("login", "onepassword-login"):
+        for widget_id in (
+            "login",
+            "onepassword-login",
+            "extra-login-submit",
+            "extra-onepassword-login",
+            "extra-login-cancel",
+            "extra-login-cancel-2",
+        ):
             try:
                 self.query_one(f"#{widget_id}", Button).disabled = not enabled
             except Exception:
@@ -8015,15 +8165,212 @@ class AvanzaTradingTui(App):
             pass
         self.set_login_controls_enabled(True)
 
+    def clear_extra_secret_inputs(self) -> None:
+        for widget_id in ("extra-password", "extra-totp"):
+            try:
+                self.query_one(f"#{widget_id}", Input).value = ""
+            except Exception:
+                pass
+
+    def next_session_color(self) -> str:
+        return SESSION_ACCENT_COLORS[len(self.tenant_sessions) % len(SESSION_ACCENT_COLORS)]
+
+    def build_session_id(self, label: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", str(label or "").strip().lower()).strip("-")
+        if not slug:
+            slug = f"session-{self.session_label_counter}"
+            self.session_label_counter += 1
+        candidate = slug
+        counter = 2
+        while candidate in self.tenant_sessions:
+            candidate = f"{slug}-{counter}"
+            counter += 1
+        return candidate
+
+    def auto_session_label(self, accounts: list[dict[str, Any]], fallback: str = "Session") -> str:
+        lead = default_account(accounts)
+        if isinstance(lead, dict):
+            name = account_display_name(lead).strip()
+            if name:
+                return name
+        label = f"{fallback} {self.session_label_counter}"
+        self.session_label_counter += 1
+        return label
+
+    def active_tenant_session(self) -> AvanzaTenantSession | None:
+        if not self.active_session_id:
+            return None
+        return self.tenant_sessions.get(self.active_session_id)
+
+    def tenant_session_by_id(self, session_id: str) -> AvanzaTenantSession:
+        context = self.tenant_sessions.get(str(session_id or "").strip())
+        if context is None:
+            raise ValueError(f"Unknown session_id: {session_id}")
+        return context
+
+    def tenant_session_for_account(self, account_id: str) -> AvanzaTenantSession | None:
+        token = str(account_id or "").strip()
+        if not token:
+            return None
+        for context in self.tenant_sessions.values():
+            for account in context.accounts:
+                if str(account.get("id", "")) == token:
+                    return context
+        return None
+
+    def sync_active_state_to_tenant(self) -> None:
+        context = self.active_tenant_session()
+        if context is None:
+            return
+        context.accounts = list(self.accounts)
+        context.selected_account_id = self.selected_account_id
+        context.latest_portfolio_data = self.latest_portfolio_data
+        context.latest_stoploss_items = list(self.latest_stoploss_items)
+        context.latest_open_order_items = list(self.latest_open_order_items)
+        context.holding_volumes_by_order_book = dict(self.holding_volumes_by_order_book)
+        context.holding_labels_by_order_book = dict(self.holding_labels_by_order_book)
+        context.order_search_labels_by_order_book = dict(self.order_search_labels_by_order_book)
+
+    def load_active_state_from_tenant(self, context: AvanzaTenantSession) -> None:
+        self.active_session_id = context.session_id
+        self.avanza = context.avanza
+        self.accounts = list(context.accounts)
+        self.selected_account_id = context.selected_account_id
+        self.latest_portfolio_data = context.latest_portfolio_data
+        self.latest_stoploss_items = list(context.latest_stoploss_items)
+        self.latest_open_order_items = list(context.latest_open_order_items)
+        self.holding_volumes_by_order_book = dict(context.holding_volumes_by_order_book)
+        self.holding_labels_by_order_book = dict(context.holding_labels_by_order_book)
+        self.order_search_labels_by_order_book = dict(context.order_search_labels_by_order_book)
+
+    def session_summary_text(self, context: AvanzaTenantSession) -> Text:
+        active_marker = "active" if context.session_id == self.active_session_id else "idle"
+        label = f"{context.label} ({active_marker})"
+        styled = Text()
+        styled.append("● ", style=context.color)
+        styled.append(label)
+        return styled
+
+    def refresh_session_select_options(self) -> None:
+        try:
+            session_select = self.query_one("#session-select", Select)
+        except Exception:
+            return
+        options = [(self.session_summary_text(context), context.session_id) for context in self.tenant_sessions.values()]
+        self.session_select_updating = True
+        try:
+            session_select.set_options(options)
+            if self.active_session_id and self.active_session_id in self.tenant_sessions:
+                if session_select.value != self.active_session_id:
+                    session_select.value = self.active_session_id
+        finally:
+            self.session_select_updating = False
+
+    def apply_active_session_header(self) -> None:
+        context = self.active_tenant_session()
+        title = Text(f"Avanza v{APP_VERSION}")
+        if context is not None:
+            title.append("  ")
+            title.append(f"● {context.label}", style=context.color)
+        try:
+            self.query_one("#app-title", Static).update(title)
+        except Exception:
+            pass
+
+    def workspace_widgets_ready(self) -> bool:
+        try:
+            self.query_one("#account-select", Select)
+            self.query_one("#portfolio-table", DataTable)
+            self.query_one("#stoploss-table", DataTable)
+        except Exception:
+            return False
+        return True
+
+    def session_account_option(self, account: dict[str, Any]) -> tuple[Text, str]:
+        context = self.active_tenant_session()
+        display = Text()
+        if context is not None:
+            display.append("● ", style=context.color)
+        display.append(f"{account_display_name(account)} ({account.get('type', '')}) - {amount(account, 'totalValue')}")
+        return display, str(account.get("id", ""))
+
+    def register_tenant_session(
+        self,
+        avanza: Avanza,
+        overview: dict[str, Any],
+        portfolio: dict[str, Any],
+        stoplosses: Any,
+        orders: Any,
+        *,
+        label: str | None = None,
+    ) -> AvanzaTenantSession:
+        accounts = account_rows_from_overview(overview)
+        session_label = str(label or "").strip() or self.auto_session_label(accounts)
+        session_id = self.build_session_id(session_label)
+        context = AvanzaTenantSession(
+            session_id=session_id,
+            label=session_label,
+            color=self.next_session_color(),
+            avanza=avanza,
+            accounts=accounts,
+            selected_account_id=str(default_account(accounts).get("id", "")) if default_account(accounts) else None,
+            latest_portfolio_data=portfolio if isinstance(portfolio, dict) else None,
+            latest_stoploss_items=[item for item in stoplosses if isinstance(item, dict)] if isinstance(stoplosses, list) else [],
+            latest_open_order_items=[item for item in open_order_items(orders) if isinstance(item, dict)],
+        )
+        self.tenant_sessions[session_id] = context
+        return context
+
+    def activate_tenant_session(
+        self,
+        session_id: str,
+        *,
+        refresh_ui: bool = True,
+        announce: bool = True,
+        update_controls: bool = True,
+    ) -> None:
+        self.sync_active_state_to_tenant()
+        context = self.tenant_session_by_id(session_id)
+        self.load_active_state_from_tenant(context)
+        widgets_ready = self.workspace_widgets_ready()
+        if update_controls and widgets_ready:
+            self.refresh_session_select_options()
+            self.apply_active_session_header()
+        if refresh_ui and widgets_ready:
+            if isinstance(self.latest_portfolio_data, dict):
+                self.position_row_cache = {}
+                self.apply_accounts_overview({"accounts": self.accounts}, announce=False)
+                self.apply_portfolio_data(self.latest_portfolio_data, fetch_quotes=False, allow_status_lookup=False)
+            else:
+                self.apply_accounts_overview({"accounts": self.accounts}, announce=False)
+            self.apply_stoploss_orders_data(self.latest_stoploss_items, self.latest_open_order_items)
+            self.refresh_selected_account_live()
+        if announce:
+            self.write_log(f"Switched session to {context.label} ({context.session_id}).")
+
+    @contextmanager
+    def temporary_tenant_scope(self, session_id: str | None) -> Iterator[None]:
+        target = str(session_id or "").strip()
+        if not target or target == self.active_session_id:
+            self.mcp_scope_original_session_id = self.active_session_id
+            try:
+                yield
+            finally:
+                self.mcp_scope_original_session_id = None
+            return
+        current = self.active_session_id
+        self.mcp_scope_original_session_id = current
+        self.activate_tenant_session(target, refresh_ui=False, announce=False, update_controls=False)
+        try:
+            yield
+        finally:
+            if current and current in self.tenant_sessions:
+                self.activate_tenant_session(current, refresh_ui=False, announce=False, update_controls=False)
+            self.mcp_scope_original_session_id = None
+
     def apply_accounts_overview(self, overview: dict[str, Any], announce: bool = True) -> None:
         self.accounts = account_rows_from_overview(overview)
-        account_options = [
-            (
-                f"{account_display_name(account)} ({account.get('type', '')}) - {amount(account, 'totalValue')}",
-                str(account.get("id", "")),
-            )
-            for account in self.accounts
-        ]
+        account_options = [self.session_account_option(account) for account in self.accounts]
         account_select = self.query_one("#account-select", Select)
         account_select.set_options(account_options)
         if announce:
@@ -8034,7 +8381,11 @@ class AvanzaTradingTui(App):
                 selected = default_account(self.accounts)
             if selected is not None:
                 self.set_selected_account(selected)
-                account_select.value = self.selected_account_id
+                if account_select.value != self.selected_account_id:
+                    account_select.value = self.selected_account_id
+        self.sync_active_state_to_tenant()
+        self.refresh_session_select_options()
+        self.apply_active_session_header()
 
     def apply_portfolio_data(
         self,
@@ -8128,6 +8479,7 @@ class AvanzaTradingTui(App):
         restore_table_row_selection(table, selected_row_key)
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {count} portfolio row(s){suffix}.")
+        self.sync_active_state_to_tenant()
 
     def apply_stoploss_orders_data(self, stoplosses: Any, orders: Any) -> None:
         table = self.query_one("#stoploss-table", DataTable)
@@ -8167,14 +8519,44 @@ class AvanzaTradingTui(App):
         self.update_active_trades_table()
         suffix = f" for account {self.selected_account_id}" if self.selected_account_id else ""
         self.write_log(f"Loaded {len(self.latest_stoploss_items)} active stop-loss order(s) and {order_count} ongoing open order(s){suffix}.")
+        self.sync_active_state_to_tenant()
 
-    def complete_login(self, avanza: Avanza, overview: dict[str, Any], portfolio: dict[str, Any], stoplosses: Any, orders: Any) -> None:
-        self.avanza = avanza
-        self.clear_secret_inputs()
+    def complete_login(
+        self,
+        avanza: Avanza,
+        overview: dict[str, Any],
+        portfolio: dict[str, Any],
+        stoplosses: Any,
+        orders: Any,
+        target_mode: str = "initial",
+        session_label: str | None = None,
+    ) -> None:
+        is_extra = str(target_mode or "").strip().lower() == "extra"
+        context = self.register_tenant_session(
+            avanza,
+            overview,
+            portfolio,
+            stoplosses,
+            orders,
+            label=session_label,
+        )
+        self.load_active_state_from_tenant(context)
+        self.position_row_cache = {}
         self.query_one("#login-screen").display = False
         self.query_one("#workspace").display = True
-        self.write_log("[green]Logged in. Secret fields cleared.[/green]")
-        self.apply_accounts_overview(overview, announce=True)
+        self.query_one("#extra-login-modal").display = False
+        self.clear_secret_inputs()
+        self.clear_extra_secret_inputs()
+        self.refresh_session_select_options()
+        self.apply_active_session_header()
+        self.write_log(
+            (
+                f"[green]Extra session logged in:[/green] {context.label} ({context.session_id})."
+                if is_extra
+                else "[green]Logged in. Secret fields cleared.[/green]"
+            )
+        )
+        self.apply_accounts_overview(overview, announce=not is_extra)
         self.apply_portfolio_data(portfolio, fetch_quotes=False)
         self.apply_stoploss_orders_data(stoplosses, orders)
         self.start_live_refresh()
@@ -8445,6 +8827,21 @@ class AvanzaTradingTui(App):
     def mcp_status_payload(self) -> dict[str, Any]:
         account = self.account_by_id(self.selected_account_id or "") if self.selected_account_id else None
         available_tools = sorted(tool.get("name", "") for tool in MCP_TOOLS if isinstance(tool, dict) and tool.get("name"))
+        sessions = [
+            {
+                "session_id": context.session_id,
+                "label": context.label,
+                "active": context.session_id == self.active_session_id,
+                "accounts_loaded": len(context.accounts),
+                "selected_account_id": context.selected_account_id,
+                "selected_account_name": (
+                    account_display_name(next((a for a in context.accounts if str(a.get("id", "")) == str(context.selected_account_id or "")), {}))
+                    if context.selected_account_id
+                    else None
+                ),
+            }
+            for context in self.tenant_sessions.values()
+        ]
         return {
             "ok": True,
             "app_version": APP_VERSION,
@@ -8465,6 +8862,9 @@ class AvanzaTradingTui(App):
             "can_place_paper_orders": True,
             "can_place_live_orders": bool(self.mcp_write_enabled and self.live_trading_allowed_for_session),
             "can_cancel_live_orders": bool(self.mcp_write_enabled and self.live_trading_allowed_for_session),
+            "active_session_id": self.active_session_id,
+            "sessions_loaded": len(self.tenant_sessions),
+            "sessions": sessions,
             "warning": (
                 "Live mutation tools are enabled for this session. Use with extreme caution."
                 if (self.mcp_write_enabled and self.live_trading_allowed_for_session)
@@ -8476,6 +8876,53 @@ class AvanzaTradingTui(App):
             "update_available": self.update_status_outdated,
             "latest_version": self.update_status_latest or APP_VERSION,
         }
+
+    def tenant_sessions_payload(self) -> dict[str, Any]:
+        sessions: list[dict[str, Any]] = []
+        for context in self.tenant_sessions.values():
+            active_account = next(
+                (item for item in context.accounts if str(item.get("id", "")) == str(context.selected_account_id or "")),
+                None,
+            )
+            sessions.append(
+                {
+                    "session_id": context.session_id,
+                    "label": context.label,
+                    "color": context.color,
+                    "active": context.session_id == self.active_session_id,
+                    "accounts_loaded": len(context.accounts),
+                    "selected_account_id": context.selected_account_id,
+                    "selected_account_name": account_display_name(active_account or {}) if active_account else None,
+                }
+            )
+        return {
+            "active_session_id": self.active_session_id,
+            "sessions_loaded": len(self.tenant_sessions),
+            "sessions": sessions,
+        }
+
+    def resolve_session_id_for_mcp(self, tool: str, arguments: dict[str, Any]) -> str | None:
+        # Paper-ledger tools use session_id for local paper session grouping, not tenant scoping.
+        if tool in {
+            "avanza_paper_order_set",
+            "avanza_paper_order_exit",
+            "avanza_paper_positions",
+            "avanza_paper_trades",
+            "avanza_paper_session_summary",
+            "avanza_paper_risk_state",
+        }:
+            requested_session_id = str(arguments.get("tenant_session_id", "") or "").strip() or None
+        else:
+            requested_session_id = str(arguments.get("session_id", "") or "").strip() or None
+        requested_account_id = str(arguments.get("account_id", "") or "").strip() or None
+        if requested_session_id:
+            _ = self.tenant_session_by_id(requested_session_id)
+            return requested_session_id
+        if requested_account_id:
+            match = self.tenant_session_for_account(requested_account_id)
+            if match is not None:
+                return match.session_id
+        return self.active_session_id
 
     def save_paper_state(self) -> None:
         save_paper_session(self.paper_session, self.paper_session_path)
@@ -9086,11 +9533,31 @@ class AvanzaTradingTui(App):
             }
 
     def execute_mcp_tool(self, tool: str, arguments: dict[str, Any]) -> Any:
-        avanza = self.require_connection()
-        account_id = str(arguments.get("account_id") or self.selected_account_id or "")
-
         if tool in {"avanza_status", "avanza_capabilities"}:
             return self.mcp_status_payload()
+
+        if tool == "avanza_sessions":
+            return self.tenant_sessions_payload()
+
+        if tool == "avanza_select_session":
+            requested_session_id = str(arguments["session_id"]).strip()
+            if not requested_session_id:
+                raise ValueError("session_id is required.")
+            self.activate_tenant_session(requested_session_id)
+            return {
+                "ok": True,
+                "active_session_id": self.active_session_id,
+                "sessions": self.tenant_sessions_payload()["sessions"],
+                "capabilities": self.mcp_status_payload(),
+            }
+
+        session_scope_id = self.resolve_session_id_for_mcp(tool, arguments) if tool.startswith("avanza_") else None
+        with self.temporary_tenant_scope(session_scope_id):
+            return self._execute_mcp_tool_inner(tool, arguments)
+
+    def _execute_mcp_tool_inner(self, tool: str, arguments: dict[str, Any]) -> Any:
+        avanza = self.require_connection()
+        account_id = str(arguments.get("account_id") or self.selected_account_id or "")
 
         if tool == "avanza_live_session_authorize":
             acknowledge = bool(arguments.get("acknowledge", False))
@@ -9136,14 +9603,22 @@ class AvanzaTradingTui(App):
             account = self.account_by_id(requested_account_id)
             if not account:
                 raise ValueError(f"Unknown account id: {requested_account_id}")
-            self.selected_account_id = requested_account_id
-            try:
-                self.select_account(requested_account_id)
-            except Exception:
-                # Keep MCP account context updated even if UI is not mounted.
+            restore_to = self.mcp_scope_original_session_id
+            switching_foreign_session = bool(restore_to and restore_to != self.active_session_id)
+            if switching_foreign_session:
                 self.selected_account_id = requested_account_id
+                self.sync_active_state_to_tenant()
+            else:
+                self.selected_account_id = requested_account_id
+                try:
+                    self.select_account(requested_account_id)
+                except Exception:
+                    # Keep MCP account context updated even if UI is not mounted.
+                    self.selected_account_id = requested_account_id
+                    self.sync_active_state_to_tenant()
             return {
                 "ok": True,
+                "session_id": self.active_session_id,
                 "selected_account_id": requested_account_id,
                 "selected_account_name": account_display_name(account),
                 "account_type": str(account.get("type", "") or ""),
@@ -10402,6 +10877,8 @@ class AvanzaTradingTui(App):
         if account_select.value != account_id:
             account_select.value = account_id
         self.write_log(f"Selected account {account_display_name(account)} ({account_id}).")
+        self.sync_active_state_to_tenant()
+        self.refresh_session_select_options()
 
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
         selected_account_id = self.require_selected_account_id()
@@ -10865,17 +11342,36 @@ class AvanzaTradingTui(App):
         self.refresh_selected_account_live()
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id == "account-select" and event.value:
+        if event.select.id == "session-select" and event.value and event.value != Select.BLANK:
+            if self.session_select_updating:
+                return
+            next_session_id = str(event.value)
+            if next_session_id == self.active_session_id:
+                return
             try:
-                self.select_account(str(event.value))
+                self.activate_tenant_session(next_session_id)
+            except Exception as exc:
+                self.write_log(f"[red]Session switch failed:[/red] {exc}")
+        elif event.select.id == "account-select" and event.value:
+            next_account_id = str(event.value)
+            if next_account_id == self.selected_account_id:
+                return
+            try:
+                self.select_account(next_account_id)
             except Exception as exc:
                 self.write_log(f"[red]Account switch failed:[/red] {exc}")
         elif event.select.id == "instrument-select" and event.value and event.value != Select.BLANK:
-            volume_input = self.query_one("#volume", Input)
+            try:
+                volume_input = self.query_one("#volume", Input)
+            except Exception:
+                return
             if not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
         elif event.select.id == "order-instrument-select" and event.value and event.value != Select.BLANK:
-            volume_input = self.query_one("#regular-order-volume", Input)
+            try:
+                volume_input = self.query_one("#regular-order-volume", Input)
+            except Exception:
+                return
             if self.input_value("regular-order-type") == "sell" and not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
             self.update_regular_order_value()
@@ -10921,6 +11417,14 @@ class AvanzaTradingTui(App):
                 self.handle_login()
             elif button_id == "onepassword-login":
                 self.handle_1password_login()
+            elif button_id == "open-extra-login":
+                self.open_extra_login_modal()
+            elif button_id in {"extra-login-cancel", "extra-login-cancel-2"}:
+                self.close_extra_login_modal()
+            elif button_id == "extra-login-submit":
+                self.handle_extra_login()
+            elif button_id == "extra-onepassword-login":
+                self.handle_extra_1password_login()
             elif button_id == "profit-cycle":
                 self.cycle_profit_metric()
             elif button_id == "paper-mode-toggle":
@@ -11004,6 +11508,75 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Error:[/red] {exc}")
 
+    def open_extra_login_modal(self) -> None:
+        if not self.tenant_sessions:
+            raise ValueError("Log in to your first account first.")
+        self.query_one("#extra-login-modal").display = True
+        self.query_one("#extra-session-label", Input).value = ""
+        self.query_one("#extra-username", Input).value = ""
+        self.clear_extra_secret_inputs()
+
+    def close_extra_login_modal(self) -> None:
+        self.query_one("#extra-login-modal").display = False
+        self.query_one("#extra-session-label", Input).value = ""
+        self.query_one("#extra-username", Input).value = ""
+        self.query_one("#extra-onepassword-item", Input).value = ""
+        self.query_one("#extra-onepassword-vault", Input).value = ""
+        self.clear_extra_secret_inputs()
+
+    def extra_session_label(self) -> str:
+        return str(self.input_value("extra-session-label") or "").strip() or self.auto_session_label([])
+
+    def handle_extra_login(self) -> None:
+        username = self.input_value("extra-username")
+        password = self.input_value("extra-password")
+        totp = self.input_value("extra-totp")
+        if not username or not password or not totp:
+            raise ValueError("Username, password, and TOTP are required.")
+
+        label = self.extra_session_label()
+        self.write_log(f"Logging in extra session '{label}'...")
+        self.start_login_worker(
+            self.login_worker_with_credentials,
+            (
+                {"username": username, "password": password, "totpToken": totp},
+            ),
+            (
+                "Connecting to Avanza...",
+                "Loading account overview...",
+                "Loading portfolio...",
+                "Loading stop-losses and open orders...",
+                "Building workspace...",
+            ),
+            "Connecting to Avanza...",
+            target_mode="extra",
+            session_label=label,
+        )
+
+    def handle_extra_1password_login(self) -> None:
+        item = self.input_value("extra-onepassword-item")
+        vault = self.input_value("extra-onepassword-vault") or None
+        if not item:
+            raise ValueError("1Password item name or ID is required.")
+        label = self.extra_session_label()
+        self.write_log(f"Requesting extra-session credentials from 1Password ({label})...")
+        self.start_login_worker(
+            self.login_worker_with_1password,
+            (item, vault),
+            (
+                "Waiting for 1Password approval...",
+                "Reading credentials from 1Password...",
+                "Connecting to Avanza...",
+                "Loading account overview...",
+                "Loading portfolio...",
+                "Loading stop-losses and open orders...",
+                "Building workspace...",
+            ),
+            "Waiting for 1Password approval...",
+            target_mode="extra",
+            session_label=label,
+        )
+
     def handle_login(self) -> None:
         username = self.input_value("username")
         password = self.input_value("password")
@@ -11025,6 +11598,7 @@ class AvanzaTradingTui(App):
                 "Building workspace...",
             ),
             "Connecting to Avanza...",
+            target_mode="initial",
         )
 
     def handle_1password_login(self) -> None:
@@ -11047,6 +11621,7 @@ class AvanzaTradingTui(App):
                 "Building workspace...",
             ),
             "Waiting for 1Password approval...",
+            target_mode="initial",
         )
 
     def start_login_worker(
@@ -11055,10 +11630,15 @@ class AvanzaTradingTui(App):
         args: tuple[Any, ...],
         progress_messages: tuple[str, ...],
         initial_message: str,
+        *,
+        target_mode: str = "initial",
+        session_label: str | None = None,
     ) -> None:
         if self.login_busy:
             self.write_log("[yellow]Login already in progress...[/yellow]")
             return
+        self.login_target_mode = target_mode
+        self.login_target_session_label = session_label
         self.start_login_progress(progress_messages, initial_message)
         worker = threading.Thread(target=target, args=args, daemon=True, name="avanza-login-worker")
         self.login_thread = worker
@@ -11133,7 +11713,16 @@ class AvanzaTradingTui(App):
                 orders = []
 
             self.call_from_thread(self.set_login_stage, "Building workspace...", connect_stage_index + 4)
-            self.call_from_thread(self.complete_login, avanza, overview, portfolio, stoplosses, orders)
+            self.call_from_thread(
+                self.complete_login,
+                avanza,
+                overview,
+                portfolio,
+                stoplosses,
+                orders,
+                self.login_target_mode,
+                self.login_target_session_label,
+            )
             self.call_from_thread(self.stop_login_progress)
         except Exception as exc:
             self.call_from_thread(self.stop_login_progress)
