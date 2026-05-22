@@ -1830,6 +1830,110 @@ def test_mcp_select_account_switches_context():
     assert status["selected_account_id"] == "931965"
 
 
+def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
+    from avanza_cli import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, mcp_tools_catalog
+
+    raw_tools = {tool["name"]: tool for tool in MCP_TOOLS}
+    scoped_tools = {tool["name"]: tool for tool in mcp_tools_catalog()}
+
+    assert set(scoped_tools) == set(raw_tools)
+
+    for name, tool in scoped_tools.items():
+        if not name.startswith("avanza_"):
+            continue
+        schema = tool.get("inputSchema", {})
+        properties = schema.get("properties", {})
+        if name != "avanza_select_session":
+            assert "tenant_session_id" in properties
+        if name not in PAPER_SESSION_ID_TOOLS and name != "avanza_select_session":
+            assert "session_id" in properties
+
+
+def test_mcp_status_can_be_scoped_by_tenant_session_without_switching_active():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, account_id: str, account_name: str):
+            self._account_id = account_id
+            self._account_name = account_name
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        FakeAvanza("acc-1", "Personal"),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Personal"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Personal",
+    )
+    second = app.register_tenant_session(
+        FakeAvanza("acc-2", "Company"),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Company"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Company",
+    )
+    app.load_active_state_from_tenant(first)
+
+    scoped_status = app.execute_mcp_tool("avanza_status", {"tenant_session_id": second.session_id})
+    assert scoped_status["active_session_id"] == second.session_id
+    assert scoped_status["selected_account_id"] == "acc-2"
+    assert scoped_status["selected_account_name"] == "Company"
+
+    # Status scope call should not mutate active TUI context.
+    assert app.active_session_id == first.session_id
+    assert app.selected_account_id == "acc-1"
+
+
+def test_mcp_legacy_session_id_alias_scopes_non_paper_tools():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, account_id: str, account_name: str):
+            self._account_id = account_id
+            self._account_name = account_name
+
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {
+                        "id": self._account_id,
+                        "name": {"defaultName": self._account_name},
+                        "type": "ISK",
+                        "status": "ACTIVE",
+                    }
+                ]
+            }
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        FakeAvanza("acc-1", "Personal"),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Personal"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Personal",
+    )
+    second = app.register_tenant_session(
+        FakeAvanza("acc-2", "Company"),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Company"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Company",
+    )
+    app.load_active_state_from_tenant(first)
+
+    scoped_accounts = app.execute_mcp_tool("avanza_accounts", {"session_id": second.session_id})
+    assert scoped_accounts[0]["ID"] == "acc-2"
+    assert scoped_accounts[0]["Name"] == "Company"
+
+    # Legacy scope alias should not mutate active TUI context.
+    assert app.active_session_id == first.session_id
+    assert app.selected_account_id == "acc-1"
+
+
 def test_mcp_sessions_list_and_select_session_without_mounted_tui():
     from avanza_cli import AvanzaTradingTui
 
@@ -2205,6 +2309,13 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
 
     assert initialize["result"]["serverInfo"]["name"] == "avanza_cli"
     assert any(tool["name"] == "avanza_status" for tool in tools["result"]["tools"])
+    tool_map = {tool["name"]: tool for tool in tools["result"]["tools"]}
+    portfolio_properties = tool_map["avanza_portfolio"]["inputSchema"]["properties"]
+    assert "tenant_session_id" in portfolio_properties
+    assert "session_id" in portfolio_properties
+    paper_set_properties = tool_map["avanza_paper_order_set"]["inputSchema"]["properties"]
+    assert "tenant_session_id" in paper_set_properties
+    assert "session_id" in paper_set_properties
     assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])

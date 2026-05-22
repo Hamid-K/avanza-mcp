@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import cProfile
+import copy
 from dataclasses import dataclass, field
 import getpass
 import hashlib
@@ -6512,6 +6513,53 @@ MCP_TOOLS = [
     },
 ]
 
+PAPER_SESSION_ID_TOOLS = {
+    "avanza_paper_order_set",
+    "avanza_paper_order_exit",
+    "avanza_paper_positions",
+    "avanza_paper_trades",
+    "avanza_paper_session_summary",
+    "avanza_paper_risk_state",
+}
+TENANT_SESSION_CONTROL_TOOLS = {"avanza_select_session"}
+
+
+def mcp_tools_catalog() -> list[dict[str, Any]]:
+    """Return MCP tool schemas with normalized multi-tenant scope fields."""
+    tools: list[dict[str, Any]] = copy.deepcopy(MCP_TOOLS)
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name", "")).strip()
+        if not name.startswith("avanza_"):
+            continue
+        schema = tool.get("inputSchema")
+        if not isinstance(schema, dict):
+            continue
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
+            schema["properties"] = properties
+
+        if name not in TENANT_SESSION_CONTROL_TOOLS:
+            properties.setdefault(
+                "tenant_session_id",
+                {
+                    "type": "string",
+                    "description": "Optional tenant session scope id for multi-session TUI/MCP routing.",
+                },
+            )
+
+        if name not in PAPER_SESSION_ID_TOOLS and name != "avanza_select_session":
+            properties.setdefault(
+                "session_id",
+                {
+                    "type": "string",
+                    "description": "Legacy alias for tenant_session_id (non-paper tools only).",
+                },
+            )
+    return tools
+
 
 class AvanzaMcpHttpServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -8826,7 +8874,11 @@ class AvanzaTradingTui(App):
 
     def mcp_status_payload(self) -> dict[str, Any]:
         account = self.account_by_id(self.selected_account_id or "") if self.selected_account_id else None
-        available_tools = sorted(tool.get("name", "") for tool in MCP_TOOLS if isinstance(tool, dict) and tool.get("name"))
+        available_tools = sorted(
+            tool.get("name", "")
+            for tool in mcp_tools_catalog()
+            if isinstance(tool, dict) and tool.get("name")
+        )
         sessions = [
             {
                 "session_id": context.session_id,
@@ -8902,17 +8954,14 @@ class AvanzaTradingTui(App):
         }
 
     def resolve_session_id_for_mcp(self, tool: str, arguments: dict[str, Any]) -> str | None:
-        # Paper-ledger tools use session_id for local paper session grouping, not tenant scoping.
-        if tool in {
-            "avanza_paper_order_set",
-            "avanza_paper_order_exit",
-            "avanza_paper_positions",
-            "avanza_paper_trades",
-            "avanza_paper_session_summary",
-            "avanza_paper_risk_state",
-        }:
-            requested_session_id = str(arguments.get("tenant_session_id", "") or "").strip() or None
-        else:
+        requested_tenant_session_id = str(arguments.get("tenant_session_id", "") or "").strip() or None
+        if requested_tenant_session_id:
+            _ = self.tenant_session_by_id(requested_tenant_session_id)
+            return requested_tenant_session_id
+
+        # Paper-ledger tools reserve session_id for paper strategy grouping.
+        requested_session_id = None
+        if tool not in PAPER_SESSION_ID_TOOLS:
             requested_session_id = str(arguments.get("session_id", "") or "").strip() or None
         requested_account_id = str(arguments.get("account_id", "") or "").strip() or None
         if requested_session_id:
@@ -9533,9 +9582,6 @@ class AvanzaTradingTui(App):
             }
 
     def execute_mcp_tool(self, tool: str, arguments: dict[str, Any]) -> Any:
-        if tool in {"avanza_status", "avanza_capabilities"}:
-            return self.mcp_status_payload()
-
         if tool == "avanza_sessions":
             return self.tenant_sessions_payload()
 
@@ -9553,6 +9599,8 @@ class AvanzaTradingTui(App):
 
         session_scope_id = self.resolve_session_id_for_mcp(tool, arguments) if tool.startswith("avanza_") else None
         with self.temporary_tenant_scope(session_scope_id):
+            if tool in {"avanza_status", "avanza_capabilities"}:
+                return self.mcp_status_payload()
             return self._execute_mcp_tool_inner(tool, arguments)
 
     def _execute_mcp_tool_inner(self, tool: str, arguments: dict[str, Any]) -> Any:
@@ -12137,7 +12185,7 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
             elif method == "ping":
                 write_mcp_message(output_stream, mcp_success(message_id, {}))
             elif method == "tools/list":
-                write_mcp_message(output_stream, mcp_success(message_id, {"tools": MCP_TOOLS}))
+                write_mcp_message(output_stream, mcp_success(message_id, {"tools": mcp_tools_catalog()}))
             elif method == "tools/call":
                 tool_name = str(params.get("name", ""))
                 arguments = params.get("arguments") or {}
