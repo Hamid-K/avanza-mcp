@@ -7,6 +7,8 @@ from avanza_cli import (
     account_rows_from_overview,
     account_stats_text,
     amount,
+    compact_account_type,
+    compact_single_line,
     cash_row,
     cancel_badge,
     changed_position_row,
@@ -148,6 +150,17 @@ def test_account_display_name_prefers_user_defined_name():
         )
         == "Trading"
     )
+
+
+def test_compact_account_type_normalizes_common_types():
+    assert compact_account_type("KAPITALFORSÄKRING") == "KF"
+    assert compact_account_type("investeringssparkonto") == "ISK"
+    assert compact_account_type("Aktie & Fondkonto") == "AF"
+
+
+def test_compact_single_line_truncates_and_removes_newlines():
+    assert compact_single_line("DarkCell\nAB   KF", max_len=32) == "DarkCell AB KF"
+    assert compact_single_line("x" * 20, max_len=8) == "xxxxxxx…"
 
 
 def test_account_row_formats_overview_account():

@@ -1084,6 +1084,44 @@ def account_display_name(account: dict[str, Any]) -> str:
     return str(name)
 
 
+ACCOUNT_TYPE_SHORT_LABELS = {
+    "KAPITALFORSAKRING": "KF",
+    "INVESTERINGSSPARKONTO": "ISK",
+    "INVESTMENT_SAVINGS_ACCOUNT": "ISK",
+    "AKTIE_&_FONDKONTO": "AF",
+    "AKTIE_OCH_FONDKONTO": "AF",
+    "AKTIE_FONDKONTO": "AF",
+    "DEPA": "DEPA",
+}
+
+
+def compact_single_line(value: Any, max_len: int = 48) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return "…"
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def compact_account_type(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    token = (
+        text.upper()
+        .replace("Ä", "A")
+        .replace("Å", "A")
+        .replace("Ö", "O")
+        .replace("&", "_")
+        .replace("/", "_")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    token = re.sub(r"_+", "_", token).strip("_")
+    return ACCOUNT_TYPE_SHORT_LABELS.get(token, compact_single_line(text, max_len=12))
+
+
 def account_row(account: dict[str, Any]) -> tuple[str, ...]:
     return (
         str(account.get("id", "")),
@@ -6829,7 +6867,7 @@ class AvanzaTradingTui(App):
 
     #topbar {
         height: 9;
-        padding: 0 2;
+        padding: 0 3;
         background: $panel;
         border-bottom: solid $primary;
     }
@@ -6852,31 +6890,48 @@ class AvanzaTradingTui(App):
 
     #account-row {
         height: 4;
-        align: left middle;
+        align: left top;
     }
 
     #app-title {
-        width: 20;
-        min-width: 20;
+        width: 14;
+        min-width: 14;
+        height: 4;
         margin-right: 1;
-        text-wrap: nowrap;
+        content-align: left middle;
         text-style: bold;
     }
 
-    #session-select {
-        width: 34;
-        min-width: 30;
+    .account-select-block {
+        height: 4;
         margin-right: 1;
     }
 
-    #account-select {
+    .account-select-label {
+        height: 1;
+        margin-left: 1;
+        color: $text-muted;
+    }
+
+    #session-select-block {
+        width: 28;
+        min-width: 24;
+    }
+
+    #account-select-block {
         width: 1fr;
-        min-width: 40;
-        margin-right: 1;
+        min-width: 48;
+    }
+
+    #session-select,
+    #account-select {
+        height: 3;
+        text-wrap: nowrap;
     }
 
     #open-extra-login {
-        min-width: 14;
+        min-width: 12;
+        margin-top: 1;
     }
 
     #metric-grid {
@@ -7584,10 +7639,14 @@ class AvanzaTradingTui(App):
             with Horizontal(id="topbar"):
                 with Vertical(id="left-info"):
                     with Horizontal(id="account-row"):
-                        yield Static(f"Avanza v{APP_VERSION}", id="app-title")
-                        yield Select([], prompt="Session", allow_blank=True, id="session-select")
-                        yield Select([], prompt="Select account", allow_blank=True, id="account-select")
-                        yield Button("Login extra", id="open-extra-login", variant="primary")
+                        yield Static(f"{APP_NAME}\nv{APP_VERSION}", id="app-title")
+                        with Vertical(id="session-select-block", classes="account-select-block"):
+                            yield Static("Session", classes="account-select-label")
+                            yield Select([], prompt="Session", allow_blank=True, id="session-select")
+                        with Vertical(id="account-select-block", classes="account-select-block"):
+                            yield Static("Account", classes="account-select-label")
+                            yield Select([], prompt="Select account", allow_blank=True, id="account-select")
+                        yield Button("Login Extra", id="open-extra-login", variant="primary")
                     with Horizontal(id="metric-grid"):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
                         yield Static("Buying\n-", id="metric-buying", classes="metric-card")
@@ -8328,7 +8387,7 @@ class AvanzaTradingTui(App):
         self.order_search_labels_by_order_book = dict(context.order_search_labels_by_order_book)
 
     def session_summary_text(self, context: AvanzaTenantSession) -> Text:
-        label = context.label
+        label = compact_single_line(context.label, max_len=24)
         styled = Text()
         styled.append("● ", style=context.color)
         styled.append(label)
@@ -8370,10 +8429,10 @@ class AvanzaTradingTui(App):
         display = Text()
         if context is not None:
             display.append("● ", style=context.color)
-        account_name = account_display_name(account)
-        account_type = str(account.get("type", "")).strip()
+        account_name = compact_single_line(account_display_name(account), max_len=32)
+        account_type = compact_account_type(account.get("type", ""))
         if account_type:
-            display.append(f"{account_name} ({account_type})")
+            display.append(f"{account_name} [{account_type}]")
         else:
             display.append(account_name)
         return display, str(account.get("id", ""))
