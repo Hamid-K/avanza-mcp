@@ -182,7 +182,7 @@ The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, pap
 Multi-session MCP behavior:
 - `avanza_sessions` lists loaded tenant sessions.
 - `avanza_select_session` switches active tenant context.
-- All `avanza_*` tools accept optional `tenant_session_id` for explicit tenant routing.
+- Account/session-context `avanza_*` tools accept optional `tenant_session_id` for explicit tenant routing.
 - Non-paper tools also accept `session_id` as a legacy alias for tenant routing.
 - `account_id` routing still works and auto-routes to the matching tenant session.
 - Paper-ledger tools reserve `session_id` for paper strategy sessions; use `tenant_session_id` there for explicit tenant scoping.

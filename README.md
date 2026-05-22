@@ -223,10 +223,10 @@ The MCP proxy forwards tool calls to the authenticated TUI session through the l
 For multi-session setups:
 - use `avanza_sessions` to inspect loaded tenant sessions,
 - use `avanza_select_session` to switch active context,
-- all `avanza_*` tools now accept optional `tenant_session_id` for explicit tenant routing.
+- account/session-context `avanza_*` tools accept optional `tenant_session_id` for explicit tenant routing.
 - for non-paper tools, `session_id` is kept as a legacy alias for tenant routing.
 - or pass `account_id` and the bridge auto-scopes to the session owning that account.
-- paper-ledger tools use `session_id` for paper ledger grouping; use `tenant_session_id` if you need explicit tenant scoping there.
+- paper-ledger tools use `session_id` for paper ledger grouping; use `tenant_session_id` there only when explicit tenant routing is required.
 
 ### Available MCP Tools
 

@@ -1831,7 +1831,7 @@ def test_mcp_select_account_switches_context():
 
 
 def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
-    from avanza_cli import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, mcp_tools_catalog
+    from avanza_cli import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, TENANT_SESSION_SCOPED_TOOLS, mcp_tools_catalog
 
     raw_tools = {tool["name"]: tool for tool in MCP_TOOLS}
     scoped_tools = {tool["name"]: tool for tool in mcp_tools_catalog()}
@@ -1843,10 +1843,20 @@ def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
             continue
         schema = tool.get("inputSchema", {})
         properties = schema.get("properties", {})
-        if name != "avanza_select_session":
+        if name in TENANT_SESSION_SCOPED_TOOLS and name != "avanza_select_session":
             assert "tenant_session_id" in properties
-        if name not in PAPER_SESSION_ID_TOOLS and name != "avanza_select_session":
+        if name in TENANT_SESSION_SCOPED_TOOLS and name not in PAPER_SESSION_ID_TOOLS and name != "avanza_select_session":
             assert "session_id" in properties
+        if name not in TENANT_SESSION_SCOPED_TOOLS:
+            assert "tenant_session_id" not in properties
+            if name != "avanza_select_session":
+                assert "session_id" not in properties
+
+    # Generic market-data tools are intentionally not tenant-scoped.
+    for name in ("avanza_search_stock", "avanza_orderbook_quotes", "avanza_market_movers", "avanza_index_constituents"):
+        props = scoped_tools[name]["inputSchema"]["properties"]
+        assert "tenant_session_id" not in props
+        assert "session_id" not in props
 
 
 def test_mcp_status_can_be_scoped_by_tenant_session_without_switching_active():
@@ -1932,6 +1942,54 @@ def test_mcp_legacy_session_id_alias_scopes_non_paper_tools():
     # Legacy scope alias should not mutate active TUI context.
     assert app.active_session_id == first.session_id
     assert app.selected_account_id == "acc-1"
+
+
+def test_generic_avanza_tools_ignore_tenant_session_scope_argument():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, label: str):
+            self.label = label
+
+        def search_for_stock(self, query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "name": f"{self.label} Result ({self.label[:3].upper()})",
+                        "id": "1",
+                        "tickerSymbol": self.label[:3].upper(),
+                        "marketPlaceName": "NASDAQ Stockholm",
+                        "countryCode": "SE",
+                        "instrumentType": "stock",
+                    }
+                ]
+            }
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"buy": 100.0, "sell": 100.2, "last": 100.1}}
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        FakeAvanza("Personal"),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Personal"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Personal",
+    )
+    second = app.register_tenant_session(
+        FakeAvanza("Company"),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Company"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Company",
+    )
+    app.load_active_state_from_tenant(first)
+
+    result = app.execute_mcp_tool("avanza_search_stock", {"query": "x", "tenant_session_id": second.session_id})
+    assert result["results"][0]["name"].startswith("Personal")
+    assert app.active_session_id == first.session_id
 
 
 def test_mcp_sessions_list_and_select_session_without_mounted_tui():
@@ -2316,6 +2374,9 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     paper_set_properties = tool_map["avanza_paper_order_set"]["inputSchema"]["properties"]
     assert "tenant_session_id" in paper_set_properties
     assert "session_id" in paper_set_properties
+    movers_properties = tool_map["avanza_market_movers"]["inputSchema"]["properties"]
+    assert "tenant_session_id" not in movers_properties
+    assert "session_id" not in movers_properties
     assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])

@@ -6522,6 +6522,33 @@ PAPER_SESSION_ID_TOOLS = {
     "avanza_paper_risk_state",
 }
 TENANT_SESSION_CONTROL_TOOLS = {"avanza_select_session"}
+TENANT_SESSION_SCOPED_TOOLS = {
+    "avanza_status",
+    "avanza_capabilities",
+    "avanza_live_session_authorize",
+    "avanza_live_session_revoke",
+    "avanza_accounts",
+    "avanza_select_account",
+    "avanza_account_performance",
+    "avanza_portfolio",
+    "avanza_stoplosses",
+    "avanza_open_orders",
+    "avanza_open_orders_raw",
+    "avanza_ongoing_orders",
+    "avanza_transactions",
+    "avanza_live_snapshot",
+    "avanza_realtime_quotes",
+    "avanza_fee_estimate",
+    "avanza_stoploss_set",
+    "avanza_order_set",
+    "avanza_order_edit",
+    "avanza_open_order_edit",
+    "avanza_order_delete",
+    "avanza_open_order_cancel",
+    "avanza_stoploss_delete",
+    "avanza_stoploss_edit",
+    *PAPER_SESSION_ID_TOOLS,
+}
 
 
 def mcp_tools_catalog() -> list[dict[str, Any]]:
@@ -6541,7 +6568,7 @@ def mcp_tools_catalog() -> list[dict[str, Any]]:
             properties = {}
             schema["properties"] = properties
 
-        if name not in TENANT_SESSION_CONTROL_TOOLS:
+        if name in TENANT_SESSION_SCOPED_TOOLS and name not in TENANT_SESSION_CONTROL_TOOLS:
             properties.setdefault(
                 "tenant_session_id",
                 {
@@ -6550,7 +6577,11 @@ def mcp_tools_catalog() -> list[dict[str, Any]]:
                 },
             )
 
-        if name not in PAPER_SESSION_ID_TOOLS and name != "avanza_select_session":
+        if (
+            name in TENANT_SESSION_SCOPED_TOOLS
+            and name not in PAPER_SESSION_ID_TOOLS
+            and name != "avanza_select_session"
+        ):
             properties.setdefault(
                 "session_id",
                 {
@@ -9597,7 +9628,11 @@ class AvanzaTradingTui(App):
                 "capabilities": self.mcp_status_payload(),
             }
 
-        session_scope_id = self.resolve_session_id_for_mcp(tool, arguments) if tool.startswith("avanza_") else None
+        session_scope_id = (
+            self.resolve_session_id_for_mcp(tool, arguments)
+            if tool in TENANT_SESSION_SCOPED_TOOLS
+            else None
+        )
         with self.temporary_tenant_scope(session_scope_id):
             if tool in {"avanza_status", "avanza_capabilities"}:
                 return self.mcp_status_payload()
