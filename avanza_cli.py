@@ -6829,7 +6829,7 @@ class AvanzaTradingTui(App):
 
     #topbar {
         height: 9;
-        padding: 0 1;
+        padding: 0 2;
         background: $panel;
         border-bottom: solid $primary;
     }
@@ -6856,22 +6856,27 @@ class AvanzaTradingTui(App):
     }
 
     #app-title {
-        width: 9;
+        width: 20;
+        min-width: 20;
+        margin-right: 1;
+        text-wrap: nowrap;
         text-style: bold;
     }
 
     #session-select {
-        width: 26;
+        width: 34;
+        min-width: 30;
         margin-right: 1;
     }
 
     #account-select {
-        width: 40;
+        width: 1fr;
+        min-width: 40;
         margin-right: 1;
     }
 
     #open-extra-login {
-        min-width: 18;
+        min-width: 14;
     }
 
     #metric-grid {
@@ -8323,8 +8328,7 @@ class AvanzaTradingTui(App):
         self.order_search_labels_by_order_book = dict(context.order_search_labels_by_order_book)
 
     def session_summary_text(self, context: AvanzaTenantSession) -> Text:
-        active_marker = "active" if context.session_id == self.active_session_id else "idle"
-        label = f"{context.label} ({active_marker})"
+        label = context.label
         styled = Text()
         styled.append("● ", style=context.color)
         styled.append(label)
@@ -8346,11 +8350,7 @@ class AvanzaTradingTui(App):
             self.session_select_updating = False
 
     def apply_active_session_header(self) -> None:
-        context = self.active_tenant_session()
-        title = Text(f"Avanza v{APP_VERSION}")
-        if context is not None:
-            title.append("  ")
-            title.append(f"● {context.label}", style=context.color)
+        title = Text(f"{APP_NAME} v{APP_VERSION}")
         try:
             self.query_one("#app-title", Static).update(title)
         except Exception:
@@ -8370,7 +8370,12 @@ class AvanzaTradingTui(App):
         display = Text()
         if context is not None:
             display.append("● ", style=context.color)
-        display.append(f"{account_display_name(account)} ({account.get('type', '')}) - {amount(account, 'totalValue')}")
+        account_name = account_display_name(account)
+        account_type = str(account.get("type", "")).strip()
+        if account_type:
+            display.append(f"{account_name} ({account_type})")
+        else:
+            display.append(account_name)
         return display, str(account.get("id", ""))
 
     def register_tenant_session(
