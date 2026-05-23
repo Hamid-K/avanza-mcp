@@ -6889,8 +6889,9 @@ class AvanzaTradingTui(App):
     }
 
     #account-row {
-        height: 3;
-        align: left middle;
+        height: 4;
+        margin-bottom: 1;
+        align: left top;
     }
 
     #app-title {
@@ -6903,7 +6904,7 @@ class AvanzaTradingTui(App):
     }
 
     .account-select-block {
-        height: 3;
+        height: 4;
         margin-right: 1;
     }
 
@@ -6928,6 +6929,7 @@ class AvanzaTradingTui(App):
     #account-select {
         height: 2;
         text-wrap: nowrap;
+        content-align: left middle;
     }
 
     #open-extra-login {
@@ -6941,11 +6943,13 @@ class AvanzaTradingTui(App):
 
     .metric-card {
         width: 1fr;
-        height: 2;
+        height: 3;
         margin: 0 1 0 0;
         padding: 0 1;
         background: $boost;
         border-left: solid $primary;
+        text-align: center;
+        content-align: center middle;
     }
 
     #metric-total {
@@ -6977,12 +6981,15 @@ class AvanzaTradingTui(App):
         background: $boost;
         color: $text-muted;
         text-style: bold;
+        text-align: center;
+        content-align: center middle;
     }
 
     #metric-profit-value {
-        height: 1;
+        height: 2;
         padding: 0 1;
-        content-align: left middle;
+        text-align: center;
+        content-align: center middle;
     }
 
     #clock-status {
