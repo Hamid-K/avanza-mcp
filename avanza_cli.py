@@ -6926,9 +6926,9 @@ class AvanzaTradingTui(App):
     }
 
     #extra-login-block {
-        width: 22;
-        min-width: 20;
-        max-width: 24;
+        width: 26;
+        min-width: 24;
+        max-width: 28;
         margin-right: 0;
     }
 
@@ -6943,6 +6943,8 @@ class AvanzaTradingTui(App):
         min-width: 0;
         width: 100%;
         height: 2;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
         text-align: center;
         content-align: center middle;
         margin-top: 0;
