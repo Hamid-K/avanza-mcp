@@ -6929,6 +6929,7 @@ class AvanzaTradingTui(App):
         width: 26;
         min-width: 24;
         max-width: 28;
+        padding-top: 1;
         margin-right: 0;
     }
 
@@ -7669,7 +7670,6 @@ class AvanzaTradingTui(App):
                             yield Static("Account", classes="account-select-label")
                             yield Select([], prompt="Select account", allow_blank=True, id="account-select")
                         with Vertical(id="extra-login-block", classes="account-select-block"):
-                            yield Static("Action", classes="account-select-label")
                             yield Button("Extra Account Login", id="open-extra-login", variant="primary")
                     with Horizontal(id="metric-grid"):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
