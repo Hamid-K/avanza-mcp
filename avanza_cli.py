@@ -6889,58 +6889,59 @@ class AvanzaTradingTui(App):
     }
 
     #account-row {
-        height: 4;
-        align: left top;
+        height: 3;
+        align: left middle;
     }
 
     #app-title {
-        width: 14;
-        min-width: 14;
-        height: 4;
+        width: 13;
+        min-width: 13;
+        height: 3;
         margin-right: 1;
         content-align: left middle;
         text-style: bold;
     }
 
     .account-select-block {
-        height: 4;
+        height: 3;
         margin-right: 1;
     }
 
     .account-select-label {
         height: 1;
-        margin-left: 1;
+        margin-left: 0;
         color: $text-muted;
     }
 
     #session-select-block {
-        width: 28;
-        min-width: 24;
+        width: 23;
+        min-width: 21;
     }
 
     #account-select-block {
-        width: 1fr;
-        min-width: 48;
+        width: 43;
+        min-width: 36;
+        max-width: 46;
     }
 
     #session-select,
     #account-select {
-        height: 3;
+        height: 2;
         text-wrap: nowrap;
     }
 
     #open-extra-login {
         min-width: 12;
-        margin-top: 1;
+        margin-top: 0;
     }
 
     #metric-grid {
-        height: 4;
+        height: 3;
     }
 
     .metric-card {
         width: 1fr;
-        height: 3;
+        height: 2;
         margin: 0 1 0 0;
         padding: 0 1;
         background: $boost;
@@ -6979,7 +6980,7 @@ class AvanzaTradingTui(App):
     }
 
     #metric-profit-value {
-        height: 2;
+        height: 1;
         padding: 0 1;
         content-align: left middle;
     }
