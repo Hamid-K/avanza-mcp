@@ -6889,8 +6889,8 @@ class AvanzaTradingTui(App):
     }
 
     #account-row {
-        height: 4;
-        margin-bottom: 1;
+        height: 3;
+        margin-bottom: 0;
         align: left top;
     }
 
@@ -6904,7 +6904,7 @@ class AvanzaTradingTui(App):
     }
 
     .account-select-block {
-        height: 4;
+        height: 3;
         margin-right: 1;
     }
 
@@ -6925,6 +6925,13 @@ class AvanzaTradingTui(App):
         max-width: 46;
     }
 
+    #extra-login-block {
+        width: 22;
+        min-width: 20;
+        max-width: 24;
+        margin-right: 0;
+    }
+
     #session-select,
     #account-select {
         height: 2;
@@ -6933,17 +6940,22 @@ class AvanzaTradingTui(App):
     }
 
     #open-extra-login {
-        min-width: 12;
+        min-width: 0;
+        width: 100%;
+        height: 2;
+        text-align: center;
+        content-align: center middle;
         margin-top: 0;
     }
 
     #metric-grid {
-        height: 3;
+        height: 4;
+        margin-top: 1;
     }
 
     .metric-card {
         width: 1fr;
-        height: 3;
+        height: 4;
         margin: 0 1 0 0;
         padding: 0 1;
         background: $boost;
@@ -6986,7 +6998,7 @@ class AvanzaTradingTui(App):
     }
 
     #metric-profit-value {
-        height: 2;
+        height: 3;
         padding: 0 1;
         text-align: center;
         content-align: center middle;
@@ -7654,7 +7666,9 @@ class AvanzaTradingTui(App):
                         with Vertical(id="account-select-block", classes="account-select-block"):
                             yield Static("Account", classes="account-select-label")
                             yield Select([], prompt="Select account", allow_blank=True, id="account-select")
-                        yield Button("Login Extra", id="open-extra-login", variant="primary")
+                        with Vertical(id="extra-login-block", classes="account-select-block"):
+                            yield Static("Action", classes="account-select-label")
+                            yield Button("Extra Account Login", id="open-extra-login", variant="primary")
                     with Horizontal(id="metric-grid"):
                         yield Static("Total\n-", id="metric-total", classes="metric-card")
                         yield Static("Buying\n-", id="metric-buying", classes="metric-card")
