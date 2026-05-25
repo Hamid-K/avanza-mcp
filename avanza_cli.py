@@ -87,6 +87,7 @@ REALTIME_STATUS_REFRESH_SECONDS = 300.0
 QUOTE_CACHE_SECONDS = 8.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
 ORDERBOOK_METADATA_REFRESH_SECONDS = 1800.0
+AUTH_ERROR_LOG_THROTTLE_SECONDS = float(os.getenv("AVANZA_AUTH_ERROR_LOG_THROTTLE_SECONDS", "120"))
 DEFAULT_COURTAGE_RATE_SE = float(os.getenv("AVANZA_DEFAULT_COURTAGE_RATE_SE", "0.0025"))
 DEFAULT_COURTAGE_MIN_SEK = float(os.getenv("AVANZA_DEFAULT_COURTAGE_MIN_SEK", "1.0"))
 DEFAULT_COURTAGE_RATE_US = float(os.getenv("AVANZA_DEFAULT_COURTAGE_RATE_US", "0.0025"))
@@ -437,6 +438,8 @@ class AvanzaTenantSession:
     holding_volumes_by_order_book: dict[str, str] = field(default_factory=dict)
     holding_labels_by_order_book: dict[str, str] = field(default_factory=dict)
     order_search_labels_by_order_book: dict[str, str] = field(default_factory=dict)
+    auth_valid: bool = True
+    auth_error: str = ""
 
 
 def update_check_enabled() -> bool:
@@ -4131,6 +4134,32 @@ def should_retry_tv_scan_error(exc: Exception) -> bool:
     return False
 
 
+def http_status_code_from_exception(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    if isinstance(exc, HTTPError):
+        try:
+            return int(exc.code)
+        except Exception:
+            return None
+    message = str(exc).lower()
+    if "401" in message and "unauthorized" in message:
+        return 401
+    if "403" in message and "forbidden" in message:
+        return 403
+    return None
+
+
+def is_unauthorized_http_error(exc: Exception) -> bool:
+    status_code = http_status_code_from_exception(exc)
+    if status_code in {401, 403}:
+        return True
+    message = str(exc).lower()
+    return "unauthorized" in message or "forbidden" in message
+
+
 def tv_row_to_dict(columns: list[str], row: dict[str, Any]) -> dict[str, Any]:
     values = row.get("d", [])
     mapped: dict[str, Any] = {}
@@ -7562,6 +7591,8 @@ class AvanzaTradingTui(App):
         self.live_refresh_inflight = False
         self.live_refresh_pending = False
         self.live_refresh_lock = threading.Lock()
+        self.live_refresh_auth_blocked_sessions: set[str] = set()
+        self.live_refresh_auth_last_notice_at: dict[str, float] = {}
         self.mcp_server: AvanzaMcpHttpServer | None = None
         self.mcp_thread: threading.Thread | None = None
         self.mcp_token: str | None = None
@@ -11409,8 +11440,55 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Portfolio refresh failed:[/red] {exc}")
 
+    def tenant_session_label(self, session_id: str | None) -> str:
+        token = str(session_id or "").strip()
+        if not token:
+            return "active session"
+        context = self.tenant_sessions.get(token)
+        return context.label if context else token
+
+    def mark_tenant_session_auth_expired(self, session_id: str | None, exc: Exception) -> None:
+        token = str(session_id or "").strip()
+        if not token:
+            self.write_log(f"[red]Live refresh failed:[/red] {exc}")
+            return
+        self.live_refresh_auth_blocked_sessions.add(token)
+        context = self.tenant_sessions.get(token)
+        if context is not None:
+            context.auth_valid = False
+            context.auth_error = str(exc)
+        now = time.monotonic()
+        last_notice = self.live_refresh_auth_last_notice_at.get(token, 0.0)
+        if now - last_notice >= AUTH_ERROR_LOG_THROTTLE_SECONDS:
+            self.live_refresh_auth_last_notice_at[token] = now
+            label = self.tenant_session_label(token)
+            self.write_log(
+                f"[yellow]Session auth expired:[/yellow] {label}. "
+                "Live refresh paused for this session. Re-login it via [bold]Extra Account Login[/bold]."
+            )
+        self.record_event(
+            "app",
+            "session_auth_expired",
+            {
+                "session_id": token,
+                "session_label": self.tenant_session_label(token),
+                "error": str(exc),
+            },
+        )
+
+    def mark_tenant_session_auth_ok(self, session_id: str | None) -> None:
+        token = str(session_id or "").strip()
+        if not token:
+            return
+        self.live_refresh_auth_blocked_sessions.discard(token)
+        context = self.tenant_sessions.get(token)
+        if context is not None:
+            context.auth_valid = True
+            context.auth_error = ""
+
     def _refresh_selected_account_live_worker(self) -> None:
         started = time.perf_counter()
+        active_session_id = self.active_session_id
         if not self.avanza or not self.selected_account_id:
             self.call_from_thread(self._finish_live_refresh_cycle)
             return
@@ -11440,9 +11518,13 @@ class AvanzaTradingTui(App):
                 stoplosses,
                 orders,
                 elapsed,
+                active_session_id,
             )
         except Exception as exc:
-            self.call_from_thread(self.write_log, f"[red]Live refresh failed:[/red] {exc}")
+            if is_unauthorized_http_error(exc):
+                self.call_from_thread(self.mark_tenant_session_auth_expired, active_session_id, exc)
+            else:
+                self.call_from_thread(self.write_log, f"[red]Live refresh failed:[/red] {exc}")
             self.call_from_thread(self._finish_live_refresh_cycle)
 
     def _apply_live_refresh_payload(
@@ -11453,7 +11535,9 @@ class AvanzaTradingTui(App):
         stoplosses: Any,
         orders: Any,
         elapsed: float,
+        session_id: str | None,
     ) -> None:
+        self.mark_tenant_session_auth_ok(session_id)
         self.apply_portfolio_data(
             data,
             fetch_quotes=True,
@@ -11476,6 +11560,18 @@ class AvanzaTradingTui(App):
 
     def refresh_selected_account_live(self) -> None:
         if not self.avanza or not self.selected_account_id:
+            return
+        active_session_id = str(self.active_session_id or "").strip()
+        if active_session_id and active_session_id in self.live_refresh_auth_blocked_sessions:
+            now = time.monotonic()
+            last_notice = self.live_refresh_auth_last_notice_at.get(active_session_id, 0.0)
+            if now - last_notice >= AUTH_ERROR_LOG_THROTTLE_SECONDS:
+                self.live_refresh_auth_last_notice_at[active_session_id] = now
+                label = self.tenant_session_label(active_session_id)
+                self.write_log(
+                    f"[yellow]Live refresh still paused:[/yellow] {label} is unauthorized. "
+                    "Re-login it via [bold]Extra Account Login[/bold]."
+                )
             return
         with self.live_refresh_lock:
             if self.live_refresh_inflight:
@@ -11523,7 +11619,7 @@ class AvanzaTradingTui(App):
                 self.activate_tenant_session(next_session_id)
             except Exception as exc:
                 self.write_log(f"[red]Session switch failed:[/red] {exc}")
-        elif event.select.id == "account-select" and event.value:
+        elif event.select.id == "account-select" and event.value and event.value != Select.BLANK:
             next_account_id = str(event.value)
             if next_account_id == self.selected_account_id:
                 return

@@ -42,6 +42,8 @@ from avanza_cli import (
     mcp_error,
     mcp_success,
     mcp_tool_response,
+    http_status_code_from_exception,
+    is_unauthorized_http_error,
     open_order_activity_row,
     read_mcp_message,
     realtime_status,
@@ -119,6 +121,24 @@ def test_ticket_pane_width_after_drag_changes_width():
 def test_market_clock_text_counts_to_open_and_close():
     assert "OMXS closes in 07:30:00" in market_clock_text(__import__("datetime").datetime(2026, 4, 28, 10, 0, 0))
     assert "OMXS opens in 01:00:00" in market_clock_text(__import__("datetime").datetime(2026, 4, 28, 8, 0, 0))
+
+
+def test_http_status_code_from_exception_reads_response_status():
+    class FakeResponse:
+        status_code = 401
+
+    class FakeError(Exception):
+        def __init__(self):
+            self.response = FakeResponse()
+
+    exc = FakeError()
+    assert http_status_code_from_exception(exc) == 401
+    assert is_unauthorized_http_error(exc) is True
+
+
+def test_is_unauthorized_http_error_matches_message_fallback():
+    exc = RuntimeError("401 Client Error: Unauthorized for url")
+    assert is_unauthorized_http_error(exc) is True
 
 
 def test_mcp_call_log_line_includes_marker_and_trade_detail():
