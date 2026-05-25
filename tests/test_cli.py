@@ -3492,6 +3492,100 @@ def test_live_refresh_runs_in_background_thread():
     asyncio.run(run_app())
 
 
+def test_logout_selected_session_switches_to_remaining_tenant():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    overview_one = {
+        "accounts": [
+            {
+                "id": "acc-1",
+                "name": {"defaultName": "Acc 1", "userDefinedName": "Acc 1"},
+                "type": "ISK",
+                "totalValue": {"value": 1000, "unit": "SEK"},
+                "buyingPower": {"value": 500, "unit": "SEK"},
+                "status": "ACTIVE",
+            }
+        ]
+    }
+    overview_two = {
+        "accounts": [
+            {
+                "id": "acc-2",
+                "name": {"defaultName": "Acc 2", "userDefinedName": "Acc 2"},
+                "type": "ISK",
+                "totalValue": {"value": 1500, "unit": "SEK"},
+                "buyingPower": {"value": 700, "unit": "SEK"},
+                "status": "ACTIVE",
+            }
+        ]
+    }
+    portfolio = {"withOrderbook": [], "withoutOrderbook": []}
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            first = app.register_tenant_session(FakeAvanza(), overview_one, portfolio, [], [], label="Session One")
+            second = app.register_tenant_session(FakeAvanza(), overview_two, portfolio, [], [], label="Session Two")
+            app.load_active_state_from_tenant(first)
+            app.query_one("#login-screen").display = False
+            app.query_one("#workspace").display = True
+            app.apply_accounts_overview(overview_one, announce=False)
+            app.refresh_session_select_options()
+            app.query_one("#session-select", Select).value = first.session_id
+            app.logout_selected_session()
+            await pilot.pause()
+
+            assert first.session_id not in app.tenant_sessions
+            assert app.active_session_id == second.session_id
+            assert app.avanza is second.avanza
+
+    asyncio.run(run_app())
+
+
+def test_logout_selected_session_logs_out_to_login_screen_when_last_session_removed():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    overview = {
+        "accounts": [
+            {
+                "id": "acc-1",
+                "name": {"defaultName": "Acc 1", "userDefinedName": "Acc 1"},
+                "type": "ISK",
+                "totalValue": {"value": 1000, "unit": "SEK"},
+                "buyingPower": {"value": 500, "unit": "SEK"},
+                "status": "ACTIVE",
+            }
+        ]
+    }
+    portfolio = {"withOrderbook": [], "withoutOrderbook": []}
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            first = app.register_tenant_session(FakeAvanza(), overview, portfolio, [], [], label="Session One")
+            app.load_active_state_from_tenant(first)
+            app.query_one("#login-screen").display = False
+            app.query_one("#workspace").display = True
+            app.apply_accounts_overview(overview, announce=False)
+            app.refresh_session_select_options()
+            app.query_one("#session-select", Select).value = first.session_id
+            app.logout_selected_session()
+            await pilot.pause()
+
+            assert not app.tenant_sessions
+            assert app.avanza is None
+            assert app.query_one("#login-screen").display is True
+            assert app.query_one("#workspace").display is False
+
+    asyncio.run(run_app())
+
+
 def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 

@@ -6980,6 +6980,10 @@ class AvanzaTradingTui(App):
         margin-top: 0;
     }
 
+    #logout-selected-session {
+        min-width: 16;
+    }
+
     #metric-grid {
         height: 4;
         margin-top: 1;
@@ -7714,6 +7718,7 @@ class AvanzaTradingTui(App):
                     with Horizontal(id="button-controls"):
                         yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
                         yield Button("Refresh", id="refresh-all", variant="primary")
+                        yield Button("Logout Session", id="logout-selected-session", variant="error")
                         yield Button("Reload TUI", id="reload-tui", variant="default")
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
@@ -8225,7 +8230,7 @@ class AvanzaTradingTui(App):
         if isinstance(widget, Input):
             return widget.value.strip()
         if isinstance(widget, Select):
-            if widget.value == Select.BLANK:
+            if self.is_blank_select_value(widget.value):
                 return ""
             return str(widget.value)
         raise TypeError(f"Unsupported input widget: {widget_id}")
@@ -8479,6 +8484,28 @@ class AvanzaTradingTui(App):
             return False
         return True
 
+    def is_blank_select_value(self, value: Any) -> bool:
+        if value is None:
+            return True
+        for sentinel_name in ("BLANK", "NULL"):
+            sentinel = getattr(Select, sentinel_name, None)
+            if sentinel is not None and (value is sentinel or value == sentinel):
+                return True
+        text = str(value).strip()
+        return text in {"", "Select.BLANK", "Select.NULL"}
+
+    def selected_session_id(self) -> str | None:
+        try:
+            session_value = self.query_one("#session-select", Select).value
+        except Exception:
+            session_value = None
+        if not self.is_blank_select_value(session_value):
+            token = str(session_value).strip()
+            if token:
+                return token
+        token = str(self.active_session_id or "").strip()
+        return token or None
+
     def session_account_option(self, account: dict[str, Any]) -> tuple[Text, str]:
         context = self.active_tenant_session()
         display = Text()
@@ -8545,6 +8572,88 @@ class AvanzaTradingTui(App):
             self.refresh_selected_account_live()
         if announce:
             self.write_log(f"Switched session to {context.label} ({context.session_id}).")
+
+    def clear_workspace_tables(self) -> None:
+        for selector in (
+            "#portfolio-table",
+            "#stoploss-table",
+            "#active-trades-table",
+            "#orders-history-table",
+            "#transactions-history-table",
+            "#tv-lists-table",
+        ):
+            try:
+                self.query_one(selector, DataTable).clear()
+            except Exception:
+                pass
+
+    def logout_all_sessions(self) -> None:
+        self.stop_mcp_bridge(announce=False)
+        self.tenant_sessions.clear()
+        self.active_session_id = None
+        self.avanza = None
+        self.accounts = []
+        self.selected_account_id = None
+        self.latest_portfolio_data = None
+        self.latest_stoploss_items = []
+        self.latest_open_order_items = []
+        self.position_row_cache = {}
+        self.holding_volumes_by_order_book = {}
+        self.holding_labels_by_order_book = {}
+        self.order_search_labels_by_order_book = {}
+        self.live_refresh_auth_blocked_sessions.clear()
+        self.live_refresh_auth_last_notice_at.clear()
+        if self.live_refresh_timer is not None:
+            self.live_refresh_timer.stop()
+            self.live_refresh_timer = None
+        self.clear_workspace_tables()
+        self.refresh_session_select_options()
+        try:
+            self.query_one("#account-select", Select).set_options([])
+        except Exception:
+            pass
+        self.update_selected_account_summary(None)
+        self.query_one("#workspace").display = False
+        self.query_one("#login-screen").display = True
+        self.clear_secret_inputs()
+        self.clear_extra_secret_inputs()
+        self.update_mode_toggles()
+        self.write_mcp_log("[yellow]MCP disabled: no logged-in tenant sessions.[/yellow]")
+        self.record_event("app", "tenant_sessions_cleared", {})
+
+    def logout_selected_session(self) -> None:
+        session_id = self.selected_session_id()
+        if not session_id:
+            raise ValueError("No session is selected.")
+        context = self.tenant_sessions.get(session_id)
+        if context is None:
+            raise ValueError(f"Unknown session_id: {session_id}")
+        was_active = session_id == self.active_session_id
+        self.tenant_sessions.pop(session_id, None)
+        self.live_refresh_auth_blocked_sessions.discard(session_id)
+        self.live_refresh_auth_last_notice_at.pop(session_id, None)
+        if self.mcp_scope_original_session_id == session_id:
+            self.mcp_scope_original_session_id = None
+        self.record_event(
+            "app",
+            "tenant_session_logged_out",
+            {"session_id": session_id, "label": context.label, "was_active": was_active},
+        )
+        if not self.tenant_sessions:
+            self.write_log(f"[yellow]Logged out session:[/yellow] {context.label}. No active sessions left.")
+            self.logout_all_sessions()
+            return
+
+        if was_active:
+            next_context = next(iter(self.tenant_sessions.values()))
+            self.activate_tenant_session(next_context.session_id, refresh_ui=True, announce=False, update_controls=True)
+            self.write_log(
+                f"[yellow]Logged out session:[/yellow] {context.label}. "
+                f"Switched to {next_context.label}."
+            )
+        else:
+            self.refresh_session_select_options()
+            self.write_log(f"[yellow]Logged out session:[/yellow] {context.label}.")
 
     @contextmanager
     def temporary_tenant_scope(self, session_id: str | None) -> Iterator[None]:
@@ -11222,7 +11331,7 @@ class AvanzaTradingTui(App):
         selection = value
         if selection is None:
             widget_value = self.query_one("#tv-lists-select", Select).value
-            if widget_value != Select.BLANK:
+            if not self.is_blank_select_value(widget_value):
                 selection = str(widget_value)
         ref = self.tv_list_option_refs.get(str(selection or ""), {})
         list_id = str(ref.get("id", "") or "").strip() or None
@@ -11299,7 +11408,7 @@ class AvanzaTradingTui(App):
         selected_name = str(selected_entry.get("name", "") or "").strip().lower()
 
         selected_value = None
-        if prior != Select.BLANK and str(prior) in refs:
+        if not self.is_blank_select_value(prior) and str(prior) in refs:
             selected_value = str(prior)
         if selected_id:
             selected_value = next((value for value, ref in refs.items() if ref.get("id") == selected_id), selected_value)
@@ -11537,6 +11646,9 @@ class AvanzaTradingTui(App):
         elapsed: float,
         session_id: str | None,
     ) -> None:
+        if session_id and self.active_session_id and session_id != self.active_session_id:
+            self._finish_live_refresh_cycle()
+            return
         self.mark_tenant_session_auth_ok(session_id)
         self.apply_portfolio_data(
             data,
@@ -11609,7 +11721,7 @@ class AvanzaTradingTui(App):
         self.refresh_selected_account_live()
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id == "session-select" and event.value and event.value != Select.BLANK:
+        if event.select.id == "session-select" and not self.is_blank_select_value(event.value):
             if self.session_select_updating:
                 return
             next_session_id = str(event.value)
@@ -11619,7 +11731,7 @@ class AvanzaTradingTui(App):
                 self.activate_tenant_session(next_session_id)
             except Exception as exc:
                 self.write_log(f"[red]Session switch failed:[/red] {exc}")
-        elif event.select.id == "account-select" and event.value and event.value != Select.BLANK:
+        elif event.select.id == "account-select" and not self.is_blank_select_value(event.value):
             next_account_id = str(event.value)
             if next_account_id == self.selected_account_id:
                 return
@@ -11627,14 +11739,14 @@ class AvanzaTradingTui(App):
                 self.select_account(next_account_id)
             except Exception as exc:
                 self.write_log(f"[red]Account switch failed:[/red] {exc}")
-        elif event.select.id == "instrument-select" and event.value and event.value != Select.BLANK:
+        elif event.select.id == "instrument-select" and not self.is_blank_select_value(event.value):
             try:
                 volume_input = self.query_one("#volume", Input)
             except Exception:
                 return
             if not volume_input.value.strip():
                 volume_input.value = self.holding_volumes_by_order_book.get(str(event.value), "")
-        elif event.select.id == "order-instrument-select" and event.value and event.value != Select.BLANK:
+        elif event.select.id == "order-instrument-select" and not self.is_blank_select_value(event.value):
             try:
                 volume_input = self.query_one("#regular-order-volume", Input)
             except Exception:
@@ -11645,7 +11757,7 @@ class AvanzaTradingTui(App):
         elif event.select.id == "tv-lists-select":
             if self.tv_lists_select_updating:
                 return
-            if event.value and event.value != Select.BLANK:
+            if not self.is_blank_select_value(event.value):
                 if str(event.value) == self.tv_lists_loaded_value:
                     return
                 self.refresh_tv_lists(str(event.value))
@@ -11686,6 +11798,8 @@ class AvanzaTradingTui(App):
                 self.handle_1password_login()
             elif button_id == "open-extra-login":
                 self.open_extra_login_modal()
+            elif button_id == "logout-selected-session":
+                self.logout_selected_session()
             elif button_id in {"extra-login-cancel", "extra-login-cancel-2"}:
                 self.close_extra_login_modal()
             elif button_id == "extra-login-submit":
