@@ -53,7 +53,7 @@ MCP_KEYCHAIN_SERVICE = "Avanza-MCP.BridgeSession"
 LOG_DIR = Path(__file__).with_name("avanza-cli") / "logs"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
-STOPLOSS_ORDER_VALID_DAYS_DEFAULT = int(os.getenv("AVANZA_STOPLOSS_ORDER_VALID_DAYS_DEFAULT", "8"))
+STOPLOSS_ORDER_VALID_DAYS_DEFAULT = int(os.getenv("AVANZA_STOPLOSS_ORDER_VALID_DAYS_DEFAULT", "1"))
 
 TRIGGER_TYPE_CHOICES = [
     "less-or-equal",
@@ -539,6 +539,147 @@ def validate_valid_until(value: date, label: str = "Valid until", reference: dat
     return value
 
 
+def normalize_stoploss_order_valid_days(value: Any, label: str = "Order valid days") -> int:
+    try:
+        parsed = int(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be an integer.") from exc
+    if parsed < 1:
+        raise ValueError(f"{label} must be at least 1.")
+    return parsed
+
+
+def stoploss_triggered_order_expiry(valid_days: int, reference: date | None = None) -> str:
+    base = reference or date.today()
+    return (base + timedelta(days=normalize_stoploss_order_valid_days(valid_days))).isoformat()
+
+
+def stoploss_instrument_metadata(
+    avanza: Any,
+    order_book_id: str,
+    base: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    order_book_id = str(order_book_id or "").strip()
+    metadata = merged_orderbook_metadata(base or {}, {"orderbook_id": order_book_id})
+    if not order_book_id:
+        return metadata
+
+    try:
+        market_payload = payload_to_json_safe(avanza.get_market_data(order_book_id))
+    except Exception:
+        market_payload = {}
+    if isinstance(market_payload, dict):
+        quote = orderbook_quote_row(
+            order_book_id,
+            market_payload,
+            fallback_name=str(metadata.get("name") or ""),
+            fallback_ticker=str(metadata.get("ticker") or ""),
+            fallback_market=str(metadata.get("market") or ""),
+            fallback_currency=str(metadata.get("currency") or ""),
+        )
+        metadata = merged_orderbook_metadata(
+            metadata,
+            {
+                "name": quote.get("name"),
+                "ticker": quote.get("ticker"),
+                "market": quote.get("market"),
+                "currency": quote.get("currency"),
+                "country_code": market_quote_first_text(
+                    market_payload,
+                    (("countryCode",), ("country",), ("flagCode",), ("orderbook", "countryCode")),
+                ),
+                "instrument_type": market_quote_first_text(
+                    market_payload,
+                    (("instrumentType",), ("orderbook", "instrumentType"), ("instrument", "instrumentType")),
+                ),
+            },
+        )
+
+    missing_currency = not str(metadata.get("currency") or "").strip()
+    if missing_currency:
+        try:
+            hits = flattened_search_hits(avanza.search_for_stock(order_book_id, 15))
+            rows = normalized_search_rows(hits, query=order_book_id)
+            match = next((row for row in rows if str(row.get("orderbook_id") or "") == order_book_id), None)
+            if not match and rows:
+                match = rows[0]
+            if isinstance(match, dict):
+                metadata = merged_orderbook_metadata(
+                    metadata,
+                    {
+                        "name": match.get("name"),
+                        "ticker": match.get("ticker"),
+                        "display_symbol": match.get("display_symbol"),
+                        "market": match.get("market_place"),
+                        "currency": match.get("currency"),
+                        "country_code": match.get("country"),
+                        "instrument_type": match.get("instrument_type"),
+                    },
+                )
+        except Exception:
+            pass
+    return merged_orderbook_metadata(metadata, {})
+
+
+def stoploss_order_valid_days_warnings(
+    valid_days: int,
+    metadata: dict[str, Any] | None = None,
+) -> list[str]:
+    days = normalize_stoploss_order_valid_days(valid_days)
+    if days <= 1:
+        return []
+    merged = merged_orderbook_metadata(metadata or {}, {})
+    currency = str(merged.get("currency") or infer_currency_from_metadata(merged) or "").strip().upper()
+    market = str(merged.get("market") or "").strip()
+    country = str(merged.get("country_code") or merged.get("country") or "").strip().upper()
+    label = str(merged.get("name") or merged.get("ticker") or merged.get("orderbook_id") or "instrument")
+    if currency and currency != "SEK":
+        return [
+            (
+                f"{label}: order_valid_days={days} with {currency} instrument can fail with "
+                f"'Ogiltigt giltighetsdatum'. Use order_valid_days=1."
+            )
+        ]
+    if not currency and (market or country):
+        return [
+            (
+                f"{label}: currency unresolved ({country or '-'} / {market or '-'}). "
+                "order_valid_days>1 may be rejected by Avanza; use 1 day."
+            )
+        ]
+    return []
+
+
+def stoploss_is_foreign_instrument(metadata: dict[str, Any] | None = None) -> bool | None:
+    merged = merged_orderbook_metadata(metadata or {}, {})
+    currency = str(merged.get("currency") or infer_currency_from_metadata(merged) or "").strip().upper()
+    if currency:
+        return currency != "SEK"
+    country = str(merged.get("country_code") or merged.get("country") or "").strip().upper()
+    if country:
+        return country not in {"", "SE"}
+    market = str(merged.get("market") or "").strip().lower()
+    if market:
+        if any(token in market for token in ("stockholm", "xsto", "first north", "spotlight", "ngm")):
+            return False
+        if any(token in market for token in ("nasdaq", "nyse", "xhel", "xcse", "xosl", "xlon")):
+            return True
+    return None
+
+
+def enforce_live_stoploss_order_valid_days(
+    valid_days: int,
+    metadata: dict[str, Any] | None = None,
+    *,
+    live: bool,
+) -> list[str]:
+    days = normalize_stoploss_order_valid_days(valid_days)
+    warnings = stoploss_order_valid_days_warnings(days, metadata)
+    if live and days > 1 and stoploss_is_foreign_instrument(metadata) is True and warnings:
+        raise ValueError(warnings[0])
+    return warnings
+
+
 def prompt_credentials(username: str | None) -> dict[str, str]:
     if not username:
         username = input("Avanza username: ").strip()
@@ -974,7 +1115,7 @@ def render_message(title: str, lines: list[str]) -> None:
 def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
     trigger = preview["stop_loss_trigger"]
     order_event = preview["stop_loss_order_event"]
-    return [
+    lines = [
         f"Account: {preview['account_id']}",
         f"Order book: {preview['order_book_id']}",
         f"Trigger: {trigger['type']} {formatted_typed_value(trigger['value'], trigger['value_type'])}",
@@ -982,6 +1123,18 @@ def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
         f"Order: {order_event['type']} {order_event['volume']} @ {formatted_typed_value(order_event['price'], order_event['price_type'])}",
         f"Order valid days after trigger: {order_event['valid_days']}",
     ]
+    derived_expiry = str(
+        order_event.get("derived_expiry_if_triggered_today")
+        or stoploss_triggered_order_expiry(int(order_event["valid_days"]))
+    )
+    lines.append(f"Derived order expiry (if triggered today): {derived_expiry}")
+    warnings = preview.get("warnings")
+    if isinstance(warnings, list):
+        for warning in warnings:
+            text = str(warning).strip()
+            if text:
+                lines.append(f"Warning: {text}")
+    return lines
 
 
 def format_order_request(preview: dict[str, Any]) -> list[str]:
@@ -2202,11 +2355,15 @@ def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, Stop
         value_type=enum_value(StopLossPriceType, parse_price_type(str(args.get("trigger_value_type", "SEK")))),
         trigger_on_market_maker_quote=bool(args.get("trigger_on_market_maker_quote", False)),
     )
+    valid_days = normalize_stoploss_order_valid_days(
+        args.get("order_valid_days", STOPLOSS_ORDER_VALID_DAYS_DEFAULT),
+        "order_valid_days",
+    )
     order_event = StopLossOrderEvent(
         type=enum_value(OrderType, str(args.get("order_type", "sell"))),
         price=float(args["order_price"]),
         volume=float(args["volume"]),
-        valid_days=int(args.get("order_valid_days", STOPLOSS_ORDER_VALID_DAYS_DEFAULT)),
+        valid_days=valid_days,
         price_type=enum_value(StopLossPriceType, parse_price_type(str(args.get("order_price_type", "SEK")))),
         short_selling_allowed=bool(args.get("short_selling_allowed", False)),
     )
@@ -2226,9 +2383,11 @@ def build_stop_loss_preview(args: dict[str, Any]) -> tuple[StopLossTrigger, Stop
             "price": order_event.price,
             "volume": order_event.volume,
             "valid_days": order_event.valid_days,
+            "derived_expiry_if_triggered_today": stoploss_triggered_order_expiry(order_event.valid_days),
             "price_type": order_event.price_type.value,
             "short_selling_allowed": order_event.short_selling_allowed,
         },
+        "warnings": [],
     }
     return trigger, order_event, preview
 
@@ -10597,8 +10756,12 @@ class AvanzaTradingTui(App):
             confirmed = bool(arguments.get("confirm", False))
             self.require_mcp_write(confirmed)
             trigger, order_event, preview = build_stop_loss_preview(arguments)
+            warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
             if not confirmed:
-                return {"dry_run": True, "summary": format_stop_loss_request(preview), "request": preview}
+                payload = {"dry_run": True, "summary": format_stop_loss_request(preview), "request": preview}
+                if warnings:
+                    payload["warnings"] = warnings
+                return payload
             result = avanza.place_stop_loss_order(
                 parent_stop_loss_id=preview["parent_stop_loss_id"],
                 account_id=preview["account_id"],
@@ -10915,6 +11078,7 @@ class AvanzaTradingTui(App):
             self.require_mcp_write(confirmed)
             stop_loss_id = str(arguments["stop_loss_id"])
             trigger, order_event, preview = build_stop_loss_preview(arguments)
+            warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
             deprecated_alias = tool == "avanza_stoploss_replace"
             request = {
                 "stop_loss_id": stop_loss_id,
@@ -10922,6 +11086,8 @@ class AvanzaTradingTui(App):
             }
             if not confirmed:
                 payload = {"dry_run": True, "summary": format_stop_loss_request(preview), "request": request}
+                if warnings:
+                    payload["warnings"] = warnings
                 if deprecated_alias:
                     payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
                 return payload
@@ -11086,6 +11252,23 @@ class AvanzaTradingTui(App):
 
         return self._cache_orderbook_metadata(orderbook_id, merged)
 
+    def stoploss_metadata_for_orderbook(self, order_book_id: str) -> dict[str, Any]:
+        quote_payload = self.quote_payload_for_order_book(order_book_id, refresh=False)
+        return self.orderbook_metadata_for_quote(order_book_id, quote_payload, allow_remote_lookup=True)
+
+    def apply_stoploss_valid_days_safety(self, preview: dict[str, Any], *, live: bool) -> list[str]:
+        order_book_id = str(preview.get("order_book_id") or "").strip()
+        order_event = preview.get("stop_loss_order_event")
+        if not isinstance(order_event, dict):
+            return []
+        valid_days = normalize_stoploss_order_valid_days(order_event.get("valid_days"), "order_valid_days")
+        metadata = self.stoploss_metadata_for_orderbook(order_book_id) if order_book_id else {}
+        warnings = enforce_live_stoploss_order_valid_days(valid_days, metadata, live=live)
+        order_event["valid_days"] = valid_days
+        order_event["derived_expiry_if_triggered_today"] = stoploss_triggered_order_expiry(valid_days)
+        preview["warnings"] = warnings
+        return warnings
+
     def realtime_quotes_snapshot(self, account_id: str) -> list[dict[str, Any]]:
         avanza = self.require_connection()
         positions_data = self.latest_portfolio_data
@@ -11208,7 +11391,10 @@ class AvanzaTradingTui(App):
             type=enum_value(OrderType, self.input_value("order-type")),
             price=self.input_float_value("order-price", "Order price"),
             volume=self.input_float_value("volume", "Volume"),
-            valid_days=self.input_int_value("order-valid-days", "Order valid days"),
+            valid_days=normalize_stoploss_order_valid_days(
+                self.input_int_value("order-valid-days", "Order valid days"),
+                "Order valid days",
+            ),
             price_type=enum_value(StopLossPriceType, self.input_value("order-price-type")),
             short_selling_allowed=self.switch_value("short-selling-allowed"),
         )
@@ -11228,9 +11414,11 @@ class AvanzaTradingTui(App):
                 "price": order_event.price,
                 "volume": order_event.volume,
                 "valid_days": order_event.valid_days,
+                "derived_expiry_if_triggered_today": stoploss_triggered_order_expiry(order_event.valid_days),
                 "price_type": order_event.price_type.value,
                 "short_selling_allowed": order_event.short_selling_allowed,
             },
+            "warnings": [],
         }
         return trigger, order_event, preview
 
@@ -11510,7 +11698,18 @@ class AvanzaTradingTui(App):
         self.query_one("#order-type", Select).value = str(order.get("type", "") or "sell").lower()
         self.query_one("#order-price", Input).value = str(order.get("price", "") or "")
         self.query_one("#order-price-type", Select).value = order_price_type
-        self.query_one("#order-valid-days", Input).value = str(order.get("validDays", STOPLOSS_ORDER_VALID_DAYS_DEFAULT) or STOPLOSS_ORDER_VALID_DAYS_DEFAULT)
+        existing_valid_days_raw = order.get("validDays", STOPLOSS_ORDER_VALID_DAYS_DEFAULT)
+        try:
+            existing_valid_days = normalize_stoploss_order_valid_days(existing_valid_days_raw, "Order valid days")
+        except Exception:
+            existing_valid_days = STOPLOSS_ORDER_VALID_DAYS_DEFAULT
+        safe_valid_days = 1 if existing_valid_days > 1 else existing_valid_days
+        self.query_one("#order-valid-days", Input).value = str(safe_valid_days)
+        if existing_valid_days > 1:
+            self.write_log(
+                "[yellow]Safety default applied:[/yellow] "
+                f"edited stop-loss order-valid-days reset from {existing_valid_days} to 1."
+            )
         self.query_one("#trigger-on-market-maker-quote", Switch).value = bool(trigger.get("triggerOnMarketMakerQuote", False))
         self.query_one("#short-selling-allowed", Switch).value = bool(order.get("shortSellingAllowed", False))
         self.query_one("#place-confirm", Input).value = ""
@@ -12111,6 +12310,7 @@ class AvanzaTradingTui(App):
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
+        self.apply_stoploss_valid_days_safety(preview, live=False)
         self.write_log("[yellow]Review-only stop-loss request. No paper or live order is created:[/yellow]")
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
@@ -12272,6 +12472,9 @@ class AvanzaTradingTui(App):
         action_label = "updated" if is_edit else "created"
         if self.paper_mode_enabled:
             _, _, preview = self.build_stop_loss_request()
+            warnings = self.apply_stoploss_valid_days_safety(preview, live=False)
+            for warning in warnings:
+                self.write_log(f"[yellow]Warning:[/yellow] {warning}")
             order_book_id = self.input_value("instrument-select")
             instrument = self.holding_labels_by_order_book.get(order_book_id, order_book_id)
             paper_order = create_paper_stop_loss_order(
@@ -12307,6 +12510,9 @@ class AvanzaTradingTui(App):
 
         avanza = self.require_connection()
         trigger, order_event, preview = self.build_stop_loss_request()
+        warnings = self.apply_stoploss_valid_days_safety(preview, live=True)
+        for warning in warnings:
+            self.write_log(f"[yellow]Warning:[/yellow] {warning}")
         self.write_log("[red]Placing live stop-loss request:[/red]")
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
@@ -12589,47 +12795,12 @@ def cmd_stoploss_delete(args: argparse.Namespace) -> None:
 
 
 def cmd_stoploss_set(args: argparse.Namespace) -> None:
-    trigger_type = enum_value(StopLossTriggerType, args.trigger_type)
-    trigger_value_type = enum_value(StopLossPriceType, args.trigger_value_type)
-    order_type = enum_value(OrderType, args.order_type)
-    order_price_type = enum_value(StopLossPriceType, args.order_price_type)
-
-    trigger = StopLossTrigger(
-        type=trigger_type,
-        value=args.trigger_value,
-        valid_until=args.valid_until,
-        value_type=trigger_value_type,
-        trigger_on_market_maker_quote=args.trigger_on_market_maker_quote,
+    trigger, order_event, request_preview = build_stop_loss_preview(vars(args))
+    metadata = merged_orderbook_metadata(
+        {"orderbook_id": args.order_book_id},
+        KNOWN_ORDERBOOK_METADATA.get(str(args.order_book_id), {}),
     )
-    order_event = StopLossOrderEvent(
-        type=order_type,
-        price=args.order_price,
-        volume=args.volume,
-        valid_days=args.order_valid_days,
-        price_type=order_price_type,
-        short_selling_allowed=args.short_selling_allowed,
-    )
-
-    request_preview = {
-        "parent_stop_loss_id": args.parent_stop_loss_id,
-        "account_id": args.account_id,
-        "order_book_id": args.order_book_id,
-        "stop_loss_trigger": {
-            "type": trigger.type.value,
-            "value": trigger.value,
-            "valid_until": trigger.valid_until.isoformat(),
-            "value_type": trigger.value_type.value,
-            "trigger_on_market_maker_quote": trigger.trigger_on_market_maker_quote,
-        },
-        "stop_loss_order_event": {
-            "type": order_event.type.value,
-            "price": order_event.price,
-            "volume": order_event.volume,
-            "valid_days": order_event.valid_days,
-            "price_type": order_event.price_type.value,
-            "short_selling_allowed": order_event.short_selling_allowed,
-        },
-    }
+    request_preview["warnings"] = stoploss_order_valid_days_warnings(order_event.valid_days, metadata)
 
     if not args.confirm:
         render_stop_loss_request(
@@ -12639,6 +12810,12 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
         return
 
     avanza = connect(args)
+    live_metadata = stoploss_instrument_metadata(avanza, str(args.order_book_id), base=metadata)
+    request_preview["warnings"] = enforce_live_stoploss_order_valid_days(
+        order_event.valid_days,
+        live_metadata,
+        live=True,
+    )
     result = avanza.place_stop_loss_order(
         parent_stop_loss_id=args.parent_stop_loss_id,
         account_id=args.account_id,
@@ -12650,48 +12827,13 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
 
 
 def cmd_stoploss_edit(args: argparse.Namespace) -> None:
-    trigger_type = enum_value(StopLossTriggerType, args.trigger_type)
-    trigger_value_type = enum_value(StopLossPriceType, args.trigger_value_type)
-    order_type = enum_value(OrderType, args.order_type)
-    order_price_type = enum_value(StopLossPriceType, args.order_price_type)
-
-    trigger = StopLossTrigger(
-        type=trigger_type,
-        value=args.trigger_value,
-        valid_until=args.valid_until,
-        value_type=trigger_value_type,
-        trigger_on_market_maker_quote=args.trigger_on_market_maker_quote,
+    trigger, order_event, request_preview = build_stop_loss_preview(vars(args))
+    request_preview["stop_loss_id"] = args.stop_loss_id
+    metadata = merged_orderbook_metadata(
+        {"orderbook_id": args.order_book_id},
+        KNOWN_ORDERBOOK_METADATA.get(str(args.order_book_id), {}),
     )
-    order_event = StopLossOrderEvent(
-        type=order_type,
-        price=args.order_price,
-        volume=args.volume,
-        valid_days=args.order_valid_days,
-        price_type=order_price_type,
-        short_selling_allowed=args.short_selling_allowed,
-    )
-
-    request_preview = {
-        "stop_loss_id": args.stop_loss_id,
-        "parent_stop_loss_id": args.parent_stop_loss_id,
-        "account_id": args.account_id,
-        "order_book_id": args.order_book_id,
-        "stop_loss_trigger": {
-            "type": trigger.type.value,
-            "value": trigger.value,
-            "valid_until": trigger.valid_until.isoformat(),
-            "value_type": trigger.value_type.value,
-            "trigger_on_market_maker_quote": trigger.trigger_on_market_maker_quote,
-        },
-        "stop_loss_order_event": {
-            "type": order_event.type.value,
-            "price": order_event.price,
-            "volume": order_event.volume,
-            "valid_days": order_event.valid_days,
-            "price_type": order_event.price_type.value,
-            "short_selling_allowed": order_event.short_selling_allowed,
-        },
-    }
+    request_preview["warnings"] = stoploss_order_valid_days_warnings(order_event.valid_days, metadata)
 
     if not args.confirm:
         render_message(
@@ -12704,6 +12846,12 @@ def cmd_stoploss_edit(args: argparse.Namespace) -> None:
         return
 
     avanza = connect(args)
+    live_metadata = stoploss_instrument_metadata(avanza, str(args.order_book_id), base=metadata)
+    request_preview["warnings"] = enforce_live_stoploss_order_valid_days(
+        order_event.valid_days,
+        live_metadata,
+        live=True,
+    )
     delete_result = avanza.delete_stop_loss_order(args.account_id, args.stop_loss_id)
     place_result = avanza.place_stop_loss_order(
         parent_stop_loss_id=args.parent_stop_loss_id,

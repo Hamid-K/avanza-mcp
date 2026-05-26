@@ -318,12 +318,40 @@ def test_stoploss_defaults_use_max_valid_until_and_order_valid_days():
         ]
     )
 
+    assert STOPLOSS_ORDER_VALID_DAYS_DEFAULT == 1
     assert args.valid_until == max_valid_until_date()
     assert args.order_valid_days == STOPLOSS_ORDER_VALID_DAYS_DEFAULT
 
     _, _, preview = build_stop_loss_preview(vars(args))
     assert preview["stop_loss_trigger"]["valid_until"] == max_valid_until_date().isoformat()
     assert preview["stop_loss_order_event"]["valid_days"] == STOPLOSS_ORDER_VALID_DAYS_DEFAULT
+    assert preview["stop_loss_order_event"]["derived_expiry_if_triggered_today"]
+
+
+def test_stoploss_edit_parser_uses_order_valid_days_default():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "stoploss",
+            "edit",
+            "--stop-loss-id",
+            "sl-1",
+            "--account-id",
+            "acc-1",
+            "--order-book-id",
+            "ob-1",
+            "--trigger-type",
+            "follow-upwards",
+            "--trigger-value",
+            "5",
+            "--order-price",
+            "1",
+            "--volume",
+            "10",
+        ]
+    )
+
+    assert args.order_valid_days == STOPLOSS_ORDER_VALID_DAYS_DEFAULT
 
 
 def test_tui_mounts_headless():
@@ -378,6 +406,7 @@ def test_tui_mounts_headless():
             assert app.query_one("#order-ticket-resizer") is not None
             assert app.query_one("#stoploss-ticket-resizer") is not None
             assert app.query_one("#activity-resizer") is not None
+            assert app.query_one("#order-valid-days", Input).value == str(STOPLOSS_ORDER_VALID_DAYS_DEFAULT)
             resizer = app.query_one("#pane-resizer")
             assert resizer.renderable == "─"
             assert app.query_one("#stoploss-table") is not None
@@ -804,6 +833,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 },
             )
             assert dry_run["dry_run"] is True
+            assert dry_run["request"]["stop_loss_order_event"]["valid_days"] == 1
             snapshot = app.execute_mcp_tool("avanza_live_snapshot", {})
             assert snapshot["poll_interval_seconds"] == 5.0
             assert snapshot["portfolio"]["positions"][0]["Stock"] == "Example AB"
@@ -928,6 +958,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 },
             )
             assert stoploss_edit_dry["dry_run"] is True
+            assert stoploss_edit_dry["request"]["replacement"]["stop_loss_order_event"]["valid_days"] == 1
             open_order_edit_dry = app.execute_mcp_tool(
                 "avanza_open_order_edit",
                 {
@@ -1120,6 +1151,72 @@ def test_mcp_stoploss_snapshots_include_stop_loss_id_and_order_book_id():
     snapshot_first = snapshot["stoplosses"]["stoplosses"][0]
     assert snapshot_first["Stop Loss ID"] == "A2^1776317962417^627705"
     assert snapshot_first["Order Book ID"] == "369636"
+
+
+def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, _order_book_id):
+            return {
+                "quote": {"last": 198.5, "buy": 198.4, "sell": 198.6, "currency": "USD"},
+                "marketPlaceName": "NASDAQ",
+                "countryCode": "US",
+                "instrumentType": "stock",
+                "name": "NVIDIA (NVDA)",
+            }
+
+        def search_for_stock(self, _query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "id": "4478",
+                        "name": "NVIDIA (NVDA)",
+                        "tickerSymbol": "NVDA",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                        "currency": "USD",
+                        "instrumentType": "stock",
+                    }
+                ]
+            }
+
+        def place_stop_loss_order(self, **_kwargs):
+            raise AssertionError("Live placement must be blocked by order_valid_days safety guard.")
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.mcp_write_enabled = True
+    app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
+
+    dry_run = app.execute_mcp_tool(
+        "avanza_stoploss_set",
+        {
+            "account_id": "acc-1",
+            "order_book_id": "4478",
+            "trigger_value": 5,
+            "order_price": 1,
+            "volume": 2,
+            "order_valid_days": 3,
+        },
+    )
+    assert dry_run["dry_run"] is True
+    assert any("order_valid_days=3" in warning for warning in dry_run.get("warnings", []))
+
+    with pytest.raises(ValueError, match="order_valid_days=3"):
+        app.execute_mcp_tool(
+            "avanza_stoploss_set",
+            {
+                "account_id": "acc-1",
+                "order_book_id": "4478",
+                "trigger_value": 5,
+                "order_price": 1,
+                "volume": 2,
+                "order_valid_days": 3,
+                "confirm": True,
+            },
+        )
 
 
 def test_open_order_items_infers_side_from_buy_sell_buckets():
@@ -3756,4 +3853,35 @@ def test_stoploss_set_dry_run_does_not_require_login(capsys):
     assert "Account: acc-1" in output
     assert "Order book: ob-1" in output
     assert "Trigger: FOLLOW_UPWARDS 5.0%" in output
+    assert "Order valid days after trigger: 1" in output
+    assert "Derived order expiry (if triggered today):" in output
     assert '"account_id"' not in output
+
+
+def test_stoploss_set_dry_run_allows_explicit_order_valid_days(capsys):
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "stoploss",
+            "set",
+            "--account-id",
+            "acc-1",
+            "--order-book-id",
+            "ob-1",
+            "--trigger-type",
+            "follow-upwards",
+            "--trigger-value",
+            "5",
+            "--order-price",
+            "1",
+            "--volume",
+            "10",
+            "--order-valid-days",
+            "3",
+        ]
+    )
+
+    args.func(args)
+    output = capsys.readouterr().out
+
+    assert "Order valid days after trigger: 3" in output

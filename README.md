@@ -128,7 +128,9 @@ python avanza_cli.py stoploss set \
 
 Place the order for real by adding `--confirm` after reviewing the dry-run output.
 If `--valid-until` is omitted, `avanza_cli` automatically uses the longest currently allowed date (today + 90 days).
-If `--order-valid-days` is omitted, `avanza_cli` uses the current Avanza-safe default (`8`).
+If `--order-valid-days` is omitted, `avanza_cli` uses the current Avanza-safe default (`1`).
+Dry-run/preview now shows both trigger validity and derived triggered-order expiry (`if triggered today`).
+For live non-SEK/foreign instruments, `order_valid_days > 1` is blocked to prevent Avanza `Ogiltigt giltighetsdatum` trigger failures.
 
 Delete a stop-loss order dry-run:
 
@@ -343,6 +345,8 @@ TUI sessions write structured JSONL logs under `avanza-cli/logs/`: a timestamped
 This uses the unofficial `avanza-api` package. Start with `stoploss list` and dry-runs. Verify Avanza's live interpretation of `%` and gliding stop-loss fields with very small size before trusting it for meaningful orders.
 
 Stop-losses are not guaranteed earnings-gap or overnight protection. A tight `Kurs 99%` can avoid a bad normal-session fill, but it can also fail, remain unfilled, or show `ERROR` if price gaps through the trigger after hours, before open, during a halt, or in a fast market. Treat `ERROR` rows as unprotected, and handle after-close/before-open catalysts with explicit sizing, trim, sell, hedge, or hold-and-accept decisions.
+
+If an `ERROR` row reason contains `Ogiltigt giltighetsdatum`, the failure is usually triggered-order validity, not trigger logic or slippage. Set `order_valid_days=1` and replace the stop-loss.
 
 ## Credits
 
