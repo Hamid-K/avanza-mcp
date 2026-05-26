@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.4 - 2026-05-26
+
+- Fixed critical live stop-loss default/config bug for triggered-order validity:
+  - changed default `order_valid_days` from `8` to `1`,
+  - applied consistently across CLI, TUI, MCP, and paper stop-loss preview paths.
+- Added stop-loss validity safety guardrails:
+  - dry-run/preview now warns when `order_valid_days > 1` can fail on foreign/non-SEK instruments,
+  - live non-SEK/foreign stop-loss placement/edit is blocked when `order_valid_days > 1`.
+- Expanded stop-loss request previews/logging to include:
+  - trigger valid-until,
+  - triggered order valid-days,
+  - derived triggered-order expiry (`if triggered today`).
+- Added focused tests for stop-loss defaulting/safety and updated docs for `Ogiltigt giltighetsdatum` failure handling.
+
 ## 0.1.3 - 2026-05-04
 
 - Added TUI bottom-right update indicator with automatic GitHub release/tag checks against `Hamid-K/avanza-mcp`.
