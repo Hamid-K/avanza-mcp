@@ -7489,25 +7489,37 @@ class AvanzaTradingTui(App):
     }
 
     #extra-login-card {
-        width: 56;
+        width: 62;
+        min-width: 58;
+        max-width: 68;
         height: auto;
         border: tall $primary;
-        padding: 1 3;
+        padding: 1 2;
         background: $panel;
     }
 
     #extra-login-title {
         text-style: bold;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     #extra-login-subtitle {
         color: $text-muted;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     #extra-login-card Input {
-        margin-bottom: 1;
+        margin-bottom: 0;
+    }
+
+    .extra-login-actions {
+        height: 1;
+        margin: 0;
+        align: left middle;
+    }
+
+    #extra-onepassword-title {
+        margin-top: 0;
     }
 
     #orders-overlay,
@@ -7728,6 +7740,7 @@ class AvanzaTradingTui(App):
         self.update_blink_timer = None
         self.login_progress_timer = None
         self.login_thread: threading.Thread | None = None
+        self.shutdown_event = threading.Event()
         self.login_busy = False
         self.login_spinner_index = 0
         self.login_progress_tick = 0
@@ -7827,6 +7840,17 @@ class AvanzaTradingTui(App):
         )
         if self.debug_mode:
             self.debug_log("Debug mode enabled.")
+
+    def safe_call_from_thread(self, callback: Callable[..., Any], *args: Any) -> bool:
+        if self.shutdown_event.is_set():
+            return False
+        try:
+            self.call_from_thread(callback, *args)
+        except RuntimeError:
+            return False
+        except Exception:
+            return False
+        return True
 
     def compose(self) -> ComposeResult:
         default_valid_until = max_valid_until_date().isoformat()
@@ -8061,13 +8085,13 @@ class AvanzaTradingTui(App):
                         restrict=r"[0-9]*",
                         max_length=8,
                     )
-                    with Horizontal():
+                    with Horizontal(classes="extra-login-actions"):
                         yield Button("Login extra account", id="extra-login-submit", variant="primary")
                         yield Button("Cancel", id="extra-login-cancel", variant="default")
                     yield Static("Or use 1Password CLI", id="extra-onepassword-title")
                     yield Input(placeholder="1Password item name or ID", id="extra-onepassword-item")
                     yield Input(placeholder="1Password vault (optional)", id="extra-onepassword-vault")
-                    with Horizontal():
+                    with Horizontal(classes="extra-login-actions"):
                         yield Button("Login with 1Password", id="extra-onepassword-login", variant="primary")
                         yield Button("Cancel", id="extra-login-cancel-2", variant="default")
         with Horizontal(id="status-bar"):
@@ -9265,7 +9289,9 @@ class AvanzaTradingTui(App):
             info = github_latest_version_info(self.update_status_repo)
         except Exception as exc:
             error = str(exc)
-        self.call_from_thread(self.apply_update_check_result, info, error)
+        if not self.safe_call_from_thread(self.apply_update_check_result, info, error):
+            with self.update_check_lock:
+                self.update_check_inflight = False
 
     def apply_update_check_result(self, info: dict[str, str] | None, error: str) -> None:
         self.update_status_error = error
@@ -9937,6 +9963,7 @@ class AvanzaTradingTui(App):
             self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
 
     def on_unmount(self) -> None:
+        self.shutdown_event.set()
         self.stop_login_progress()
         if self.order_search_timer is not None:
             self.order_search_timer.stop()
@@ -9959,6 +9986,12 @@ class AvanzaTradingTui(App):
         if self.tv_lists_refresh_timer is not None:
             self.tv_lists_refresh_timer.stop()
             self.tv_lists_refresh_timer = None
+        for worker in (self.live_refresh_thread, self.tv_lists_refresh_thread, self.update_check_thread):
+            if worker is not None and worker.is_alive() and worker is not threading.current_thread():
+                worker.join(timeout=0.5)
+        self.live_refresh_thread = None
+        self.tv_lists_refresh_thread = None
+        self.update_check_thread = None
         self.stop_mcp_bridge(announce=False)
 
     def require_mcp_write(self, confirmed: bool) -> None:
@@ -11553,12 +11586,15 @@ class AvanzaTradingTui(App):
                 list_name=list_name,
                 limit=TRADINGVIEW_WATCHLIST_ROW_LIMIT,
             )
-            self.call_from_thread(self.apply_tv_lists_snapshot, snapshot)
+            self.safe_call_from_thread(self.apply_tv_lists_snapshot, snapshot)
         except Exception as exc:
-            self.call_from_thread(self.write_log, f"[yellow]TradingView list refresh failed:[/yellow] {exc}")
-            self.call_from_thread(self.set_tv_lists_overlay_note, f"TradingView list refresh failed: {exc}")
+            self.safe_call_from_thread(self.write_log, f"[yellow]TradingView list refresh failed:[/yellow] {exc}")
+            self.safe_call_from_thread(self.set_tv_lists_overlay_note, f"TradingView list refresh failed: {exc}")
         finally:
-            self.call_from_thread(self.finish_tv_lists_refresh)
+            if not self.safe_call_from_thread(self.finish_tv_lists_refresh):
+                with self.tv_lists_refresh_lock:
+                    self.tv_lists_refresh_pending_value = None
+                    self.tv_lists_refresh_inflight = False
 
     def finish_tv_lists_refresh(self) -> None:
         pending_value = None
@@ -11798,7 +11834,7 @@ class AvanzaTradingTui(App):
         started = time.perf_counter()
         active_session_id = self.active_session_id
         if not self.avanza or not self.selected_account_id:
-            self.call_from_thread(self._finish_live_refresh_cycle)
+            self._finish_live_refresh_cycle()
             return
 
         try:
@@ -11818,7 +11854,7 @@ class AvanzaTradingTui(App):
             except Exception:
                 orders = []
             elapsed = time.perf_counter() - started
-            self.call_from_thread(
+            if not self.safe_call_from_thread(
                 self._apply_live_refresh_payload,
                 data,
                 quote_payloads,
@@ -11827,13 +11863,14 @@ class AvanzaTradingTui(App):
                 orders,
                 elapsed,
                 active_session_id,
-            )
+            ):
+                self._finish_live_refresh_cycle()
         except Exception as exc:
             if is_unauthorized_http_error(exc):
-                self.call_from_thread(self.mark_tenant_session_auth_expired, active_session_id, exc)
+                self.safe_call_from_thread(self.mark_tenant_session_auth_expired, active_session_id, exc)
             else:
-                self.call_from_thread(self.write_log, f"[red]Live refresh failed:[/red] {exc}")
-            self.call_from_thread(self._finish_live_refresh_cycle)
+                self.safe_call_from_thread(self.write_log, f"[red]Live refresh failed:[/red] {exc}")
+            self._finish_live_refresh_cycle()
 
     def _apply_live_refresh_payload(
         self,
@@ -11866,10 +11903,12 @@ class AvanzaTradingTui(App):
             had_pending = self.live_refresh_pending
             self.live_refresh_inflight = False
             self.live_refresh_pending = False
-        if had_pending:
+        if had_pending and not self.shutdown_event.is_set():
             self.refresh_selected_account_live()
 
     def refresh_selected_account_live(self) -> None:
+        if self.shutdown_event.is_set():
+            return
         if not self.avanza or not self.selected_account_id:
             return
         active_session_id = str(self.active_session_id or "").strip()

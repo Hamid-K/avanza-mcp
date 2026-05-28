@@ -226,9 +226,8 @@ For multi-session setups:
 - use `avanza_sessions` to inspect loaded tenant sessions,
 - use `avanza_select_session` to switch active context,
 - account/session-context `avanza_*` tools accept optional `tenant_session_id` for explicit tenant routing.
-- for non-paper tools, `session_id` is kept as a legacy alias for tenant routing.
 - or pass `account_id` and the bridge auto-scopes to the session owning that account.
-- paper-ledger tools use `session_id` for paper ledger grouping; use `tenant_session_id` there only when explicit tenant routing is required.
+- paper-ledger tools use `session_id` for paper ledger grouping; use `tenant_session_id` when explicit tenant routing is required.
 
 ### Available MCP Tools
 
@@ -289,11 +288,15 @@ For multi-session setups:
 | `avanza_stoploss_set` | Dry-run or place a stop-loss order. |
 | `avanza_order_set` | Dry-run or place a regular buy/sell order. |
 | `avanza_order_edit` | Dry-run or update an existing open order (price/volume/valid_until). |
-| `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order (alias of avanza_order_edit). |
+| `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order. |
 | `avanza_order_delete` | Dry-run or delete a regular open order. |
-| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order (alias of avanza_order_delete). |
+| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order. |
 | `avanza_stoploss_delete` | Dry-run or delete a stop-loss order. |
 | `avanza_stoploss_edit` | Dry-run or edit an existing stop-loss (delete old + place new). |
+
+Canonical naming note:
+- use `avanza_open_orders`
+- use `avanza_stoplosses`
 
 ### TradingView/Zacks scrape mode notes
 
@@ -324,11 +327,11 @@ For multi-session setups:
 Use `avanza_transactions` to retrieve executed order history (BUY/SELL by default).
 
 - Most recent 15 rows:
-  - `{"maxElements": 15}`
+  - `{"max_elements": 15}`
 - Include dividends and interest:
-  - `{"types": ["BUY", "SELL", "DIVIDEND", "INTEREST"], "maxElements": 200}`
+  - `{"types": ["BUY", "SELL", "DIVIDEND", "INTEREST"], "max_elements": 200}`
 - Full export window:
-  - `{"fromDate": "2026-01-01", "toDate": "2026-12-31", "allTransactions": true, "maxElements": 5000}`
+  - `{"transactions_from": "2026-01-01", "transactions_to": "2026-12-31", "executed_only": false, "max_elements": 5000}`
 
 `avanza_transactions` is read-only and works while MCP remains read-only.
 

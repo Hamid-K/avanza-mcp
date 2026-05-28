@@ -489,6 +489,17 @@ def test_tui_on_unmount_stops_timers(monkeypatch):
     assert app.order_search_timer is None
     assert app.live_refresh_timer is None
     assert app.clock_timer is None
+    assert app.shutdown_event.is_set() is True
+
+
+def test_tui_resize_flags_initialized():
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    assert app.is_resizing_side_pane is False
+    assert app.is_resizing_ticket_pane is False
+    assert app.resize_start_active_trades_width == app.active_trades_width
+    assert app.resize_start_ticket_pane_width == app.ticket_pane_width
 
 
 def test_tui_write_logs_tolerate_missing_widgets(monkeypatch):
@@ -3587,6 +3598,71 @@ def test_live_refresh_runs_in_background_thread():
             assert app.live_refresh_inflight is False
 
     asyncio.run(run_app())
+
+
+def test_live_refresh_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": []}
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.live_refresh_inflight = True
+    monkeypatch.setattr(app, "require_connection", lambda: app.avanza)
+    monkeypatch.setattr(app, "prefetch_quote_and_status_by_order_book", lambda *_args, **_kwargs: ({}, {}))
+    monkeypatch.setattr(
+        app,
+        "call_from_thread",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("app is shutting down")),
+    )
+
+    app._refresh_selected_account_live_worker()
+
+    assert app.live_refresh_inflight is False
+
+
+def test_update_check_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.update_check_inflight = True
+    monkeypatch.setattr("avanza_cli.github_latest_version_info", lambda _repo: {"version": "v9.9.9"})
+    monkeypatch.setattr(
+        app,
+        "call_from_thread",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("app is shutting down")),
+    )
+
+    app._update_check_worker()
+
+    assert app.update_check_inflight is False
+
+
+def test_tv_lists_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.tv_lists_refresh_inflight = True
+    monkeypatch.setattr("avanza_cli.tradingview_custom_watchlists_from_profile", lambda **_kwargs: {"lists": [], "items": []})
+    monkeypatch.setattr(
+        app,
+        "call_from_thread",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("app is shutting down")),
+    )
+
+    app._refresh_tv_lists_worker(None, None)
+
+    assert app.tv_lists_refresh_inflight is False
+    assert app.tv_lists_refresh_pending_value is None
 
 
 def test_logout_selected_session_switches_to_remaining_tenant():

@@ -25,6 +25,10 @@ avanza-cli/backups/
 # Keep the folder visible in git, but keep all private contents local-only.
 INSTRUCTIONS/*
 !INSTRUCTIONS/.gitkeep
+!INSTRUCTIONS/INSTRUCTIONS.template.md
+!INSTRUCTIONS/WARMUP.template.md
+!INSTRUCTIONS/MEMORY.template.md
+!INSTRUCTIONS/AUTOMATION_HOURLY_MONITORING.template.md
 /INSTRUCTIONS.md
 /MEMORY.md
 /WARMUP.md

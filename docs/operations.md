@@ -186,7 +186,6 @@ Multi-session MCP behavior:
 - `avanza_sessions` lists loaded tenant sessions.
 - `avanza_select_session` switches active tenant context.
 - Account/session-context `avanza_*` tools accept optional `tenant_session_id` for explicit tenant routing.
-- Non-paper tools also accept `session_id` as a legacy alias for tenant routing.
 - `account_id` routing still works and auto-routes to the matching tenant session.
 - Paper-ledger tools reserve `session_id` for paper strategy sessions; use `tenant_session_id` there for explicit tenant scoping.
 
@@ -249,30 +248,34 @@ Multi-session MCP behavior:
 | `avanza_stoploss_set` | Dry-run or place a stop-loss order. |
 | `avanza_order_set` | Dry-run or place a regular buy/sell order. |
 | `avanza_order_edit` | Dry-run or update an existing open order (price/volume/valid_until). |
-| `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order (alias of avanza_order_edit). |
+| `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order. |
 | `avanza_order_delete` | Dry-run or delete a regular open order. |
-| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order (alias of avanza_order_delete). |
+| `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order. |
 | `avanza_stoploss_delete` | Dry-run or delete a stop-loss order. |
 | `avanza_stoploss_edit` | Dry-run or edit an existing stop-loss (delete old + place new). |
+
+Canonical naming note:
+- use `avanza_open_orders`
+- use `avanza_stoplosses`
 
 ### MCP transaction history examples
 
 Most recent 15 executed rows:
 
 ```json
-{"tool":"avanza_transactions","arguments":{"maxElements":15}}
+{"tool":"avanza_transactions","arguments":{"max_elements":15}}
 ```
 
 Include additional transaction types:
 
 ```json
-{"tool":"avanza_transactions","arguments":{"types":["BUY","SELL","DIVIDEND","INTEREST"],"maxElements":200}}
+{"tool":"avanza_transactions","arguments":{"types":["BUY","SELL","DIVIDEND","INTEREST"],"max_elements":200}}
 ```
 
 Longer period export:
 
 ```json
-{"tool":"avanza_transactions","arguments":{"fromDate":"2026-01-01","toDate":"2026-12-31","allTransactions":true,"maxElements":5000}}
+{"tool":"avanza_transactions","arguments":{"transactions_from":"2026-01-01","transactions_to":"2026-12-31","executed_only":false,"max_elements":5000}}
 ```
 
 `avanza_transactions` is read-only and can run with MCP `read_only=true`.
