@@ -7818,6 +7818,7 @@ class AvanzaTradingTui(App):
         self.latest_tv_list_items: list[dict[str, Any]] = []
         self.tv_list_option_refs: dict[str, dict[str, str]] = {}
         self.session_select_updating = False
+        self.account_select_updating = False
         self.tv_lists_loaded_value = ""
         self.tv_lists_select_updating = False
         self.tv_lists_refresh_thread: threading.Thread | None = None
@@ -8922,17 +8923,21 @@ class AvanzaTradingTui(App):
         self.accounts = account_rows_from_overview(overview)
         account_options = [self.session_account_option(account) for account in self.accounts]
         account_select = self.query_one("#account-select", Select)
-        account_select.set_options(account_options)
-        if announce:
-            self.write_log(f"Loaded {len(self.accounts)} account(s).")
-        if self.accounts:
-            selected = next((a for a in self.accounts if str(a.get("id", "")) == self.selected_account_id), None)
-            if selected is None:
-                selected = default_account(self.accounts)
-            if selected is not None:
-                self.set_selected_account(selected)
-                if account_select.value != self.selected_account_id:
-                    account_select.value = self.selected_account_id
+        self.account_select_updating = True
+        try:
+            account_select.set_options(account_options)
+            if announce:
+                self.write_log(f"Loaded {len(self.accounts)} account(s).")
+            if self.accounts:
+                selected = next((a for a in self.accounts if str(a.get("id", "")) == self.selected_account_id), None)
+                if selected is None:
+                    selected = default_account(self.accounts)
+                if selected is not None:
+                    self.set_selected_account(selected)
+                    if account_select.value != self.selected_account_id:
+                        account_select.value = self.selected_account_id
+        finally:
+            self.account_select_updating = False
         self.sync_active_state_to_tenant()
         self.refresh_session_select_options()
         self.apply_active_session_header()
@@ -11510,6 +11515,20 @@ class AvanzaTradingTui(App):
         self.sync_active_state_to_tenant()
         self.refresh_session_select_options()
 
+    def restore_account_select_to_current(self) -> None:
+        try:
+            account_select = self.query_one("#account-select", Select)
+        except Exception:
+            return
+        if not self.selected_account_id:
+            return
+        self.account_select_updating = True
+        try:
+            if account_select.value != self.selected_account_id:
+                account_select.value = self.selected_account_id
+        finally:
+            self.account_select_updating = False
+
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
         selected_account_id = self.require_selected_account_id()
         order_book_id = self.input_value("instrument-select")
@@ -12138,8 +12157,16 @@ class AvanzaTradingTui(App):
             except Exception as exc:
                 self.write_log(f"[red]Session switch failed:[/red] {exc}")
         elif event.select.id == "account-select" and not self.is_blank_select_value(event.value):
+            if self.account_select_updating:
+                return
             next_account_id = str(event.value)
             if next_account_id == self.selected_account_id:
+                return
+            if self.account_by_id(next_account_id) is None:
+                self.debug_log(
+                    f"Ignored stale account-select value {next_account_id!r} for session {self.active_session_id!r}."
+                )
+                self.restore_account_select_to_current()
                 return
             try:
                 self.select_account(next_account_id)

@@ -10,6 +10,7 @@ from datetime import date, timedelta
 
 TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.error import HTTPError
 
@@ -2150,6 +2151,55 @@ def test_mcp_sessions_list_and_select_session_without_mounted_tui():
     switched = app.execute_mcp_tool("avanza_select_session", {"session_id": second.session_id})
     assert switched["active_session_id"] == second.session_id
     assert app.active_session_id == second.session_id
+
+
+def test_tui_ignores_stale_account_select_event_after_session_switch():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    overview_one = {
+        "accounts": [
+            {
+                "id": "5227886",
+                "name": {"userDefinedName": "Previous"},
+                "totalValue": {"value": 1000, "unit": "SEK"},
+            }
+        ]
+    }
+    overview_two = {
+        "accounts": [
+            {
+                "id": "7616265",
+                "name": {"userDefinedName": "Active"},
+                "totalValue": {"value": 2000, "unit": "SEK"},
+            }
+        ]
+    }
+    portfolio = {"withOrderbook": [], "withoutOrderbook": []}
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test():
+            previous = app.register_tenant_session(FakeAvanza(), overview_one, portfolio, [], [], label="Previous")
+            active = app.register_tenant_session(FakeAvanza(), overview_two, portfolio, [], [], label="Active")
+            app.load_active_state_from_tenant(active)
+            app.query_one("#login-screen").display = False
+            app.query_one("#workspace").display = True
+            app.apply_accounts_overview({"accounts": app.accounts}, announce=False)
+
+            logs: list[str] = []
+            app.write_log = lambda message: logs.append(str(message))  # type: ignore[method-assign]
+            stale_event = SimpleNamespace(select=SimpleNamespace(id="account-select"), value=previous.selected_account_id)
+
+            app.on_select_changed(stale_event)
+
+            assert app.selected_account_id == active.selected_account_id
+            assert app.query_one("#account-select", Select).value == active.selected_account_id
+            assert not any("Account switch failed" in message for message in logs)
+
+    asyncio.run(run_app())
 
 
 def test_mcp_unauthorized_marks_scoped_session_expired():
