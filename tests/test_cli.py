@@ -7,6 +7,8 @@ import sys
 import time
 import tomllib
 from datetime import date, timedelta
+
+TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -14,7 +16,7 @@ from urllib.error import HTTPError
 import pytest
 from textual import events
 from textual.geometry import Size
-from textual.widgets import Button, DataTable, Input, Select
+from textual.widgets import Button, DataTable, Input, Select, Static
 
 from avanza.constants import OrderType, StopLossPriceType, TimePeriod
 from rich.text import Text
@@ -52,7 +54,7 @@ def isolate_runtime_files(monkeypatch, tmp_path):
 
 
 def test_parse_date_accepts_iso_date():
-    assert parse_date("2026-05-28").isoformat() == "2026-05-28"
+    assert parse_date(TEST_VALID_UNTIL).isoformat() == TEST_VALID_UNTIL
 
 
 def test_parse_date_rejects_non_iso_date():
@@ -837,7 +839,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "order_book_id": "ob-1",
                     "trigger_value": 5,
                     "trigger_value_type": "%",
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "order_price": 1,
                     "order_price_type": "%",
                     "volume": 10,
@@ -860,7 +862,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "instrument": "Example AB",
                     "trigger_value": 5,
                     "trigger_value_type": "%",
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "order_price": 1,
                     "order_price_type": "%",
                     "volume": 10,
@@ -874,13 +876,13 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert len(paper_orders["orders"]) == 1
             cancelled = app.execute_mcp_tool("avanza_paper_cancel", {"paper_order_id": paper_order["order"]["id"]})
             assert cancelled["order"]["status"] == "CANCELLED"
-            app.query_one("#valid-until").value = "2026-05-28"
+            app.query_one("#valid-until").value = TEST_VALID_UNTIL
             app.query_one("#trigger-value").value = "5"
             app.query_one("#order-price").value = "1"
             app.query_one("#volume").value = "10"
             app.handle_place_live()
             assert len(app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})["orders"]) == 1
-            app.query_one("#regular-order-valid-until").value = "2026-05-28"
+            app.query_one("#regular-order-valid-until").value = TEST_VALID_UNTIL
             app.query_one("#regular-order-price").value = "100"
             app.query_one("#regular-order-volume").value = "3"
             app.query_one("#order-search").value = "new"
@@ -898,7 +900,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "instrument": "Example AB",
                     "order_type": "buy",
                     "price": 99,
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "volume": 2,
                     "condition": "normal",
                 },
@@ -926,7 +928,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                         "account_id": "acc-2",
                         "order_id": "ord-1",
                         "price": 101,
-                        "valid_until": "2026-05-28",
+                        "valid_until": TEST_VALID_UNTIL,
                         "volume": 2,
                         "confirm": True,
                     },
@@ -945,7 +947,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "account_id": "acc-2",
                     "order_id": "ord-1",
                     "price": 101,
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "volume": 2,
                     "confirm": True,
                 },
@@ -961,7 +963,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "trigger_type": "follow-upwards",
                     "trigger_value": 5,
                     "trigger_value_type": "%",
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "order_type": "sell",
                     "order_price": 1,
                     "order_price_type": "%",
@@ -976,7 +978,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "account_id": "acc-2",
                     "order_id": "ord-1",
                     "price": 101,
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "volume": 2,
                 },
             )
@@ -995,7 +997,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "trigger_type": "follow-upwards",
                     "trigger_value": 5,
                     "trigger_value_type": "%",
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "order_type": "sell",
                     "order_price": 1,
                     "order_price_type": "%",
@@ -1014,7 +1016,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "trigger_type": "follow-upwards",
                     "trigger_value": 5,
                     "trigger_value_type": "%",
-                    "valid_until": "2026-05-28",
+                    "valid_until": TEST_VALID_UNTIL,
                     "order_type": "sell",
                     "order_price": 1,
                     "order_price_type": "%",
@@ -1241,7 +1243,7 @@ def test_open_order_items_infers_side_from_buy_sell_buckets():
                 "orderbook": {"id": "111", "name": "Alpha"},
                 "volume": 3,
                 "price": 99.5,
-                "validUntil": "2026-05-28",
+                "validUntil": TEST_VALID_UNTIL,
                 "account": {"id": "acc-1", "name": "Main"},
             }
         ],
@@ -1252,7 +1254,7 @@ def test_open_order_items_infers_side_from_buy_sell_buckets():
                 "orderbook": {"id": "222", "name": "Beta"},
                 "volume": 2,
                 "price": 120.0,
-                "validUntil": "2026-05-28",
+                "validUntil": TEST_VALID_UNTIL,
                 "account": {"id": "acc-1", "name": "Main"},
             }
         ],
@@ -1277,7 +1279,7 @@ def test_mcp_open_orders_include_ids_side_and_raw_shapes():
                         "orderbook": {"id": "111", "name": "Alpha"},
                         "volume": 3,
                         "price": 99.5,
-                        "validUntil": "2026-05-28",
+                        "validUntil": TEST_VALID_UNTIL,
                         "account": {"id": "acc-1", "name": "Main"},
                     }
                 ],
@@ -2143,10 +2145,93 @@ def test_mcp_sessions_list_and_select_session_without_mounted_tui():
     assert listed["sessions_loaded"] == 2
     assert listed["active_session_id"] == first.session_id
     assert {row["session_id"] for row in listed["sessions"]} == {first.session_id, second.session_id}
+    assert all("auth_valid" in row and "auth_error" in row for row in listed["sessions"])
 
     switched = app.execute_mcp_tool("avanza_select_session", {"session_id": second.session_id})
     assert switched["active_session_id"] == second.session_id
     assert app.active_session_id == second.session_id
+
+
+def test_mcp_unauthorized_marks_scoped_session_expired():
+    from avanza_cli import AvanzaTradingTui
+
+    class UnauthorizedAvanza:
+        def get_overview(self):
+            raise HTTPError(
+                "https://www.avanza.se/_api/account-overview/overview/categorizedAccounts",
+                401,
+                "Unauthorized",
+                hdrs=None,
+                fp=io.BytesIO(b""),
+            )
+
+    app = AvanzaTradingTui()
+    context = app.register_tenant_session(
+        UnauthorizedAvanza(),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Expired"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Expired Session",
+    )
+    app.load_active_state_from_tenant(context)
+    assert context.auth_valid is True
+
+    with pytest.raises(HTTPError):
+        app.execute_mcp_tool("avanza_accounts", {"tenant_session_id": context.session_id})
+
+    assert context.auth_valid is False
+    assert context.session_id in app.live_refresh_auth_blocked_sessions
+    assert "unauthorized" in context.auth_error.lower()
+
+    status = app.execute_mcp_tool("avanza_status", {})
+    session_rows = {row["session_id"]: row for row in status["sessions"]}
+    assert session_rows[context.session_id]["auth_valid"] is False
+    assert "unauthorized" in session_rows[context.session_id]["auth_error"].lower()
+
+
+def test_background_session_heartbeat_marks_inactive_session_expired(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class HealthyAvanza:
+        def get_overview(self):
+            return {"accounts": [{"id": "acc-1", "name": {"defaultName": "Healthy"}, "type": "ISK", "status": "ACTIVE"}]}
+
+    class UnauthorizedAvanza:
+        def get_overview(self):
+            raise HTTPError(
+                "https://www.avanza.se/_api/account-overview/overview/categorizedAccounts",
+                401,
+                "Unauthorized",
+                hdrs=None,
+                fp=io.BytesIO(b""),
+            )
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        HealthyAvanza(),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Healthy"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Healthy",
+    )
+    second = app.register_tenant_session(
+        UnauthorizedAvanza(),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Expired"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Expired",
+    )
+    app.load_active_state_from_tenant(first)
+
+    monkeypatch.setattr(app, "safe_call_from_thread", lambda callback, *args: (callback(*args), True)[1])
+    app._background_session_heartbeat_worker()
+
+    assert first.auth_valid is True
+    assert second.auth_valid is False
+    assert second.session_id in app.live_refresh_auth_blocked_sessions
 
 
 def test_mcp_account_scoped_portfolio_uses_matching_tenant_session():
@@ -2226,7 +2311,7 @@ def test_mcp_paper_ledger_flow_with_risk_state():
             "instrument": "NVIDIA",
             "order_type": "buy",
             "price": 100.0,
-            "valid_until": "2026-05-28",
+            "valid_until": TEST_VALID_UNTIL,
             "volume": 2,
             "condition": "normal",
             "session_id": "scalp-1",
@@ -2817,6 +2902,58 @@ def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monk
     assert snapshot["technicals"]["overall_label"] in {"Buy", "Strong Buy"}
     assert any("america/scan" in url for url, _ in calls)
     assert any("crypto/scan" in url for url, _ in calls)
+
+
+def test_tradingview_symbol_snapshot_crypto_recovers_from_unknown_field_400(monkeypatch):
+    from avanza_cli import tradingview_symbol_snapshot
+
+    def fake_fetch_json(url, **kwargs):
+        payload = kwargs.get("payload", {})
+        columns = list(payload.get("columns", []))
+        ticker = payload.get("symbols", {}).get("tickers", [""])[0]
+        if "scanner.tradingview.com/america/scan" in url and ticker == "NASDAQ:ETHUSD":
+            raise HTTPError(url, 400, "Bad Request", hdrs=None, fp=io.BytesIO(b'{"error":"bad request"}'))
+        if "scanner.tradingview.com/crypto/scan" in url:
+            if "industry" in columns:
+                raise HTTPError(
+                    url,
+                    400,
+                    "Bad Request",
+                    hdrs=None,
+                    fp=io.BytesIO(b'{"totalCount":0,"error":"Unknown field \\"industry\\"","data":null}'),
+                )
+            if ticker not in {"BITSTAMP:ETHUSD", "COINBASE:ETHUSD", "KRAKEN:ETHUSD", "BINANCE:ETHUSDT"}:
+                return {"totalCount": 0, "data": []}
+            values = []
+            for column in columns:
+                if column == "name":
+                    values.append("Ethereum / U.S. Dollar")
+                elif column == "description":
+                    values.append("ETHUSD")
+                elif column == "exchange":
+                    values.append("BITSTAMP")
+                elif column == "close":
+                    values.append(1983.43)
+                elif column == "Recommend.All":
+                    values.append(0.36)
+                elif column == "Recommend.MA":
+                    values.append(0.22)
+                elif column == "Recommend.Other":
+                    values.append(0.11)
+                else:
+                    values.append(None)
+            return {"totalCount": 1, "data": [{"s": "BITSTAMP:ETHUSD", "d": values}]}
+        return {"totalCount": 0, "data": []}
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    snapshot = tradingview_symbol_snapshot("ETHUSD", exchange="NASDAQ", market="america")
+
+    assert snapshot["fallback_used"] is True
+    assert snapshot["symbol"].endswith(":ETHUSD")
+    assert snapshot["market"] == "crypto"
+    assert "industry" in snapshot["unsupported_fields"]
+    assert snapshot["analytics"]["close"] == 1983.43
+    assert snapshot["technicals"]["overall_label"] in {"Buy", "Strong Buy"}
 
 
 def test_tradingview_symbol_attempts_for_qualified_symbols_include_market_and_exchange_fallbacks():
@@ -3487,7 +3624,7 @@ def test_tui_order_ticket_validates_required_numeric_fields():
             app.selected_account_id = "acc-1"
             app.query_one("#order-instrument-select", Select).set_options([("Example AB", "ob-1")])
             app.query_one("#order-instrument-select", Select).value = "ob-1"
-            app.query_one("#regular-order-valid-until").value = "2026-05-28"
+            app.query_one("#regular-order-valid-until").value = TEST_VALID_UNTIL
             app.query_one("#regular-order-volume").value = "3"
 
             with pytest.raises(ValueError, match="Limit price is required"):
@@ -3759,6 +3896,47 @@ def test_logout_selected_session_logs_out_to_login_screen_when_last_session_remo
     asyncio.run(run_app())
 
 
+def test_tui_refresh_selected_session_opens_reauth_modal():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    overview = {
+        "accounts": [
+            {
+                "id": "acc-1",
+                "name": {"defaultName": "Acc 1", "userDefinedName": "Acc 1"},
+                "type": "ISK",
+                "totalValue": {"value": 1000, "unit": "SEK"},
+                "buyingPower": {"value": 500, "unit": "SEK"},
+                "status": "ACTIVE",
+            }
+        ]
+    }
+    portfolio = {"withOrderbook": [], "withoutOrderbook": []}
+
+    async def run_app() -> None:
+        app = AvanzaTradingTui()
+        async with app.run_test() as pilot:
+            session = app.register_tenant_session(FakeAvanza(), overview, portfolio, [], [], label="Session One")
+            app.load_active_state_from_tenant(session)
+            app.query_one("#login-screen").display = False
+            app.query_one("#workspace").display = True
+            app.apply_accounts_overview(overview, announce=False)
+            app.refresh_session_select_options()
+            app.query_one("#session-select", Select).value = session.session_id
+            app.handle_refresh_selected_session()
+            await pilot.pause()
+
+            assert app.query_one("#extra-login-modal").display is True
+            assert app.login_target_session_id == session.session_id
+            assert "Refresh selected session login" in str(app.query_one("#extra-login-title", Static).renderable)
+            assert app.query_one("#extra-session-label", Input).value == "Session One"
+
+    asyncio.run(run_app())
+
+
 def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
@@ -3910,7 +4088,7 @@ def test_stoploss_set_dry_run_does_not_require_login(capsys):
             "--trigger-value-type",
             "%",
             "--valid-until",
-            "2026-05-28",
+            TEST_VALID_UNTIL,
             "--order-type",
             "sell",
             "--order-price",

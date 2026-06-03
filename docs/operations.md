@@ -3,6 +3,12 @@
 All commands below may be run with `uv run` when using the `uv` workflow.
 Example: `uv run python avanza_cli.py tui`.
 
+## Agent Boundary
+
+- This Codex **developer agent** is code-focused.
+- If a request is about live/paper trade execution, order placement, or stop-loss mutation, the developer agent must refuse and redirect to the dedicated **Trader agent**.
+- Use this agent for implementation, debugging, testing, and documentation updates only.
+
 ## Trading Assistant Context
 
 For Codex trading-assistant sessions, read the local-only context files before analysis:

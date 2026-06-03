@@ -86,6 +86,7 @@ LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 QUOTE_CACHE_SECONDS = 8.0
 MCP_HEALTH_CHECK_SECONDS = 5.0
+BACKGROUND_SESSION_HEARTBEAT_SECONDS = float(os.getenv("AVANZA_BACKGROUND_SESSION_HEARTBEAT_SECONDS", "30"))
 ORDERBOOK_METADATA_REFRESH_SECONDS = 1800.0
 AUTH_ERROR_LOG_THROTTLE_SECONDS = float(os.getenv("AVANZA_AUTH_ERROR_LOG_THROTTLE_SECONDS", "120"))
 DEFAULT_COURTAGE_RATE_SE = float(os.getenv("AVANZA_DEFAULT_COURTAGE_RATE_SE", "0.0025"))
@@ -4288,6 +4289,10 @@ def should_retry_tv_scan_error(exc: Exception) -> bool:
         return True
     if "http error 405" in message:
         return True
+    if "tradingview scanner error" in message and "bad request" in message:
+        return True
+    if "scanner error: bad request" in message:
+        return True
     if "returned no rows" in message:
         return True
     return False
@@ -4361,7 +4366,21 @@ def tradingview_scan(
         payload["sort"] = {"sortBy": sort_by, "sortOrder": "desc" if descending else "asc"}
     url = TRADINGVIEW_SCANNER_URL_TEMPLATE.format(market=market)
     headers = append_cookie_header({"Content-Type": "application/json"}, cookie)
-    data = external_fetch_json(url, method="POST", headers=headers, payload=payload)
+    try:
+        data = external_fetch_json(url, method="POST", headers=headers, payload=payload)
+    except HTTPError as exc:
+        parsed_payload: dict[str, Any] | None = None
+        try:
+            parsed_text = exc.read().decode("utf-8", errors="replace")
+            parsed = json.loads(parsed_text) if parsed_text else None
+            if isinstance(parsed, dict):
+                parsed_payload = parsed
+        except Exception:
+            parsed_payload = None
+        if exc.code in {400, 404, 405} and isinstance(parsed_payload, dict):
+            data = parsed_payload
+        else:
+            raise
     error_text = str(data.get("error", "") or "").strip() if isinstance(data, dict) else ""
     rows_raw = data.get("data", [])
     if not isinstance(rows_raw, list):
@@ -4613,11 +4632,10 @@ def tradingview_symbol_snapshot(
     errors: list[str] = []
     for attempt_index, (attempt_symbol, attempt_market) in enumerate(attempts):
         try:
-            scan = tradingview_scan(
+            scan, unsupported_fields = tradingview_scan_with_field_fallback(
                 symbols=[attempt_symbol],
-                columns=TRADINGVIEW_ANALYTICS_FIELDS,
+                fields=TRADINGVIEW_ANALYTICS_FIELDS,
                 market=attempt_market,
-                limit=1,
                 cookie=cookie,
             )
             rows = scan["rows"]
@@ -4643,6 +4661,7 @@ def tradingview_symbol_snapshot(
                     "oscillator_score": oscillator_score,
                     "oscillator_label": recommendation_label(oscillator_score),
                 },
+                "unsupported_fields": unsupported_fields,
                 "source": "tradingview-scanner",
                 "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "unsafe_for_execution": False,
@@ -7143,6 +7162,16 @@ class AvanzaTradingTui(App):
         min-width: 16;
     }
 
+    #refresh-selected-session {
+        min-width: 19;
+    }
+
+    #session-auth-badge {
+        min-width: 20;
+        content-align: left middle;
+        text-wrap: nowrap;
+    }
+
     #metric-grid {
         height: 4;
         margin-top: 1;
@@ -7732,6 +7761,7 @@ class AvanzaTradingTui(App):
         self.accounts: list[dict[str, Any]] = []
         self.selected_account_id: str | None = None
         self.live_refresh_timer = None
+        self.background_session_heartbeat_timer = None
         self.clock_timer = None
         self.mcp_health_timer = None
         self.order_search_timer = None
@@ -7767,6 +7797,9 @@ class AvanzaTradingTui(App):
         self.live_refresh_inflight = False
         self.live_refresh_pending = False
         self.live_refresh_lock = threading.Lock()
+        self.background_session_heartbeat_thread: threading.Thread | None = None
+        self.background_session_heartbeat_inflight = False
+        self.background_session_heartbeat_lock = threading.Lock()
         self.live_refresh_auth_blocked_sessions: set[str] = set()
         self.live_refresh_auth_last_notice_at: dict[str, float] = {}
         self.mcp_server: AvanzaMcpHttpServer | None = None
@@ -7902,6 +7935,8 @@ class AvanzaTradingTui(App):
                         yield Static(f"Live {LIVE_REFRESH_SECONDS:g}s", id="live-status")
                         yield Button("Refresh", id="refresh-all", variant="primary")
                         yield Button("Logout Session", id="logout-selected-session", variant="error")
+                        yield Button("Refresh Session Auth", id="refresh-selected-session", variant="default")
+                        yield Static("Session auth: -", id="session-auth-badge")
                         yield Button("Reload TUI", id="reload-tui", variant="default")
                         yield Button("Order", id="open-order-modal", variant="primary")
                         yield Button("Stop-Loss", id="open-stoploss-modal", variant="warning")
@@ -8194,6 +8229,7 @@ class AvanzaTradingTui(App):
         self.update_clock_status()
         self.start_clock()
         self.start_update_checker()
+        self.start_background_session_heartbeat()
         if self.mcp_health_timer is None:
             self.mcp_health_timer = self.set_interval(MCP_HEALTH_CHECK_SECONDS, self.ensure_mcp_bridge_health, pause=False)
         if self.tv_lists_refresh_timer is None:
@@ -8542,6 +8578,9 @@ class AvanzaTradingTui(App):
         if self.login_progress_timer is not None:
             self.login_progress_timer.stop()
             self.login_progress_timer = None
+        self.login_target_mode = "initial"
+        self.login_target_session_id = None
+        self.login_target_session_label = None
         self.login_stage_message = ""
         self.login_progress_messages = ()
         try:
@@ -8634,6 +8673,8 @@ class AvanzaTradingTui(App):
         styled = Text()
         styled.append("● ", style=context.color)
         styled.append(label)
+        if not context.auth_valid:
+            styled.append(" [EXPIRED]", style="bold red")
         return styled
 
     def refresh_session_select_options(self) -> None:
@@ -8650,6 +8691,7 @@ class AvanzaTradingTui(App):
                     session_select.value = self.active_session_id
         finally:
             self.session_select_updating = False
+        self.update_session_auth_badge()
 
     def apply_active_session_header(self) -> None:
         title = Text(f"{APP_NAME} v{APP_VERSION}")
@@ -8688,6 +8730,24 @@ class AvanzaTradingTui(App):
                 return token
         token = str(self.active_session_id or "").strip()
         return token or None
+
+    def update_session_auth_badge(self) -> None:
+        try:
+            badge = self.query_one("#session-auth-badge", Static)
+        except Exception:
+            return
+        session_id = self.selected_session_id() or self.active_session_id
+        if not session_id:
+            badge.update("Session auth: -")
+            return
+        context = self.tenant_sessions.get(str(session_id).strip())
+        if context is None:
+            badge.update("Session auth: -")
+            return
+        if context.auth_valid:
+            badge.update("[green]Session auth: OK[/green]")
+            return
+        badge.update("[red]Session auth: EXPIRED[/red]")
 
     def session_account_option(self, account: dict[str, Any]) -> tuple[Text, str]:
         context = self.active_tenant_session()
@@ -9019,17 +9079,39 @@ class AvanzaTradingTui(App):
         stoplosses: Any,
         orders: Any,
         target_mode: str = "initial",
+        target_session_id: str | None = None,
         session_label: str | None = None,
     ) -> None:
         is_extra = str(target_mode or "").strip().lower() == "extra"
-        context = self.register_tenant_session(
-            avanza,
-            overview,
-            portfolio,
-            stoplosses,
-            orders,
-            label=session_label,
-        )
+        refresh_token = str(target_session_id or "").strip()
+        is_refresh = is_extra and bool(refresh_token) and refresh_token in self.tenant_sessions
+        if is_refresh:
+            context = self.tenant_sessions[refresh_token]
+            accounts = account_rows_from_overview(overview)
+            context.avanza = avanza
+            if session_label:
+                context.label = str(session_label)
+            context.accounts = accounts
+            selected = str(context.selected_account_id or "").strip()
+            if not selected or not any(str(item.get("id", "")) == selected for item in accounts):
+                default = default_account(accounts)
+                context.selected_account_id = str(default.get("id", "")) if default else None
+            context.latest_portfolio_data = portfolio if isinstance(portfolio, dict) else None
+            context.latest_stoploss_items = [item for item in stoplosses if isinstance(item, dict)] if isinstance(stoplosses, list) else []
+            context.latest_open_order_items = [item for item in open_order_items(orders) if isinstance(item, dict)]
+            context.auth_valid = True
+            context.auth_error = ""
+            self.live_refresh_auth_blocked_sessions.discard(context.session_id)
+            self.live_refresh_auth_last_notice_at.pop(context.session_id, None)
+        else:
+            context = self.register_tenant_session(
+                avanza,
+                overview,
+                portfolio,
+                stoplosses,
+                orders,
+                label=session_label,
+            )
         self.load_active_state_from_tenant(context)
         self.position_row_cache = {}
         self.query_one("#login-screen").display = False
@@ -9041,7 +9123,9 @@ class AvanzaTradingTui(App):
         self.apply_active_session_header()
         self.write_log(
             (
-                f"[green]Extra session logged in:[/green] {context.label} ({context.session_id})."
+                f"[green]Session re-authenticated:[/green] {context.label} ({context.session_id})."
+                if is_refresh
+                else f"[green]Extra session logged in:[/green] {context.label} ({context.session_id})."
                 if is_extra
                 else "[green]Logged in. Secret fields cleared.[/green]"
             )
@@ -9050,6 +9134,7 @@ class AvanzaTradingTui(App):
         self.apply_portfolio_data(portfolio, fetch_quotes=False)
         self.apply_stoploss_orders_data(stoplosses, orders)
         self.start_live_refresh()
+        self.update_session_auth_badge()
 
     def record_event(self, category: str, event: str, details: dict[str, Any] | None = None) -> None:
         record = {
@@ -9335,6 +9420,8 @@ class AvanzaTradingTui(App):
                     if context.selected_account_id
                     else None
                 ),
+                "auth_valid": bool(context.auth_valid),
+                "auth_error": str(context.auth_error or ""),
             }
             for context in self.tenant_sessions.values()
         ]
@@ -9389,6 +9476,8 @@ class AvanzaTradingTui(App):
                     "accounts_loaded": len(context.accounts),
                     "selected_account_id": context.selected_account_id,
                     "selected_account_name": account_display_name(active_account or {}) if active_account else None,
+                    "auth_valid": bool(context.auth_valid),
+                    "auth_error": str(context.auth_error or ""),
                 }
             )
         return {
@@ -9971,6 +10060,9 @@ class AvanzaTradingTui(App):
         if self.live_refresh_timer is not None:
             self.live_refresh_timer.stop()
             self.live_refresh_timer = None
+        if self.background_session_heartbeat_timer is not None:
+            self.background_session_heartbeat_timer.stop()
+            self.background_session_heartbeat_timer = None
         if self.clock_timer is not None:
             self.clock_timer.stop()
             self.clock_timer = None
@@ -9986,10 +10078,16 @@ class AvanzaTradingTui(App):
         if self.tv_lists_refresh_timer is not None:
             self.tv_lists_refresh_timer.stop()
             self.tv_lists_refresh_timer = None
-        for worker in (self.live_refresh_thread, self.tv_lists_refresh_thread, self.update_check_thread):
+        for worker in (
+            self.live_refresh_thread,
+            self.background_session_heartbeat_thread,
+            self.tv_lists_refresh_thread,
+            self.update_check_thread,
+        ):
             if worker is not None and worker.is_alive() and worker is not threading.current_thread():
                 worker.join(timeout=0.5)
         self.live_refresh_thread = None
+        self.background_session_heartbeat_thread = None
         self.tv_lists_refresh_thread = None
         self.update_check_thread = None
         self.stop_mcp_bridge(announce=False)
@@ -10056,7 +10154,12 @@ class AvanzaTradingTui(App):
         with self.temporary_tenant_scope(session_scope_id):
             if tool in {"avanza_status", "avanza_capabilities"}:
                 return self.mcp_status_payload()
-            return self._execute_mcp_tool_inner(tool, arguments)
+            try:
+                return self._execute_mcp_tool_inner(tool, arguments)
+            except Exception as exc:
+                if session_scope_id and is_unauthorized_http_error(exc):
+                    self.mark_tenant_session_auth_expired(session_scope_id, exc)
+                raise
 
     def _execute_mcp_tool_inner(self, tool: str, arguments: dict[str, Any]) -> Any:
         avanza = self.require_connection()
@@ -11796,6 +11899,8 @@ class AvanzaTradingTui(App):
         if not token:
             self.write_log(f"[red]Live refresh failed:[/red] {exc}")
             return
+        if token not in self.tenant_sessions:
+            return
         self.live_refresh_auth_blocked_sessions.add(token)
         context = self.tenant_sessions.get(token)
         if context is not None:
@@ -11819,16 +11924,22 @@ class AvanzaTradingTui(App):
                 "error": str(exc),
             },
         )
+        self.refresh_session_select_options()
+        self.update_session_auth_badge()
 
     def mark_tenant_session_auth_ok(self, session_id: str | None) -> None:
         token = str(session_id or "").strip()
         if not token:
+            return
+        if token not in self.tenant_sessions:
             return
         self.live_refresh_auth_blocked_sessions.discard(token)
         context = self.tenant_sessions.get(token)
         if context is not None:
             context.auth_valid = True
             context.auth_error = ""
+        self.refresh_session_select_options()
+        self.update_session_auth_badge()
 
     def _refresh_selected_account_live_worker(self) -> None:
         started = time.perf_counter()
@@ -11905,6 +12016,63 @@ class AvanzaTradingTui(App):
             self.live_refresh_pending = False
         if had_pending and not self.shutdown_event.is_set():
             self.refresh_selected_account_live()
+
+    def update_tenant_session_accounts(self, session_id: str, accounts: list[dict[str, Any]]) -> None:
+        token = str(session_id or "").strip()
+        context = self.tenant_sessions.get(token)
+        if context is None:
+            return
+        context.accounts = list(accounts)
+        selected = str(context.selected_account_id or "").strip()
+        if selected and any(str(item.get("id", "")) == selected for item in context.accounts):
+            return
+        default = default_account(context.accounts)
+        context.selected_account_id = str(default.get("id", "")) if default else None
+        self.refresh_session_select_options()
+        self.update_session_auth_badge()
+
+    def _background_session_heartbeat_worker(self) -> None:
+        active_session_id = str(self.active_session_id or "").strip()
+        session_snapshot = list(self.tenant_sessions.items())
+        for session_id, context in session_snapshot:
+            if session_id == active_session_id:
+                continue
+            try:
+                overview = context.avanza.get_overview()
+            except Exception as exc:
+                if is_unauthorized_http_error(exc):
+                    self.safe_call_from_thread(self.mark_tenant_session_auth_expired, session_id, exc)
+                continue
+            self.safe_call_from_thread(self.mark_tenant_session_auth_ok, session_id)
+            if isinstance(overview, dict):
+                accounts = account_rows_from_overview(overview)
+                self.safe_call_from_thread(self.update_tenant_session_accounts, session_id, accounts)
+        with self.background_session_heartbeat_lock:
+            self.background_session_heartbeat_inflight = False
+
+    def refresh_background_sessions(self) -> None:
+        if self.shutdown_event.is_set():
+            return
+        if len(self.tenant_sessions) < 2:
+            return
+        with self.background_session_heartbeat_lock:
+            if self.background_session_heartbeat_inflight:
+                return
+            self.background_session_heartbeat_inflight = True
+        self.background_session_heartbeat_thread = threading.Thread(
+            target=self._background_session_heartbeat_worker,
+            daemon=True,
+            name="avanza-background-session-heartbeat",
+        )
+        self.background_session_heartbeat_thread.start()
+
+    def start_background_session_heartbeat(self) -> None:
+        if self.background_session_heartbeat_timer is None:
+            self.background_session_heartbeat_timer = self.set_interval(
+                BACKGROUND_SESSION_HEARTBEAT_SECONDS,
+                self.refresh_background_sessions,
+                pause=False,
+            )
 
     def refresh_selected_account_live(self) -> None:
         if self.shutdown_event.is_set():
@@ -12038,6 +12206,8 @@ class AvanzaTradingTui(App):
                 self.open_extra_login_modal()
             elif button_id == "logout-selected-session":
                 self.logout_selected_session()
+            elif button_id == "refresh-selected-session":
+                self.handle_refresh_selected_session()
             elif button_id in {"extra-login-cancel", "extra-login-cancel-2"}:
                 self.close_extra_login_modal()
             elif button_id == "extra-login-submit":
@@ -12127,24 +12297,49 @@ class AvanzaTradingTui(App):
         except Exception as exc:
             self.write_log(f"[red]Error:[/red] {exc}")
 
-    def open_extra_login_modal(self) -> None:
+    def open_extra_login_modal(self, *, refresh_session_id: str | None = None) -> None:
         if not self.tenant_sessions:
             raise ValueError("Log in to your first account first.")
+        refresh_token = str(refresh_session_id or "").strip()
+        refresh_context = self.tenant_sessions.get(refresh_token) if refresh_token else None
         self.query_one("#extra-login-modal").display = True
-        self.query_one("#extra-session-label", Input).value = ""
+        self.query_one("#extra-login-title", Static).update(
+            "Refresh selected session login" if refresh_context is not None else "Login to extra accounts"
+        )
+        self.query_one("#extra-login-subtitle", Static).update(
+            (
+                f"Re-authenticate {refresh_context.label} to restore MCP/TUI access."
+                if refresh_context is not None
+                else "Add another tenant session without leaving the TUI."
+            )
+        )
+        self.query_one("#extra-session-label", Input).value = refresh_context.label if refresh_context is not None else ""
         self.query_one("#extra-username", Input).value = ""
         self.clear_extra_secret_inputs()
+        self.query_one("#extra-onepassword-item", Input).value = ""
+        self.query_one("#extra-onepassword-vault", Input).value = ""
+        self.login_target_session_id = refresh_context.session_id if refresh_context is not None else None
 
     def close_extra_login_modal(self) -> None:
         self.query_one("#extra-login-modal").display = False
+        self.query_one("#extra-login-title", Static).update("Login to extra accounts")
+        self.query_one("#extra-login-subtitle", Static).update("Add another tenant session without leaving the TUI.")
         self.query_one("#extra-session-label", Input).value = ""
         self.query_one("#extra-username", Input).value = ""
         self.query_one("#extra-onepassword-item", Input).value = ""
         self.query_one("#extra-onepassword-vault", Input).value = ""
         self.clear_extra_secret_inputs()
+        self.login_target_session_id = None
 
     def extra_session_label(self) -> str:
         return str(self.input_value("extra-session-label") or "").strip() or self.auto_session_label([])
+
+    def handle_refresh_selected_session(self) -> None:
+        session_id = self.selected_session_id()
+        if not session_id:
+            raise ValueError("No session is selected.")
+        _ = self.tenant_session_by_id(session_id)
+        self.open_extra_login_modal(refresh_session_id=session_id)
 
     def handle_extra_login(self) -> None:
         username = self.input_value("extra-username")
@@ -12170,6 +12365,7 @@ class AvanzaTradingTui(App):
             "Connecting to Avanza...",
             target_mode="extra",
             session_label=label,
+            session_id=self.login_target_session_id,
         )
 
     def handle_extra_1password_login(self) -> None:
@@ -12194,6 +12390,7 @@ class AvanzaTradingTui(App):
             "Waiting for 1Password approval...",
             target_mode="extra",
             session_label=label,
+            session_id=self.login_target_session_id,
         )
 
     def handle_login(self) -> None:
@@ -12252,11 +12449,13 @@ class AvanzaTradingTui(App):
         *,
         target_mode: str = "initial",
         session_label: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         if self.login_busy:
             self.write_log("[yellow]Login already in progress...[/yellow]")
             return
         self.login_target_mode = target_mode
+        self.login_target_session_id = str(session_id or "").strip() or None
         self.login_target_session_label = session_label
         self.start_login_progress(progress_messages, initial_message)
         worker = threading.Thread(target=target, args=args, daemon=True, name="avanza-login-worker")
@@ -12340,6 +12539,7 @@ class AvanzaTradingTui(App):
                 stoplosses,
                 orders,
                 self.login_target_mode,
+                self.login_target_session_id,
                 self.login_target_session_label,
             )
             self.call_from_thread(self.stop_login_progress)

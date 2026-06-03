@@ -34,8 +34,18 @@ Hard safety rules:
 Standing trading conventions:
 - Sell stop-loss volume should normally be `total holding - 1`, leaving one tracker share/unit.
 - A one-share/one-unit tracker is an active buy-back marker, not passive clutter. For each tracker or tiny residual after a recent sale, explicitly classify it as deliberate permanent tracker, pending buy-back candidate, post-stop re-entry, or thesis-broken avoid.
+- Before calling any review complete, scan notable movers first. Any tracker/tiny residual moving `>= 8%` intraday or showing on top-mover/heatmap/news/abnormal-volume screens must be named and forced through an action gate.
+- For a moving tracker/tiny residual, choose one explicitly: rebuild a controlled tranche now, set a close pullback/continuation buy ladder, keep only deeper crash buy-backs with concrete reason, or avoid because the thesis is broken. Existing deep buy-backs alone are not enough for an active squeeze/re-rating.
+- Marker exposure is not participation. If a one-share/unit marker is moving strongly and the setup is positive, label current exposure as insufficient unless there is a documented no-buy decision with invalidation levels.
 - If a tracker has upcoming/recent earnings, strong volume/relative strength, analyst/news change, or sector read-through, force an action choice: staged add before event, buy-back only on exact pullback/reclaim levels, hold tracker only, or avoid because the thesis is broken.
 - A tracker plus a strong catalyst clue cluster means low exposure, not adequate participation. Check transaction history for sold `Antal` and sold price before deciding whether to rebuild exposure.
+- Every triggered sale, partial sale, or manual tactical peak sale creates a same-account re-entry decision immediately. Before ending any repair/action turn, scan today's `SELL` transactions and verify each sold instrument has a live buy-back ladder, close tactical ladder, or explicit thesis-broken/exit reason.
+- Size re-entry plans against the sold `Antal`, not only against the remaining holding. A remaining position in the same account or exposure in another account does not close the sold-slice decision.
+- Weak fundamentals do not cancel the tracker buy-back decision when a tracker/recently sold name has squeeze, retail-flow, sector-sympathy, heatmap/top-mover, or abnormal-volume catalysts. Separate investment thesis from tactical trade setup.
+- Do not let "meme risk", "bad fundamentals", or "already extended" become a silent no-action default. For live squeeze trackers, propose either a small tightly protected tactical tranche, a close pullback/continuation ladder, or a no-buy decision with exact invalidation and max chase levels.
+- Deep crash-only buy-back ladders are not enough for a tracker that is actively squeezing. If the setup is live, add or propose closer tactical ladders while keeping deeper ladders separate.
+- Treat sell-side protection and buy-back orders for the same instrument as one coordinated strategy. For volatile trackers, crypto-linked products, high-beta names, and spike-sale buy-backs, list current holding, sell-stop `Antal`, buy-stop `Antal`, recent sold `Antal`/price, and current quote before changing orders.
+- Do not leave a shallow `FOLLOW_DOWNWARDS` buy-back that can buy near or above a recent stop-sale price while sell-side stops are still active. Require a dead-zone and prefer staged deeper buy-backs, such as `12% / 18% / 26% / 34%`, adjusted to volatility and thesis risk.
 - Stop-loss tables must show exact `Max ned / Kurs / Antal`.
 - Always calculate effective drop:
   `effective_drop = 1 - ((1 - MaxNed/100) * (Kurs/100))`
@@ -72,6 +82,8 @@ Post-stop protocol:
 - If headline risk is real but the thesis is not clearly broken, convert that risk into smaller `Antal`, staged entries, strict maximum chase prices, or tighter protection instead of omitting an actionable plan.
 - Use buy-back caps. Do not chase far above the stop-out price without explicit approval.
 - After any buy-back fill, propose or recreate a sell-side gliding stop for only the filled quantity, usually wider than the stop that just triggered.
+- Existing sell stops protect only current holdings. New buy-back fills need their own sell-side protection after the fill; do not create sell stops for unfilled future buy-backs.
+- If both sell stops and buy-back stops are active, state whether they can churn and how the spacing prevents selling weakness then buying back too close to the sale.
 - Verify Avanza buy-side gliding semantics before any live use.
 - Structural momentum/theme re-rating gate: if a holding, tracker, or recently discussed candidate has strong technicals, high volume, analyst target/rating shock, guidance/estimate upgrades, supply shortage/pricing-power evidence, peer sympathy, or sector-wide re-rating, do not dismiss it as "already extended" without a concrete add/pullback-ladder/wait/avoid decision.
 - For AI infrastructure and semiconductors, explicitly check HBM/DRAM/NAND pricing, AI accelerator supply chain, networking/optical interconnect, advanced packaging, foundry capacity, power/cooling, and data-center capex read-throughs.
@@ -83,6 +95,7 @@ Generic staged buy-back pattern:
 - 30% gliding buy after further drop and rebound by about `2-3%`.
 - 20% manual or wider review tranche.
 - Adapt these percentages to the asset's volatility, earnings timing, liquidity, and thesis risk.
+- This quick-recapture pattern is not the default for volatile trackers, crypto-linked products, high-beta names, or spike-sale buy-backs. Use coordinated sell/buy-back bands with a clear dead-zone unless I explicitly ask for immediate recapture.
 
 Portfolio review expectations:
 - Refresh live Avanza data; do not assume.

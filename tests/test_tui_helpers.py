@@ -1,4 +1,7 @@
 import io
+from datetime import date, timedelta
+
+TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 
 from avanza_cli import (
     account_metric_values,
@@ -761,7 +764,7 @@ def test_stop_loss_row_extracts_order_data():
                 "type": "FOLLOW_UPWARDS",
                 "value": 5,
                 "valueType": "PERCENTAGE",
-                "validUntil": "2026-05-28",
+                "validUntil": TEST_VALID_UNTIL,
             },
             "order": {
                 "type": "SELL",
@@ -778,7 +781,7 @@ def test_stop_loss_row_extracts_order_data():
         "Example AB",
         "FOLLOW_UPWARDS 5%",
         "SELL 10 @ 1%",
-        "2026-05-28",
+        TEST_VALID_UNTIL,
     )
 
 
@@ -808,7 +811,7 @@ def test_open_order_activity_row_aligns_with_ongoing_orders_table_columns():
             "volume": 5,
             "price": 123,
             "priceType": "MONETARY",
-            "validUntil": "2026-05-28",
+            "validUntil": TEST_VALID_UNTIL,
         }
     )
 
@@ -827,7 +830,7 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
             "order_book_id": "ob-1",
             "trigger_value": 5,
             "trigger_value_type": "%",
-            "valid_until": "2026-05-28",
+            "valid_until": TEST_VALID_UNTIL,
             "order_price": 1,
             "order_price_type": "%",
             "volume": 10,
@@ -847,7 +850,7 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
         side_badge("SELL"),
         "10.0",
         "FOLLOW_UPWARDS 5.0%",
-        "2026-05-28",
+        TEST_VALID_UNTIL,
         "ACTIVE",
         cancel_badge(),
     )
@@ -860,7 +863,7 @@ def test_paper_regular_order_active_row():
             "order_book_id": "ob-1",
             "order_type": "buy",
             "price": 100,
-            "valid_until": "2026-05-28",
+            "valid_until": TEST_VALID_UNTIL,
             "volume": 10,
             "condition": "fill-and-kill",
         },
@@ -874,7 +877,7 @@ def test_paper_regular_order_active_row():
         side_badge("BUY"),
         "10",
         "100.0 SEK FILL_AND_KILL",
-        "2026-05-28",
+        TEST_VALID_UNTIL,
         "ACTIVE",
         cancel_badge(),
     )

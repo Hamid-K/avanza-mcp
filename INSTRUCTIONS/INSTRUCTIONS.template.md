@@ -197,6 +197,11 @@ The user does not want vague stop-loss tables. Always show the exact `Max ned / 
 
 A one-share or one-unit tracker is not passive clutter. It is an active reminder that exposure was reduced and the buy-back decision is still open unless explicitly closed.
 
+- Before calling any portfolio review complete, scan all current holdings for notable daily movers. Every tracker/tiny residual moving `>= 8%` intraday or appearing in top-mover/heatmap/news/volume screens must be called out by name, even if the SEK exposure is small.
+- A tracker/tiny residual that is a notable mover is a mandatory action gate, not an observation. The report must choose one of: rebuild a controlled tranche now, set a close pullback/continuation buy ladder, keep only deeper crash buy-backs with a concrete reason, or avoid because the thesis is broken.
+- Do not satisfy the action gate with only an existing deep buy-back ladder if the name is actively squeezing or re-rating. Deep ladders protect against later crashes; they do not participate in a live move.
+- If a recently sold tracker has moved `>= 15%` since the sale or `>= 8%` today, compare current price to the last sold price and sold `Antal`, then decide whether a partial rebuild is justified despite the missed lower entry.
+- Marker exposure is not participation. If the remaining holding is one share/unit and the setup is positive or momentum is strong, explicitly label it as missed or insufficient exposure unless a no-buy decision is documented with price/volume invalidation levels.
 - For every holding with `Antal 1`, one tracker unit, or only a tiny residual after a recent sale/stop trigger, identify whether it is:
   - a deliberate permanent tracker,
   - a pending buy-back candidate,
@@ -208,9 +213,38 @@ A one-share or one-unit tracker is not passive clutter. It is an active reminder
 - If a recent sale reduced exposure, review transaction history to determine the sold `Antal`, sold price, realized result, remaining `Antal`, and whether current price/catalyst setup justifies rebuilding some or all of the sold exposure.
 - The default assumption after a stop-triggered sale is that the user wants to buy back cheaper later, unless the user explicitly chose to exit or fresh financial/technical evidence shows the asset is no longer desirable.
 - Buy-back state is per account. A buy-back ladder in one account does not cover a stopped-out or partially sold slice in another account.
+- Any triggered sale, partial sale, or manual tactical peak sale must produce a same-account re-entry plan or an explicit no-reentry decision in the same review. Do not wait for a later portfolio pass.
+- A re-entry plan must be sized relative to the sold `Antal`, not only to the remaining holding. If the sale was large and the account now has only a tracker or much smaller position, call that out as reduced exposure.
+- Before ending a repair/action turn, scan today's transactions for all `SELL` rows and check whether each sold instrument has an active buy-back ladder, close tactical ladder, or documented thesis-broken/exit reason.
+- Do not rely on memory that a buy-back "probably exists." Verify live stop-loss/open-order rows for that account and instrument.
 - A tracker plus strong pre-earnings clue cluster should be treated as low exposure, not as "already participating." If risk/cash allows, propose a meaningful staged pre-position size; if not, state exactly why the tracker is intentionally left alone.
 - If choosing not to add, record the wait trigger or invalidation trigger, such as maximum chase price, pullback level, reclaim level, report outcome requirement, or thesis-damage evidence.
 - Never assume a one-share tracker is too small to matter. Its purpose is to keep the name visible; failing to act on that visibility is a workflow miss.
+
+## Momentum/Squeeze Tracker Gate
+
+Weak fundamentals do not cancel the obligation to evaluate a tactical trade when a tracker or recently sold name is moving on squeeze, retail-flow, sector-sympathy, or narrative catalysts.
+
+- This gate must run before normal stop-loss maintenance. Protection repair is not enough if the account has only a marker while the asset is making the move the marker was meant to catch.
+- If a tracker/recently sold name is up sharply, has abnormal volume, appears in market movers/heatmaps, trends on retail channels, or has a fresh narrative catalyst, force a tactical decision even if the long-term business quality is poor.
+- Separate the two questions explicitly: `investment thesis` versus `trade setup`. A poor long-term thesis can still justify a small, tightly protected momentum tranche or a close pullback/continuation ladder.
+- Do not let "bad fundamentals", "meme risk", "too speculative", or "already extended" become a silent no-action default. Convert that risk into smaller `Antal`, tighter sell protection, and exact no-chase limits.
+- For one-share/tiny trackers with active squeeze behavior, deep crash-only buy-backs are not enough. Add or propose a closer tactical ladder if the setup is still live; keep deeper ladders only as separate crash re-entry plans.
+- When declining to enter a tracker that is already squeezing, the report must include the price/volume level that would invalidate the no-buy stance and the maximum chase price where a small tactical entry would still be allowed.
+- If the tracker doubles or moves another `20%+` after a no-buy call, treat it as a missed tactical gate and update memory immediately.
+
+## Coordinated Sell/Buy-Back Bands
+
+Active sell-side protection and active buy-back orders for the same instrument are one strategy, not isolated rows.
+
+- Before creating, deleting, or editing a buy-back order, list the current holding, active sell-stop `Antal`, active buy-stop `Antal`, recent sold `Antal` and sale price, current quote, and whether the instrument is volatile, crypto-linked, earnings-sensitive, or high beta.
+- Never leave a shallow `FOLLOW_DOWNWARDS` buy-back that can buy near or above a recent stop-sale price while sell-side stops are still active, unless the user explicitly wants immediate recapture.
+- Require a deliberate dead-zone between the sell/stop-sale level and the first re-entry level for volatile trackers, crypto trackers, high-beta names, and names sold after a spike. The first buy-back should normally be meaningfully below the recent sale level.
+- For volatile trackers and crypto-linked products, prefer staged deeper buy-backs over one large order. A useful default is three or four tranches separated by wide enough drops to avoid churn, such as `12% / 18% / 26% / 34%`, adjusted for current volatility, spread, and thesis risk.
+- Total buy-back `Antal` should normally tie to the recently sold `Antal` or an explicit target exposure. If the proposed buy-back volume is higher or lower, say why.
+- Existing sell-side stops protect only current holdings. If a buy-back fills, create or recommend new sell-side protection only for the filled `Antal`; do not create sell stops for unfilled future buy-backs.
+- If both sell stops and buy-back stops are active, the final report must say whether the combination can churn, and why the spacing prevents selling weakness and then buying back too close to the sale.
+- If the MCP/tooling cannot enforce an absolute maximum buy-back price separately from the stop-loss `Kurs`, state that limitation and compensate with wider trigger spacing or smaller first tranches.
 
 ## Stop-Loss Logic
 
@@ -378,6 +412,7 @@ Preferred re-entry concept:
 - The objective is to buy back at a lower price when possible, but also to avoid missing the recovery if the stop was triggered by a short dip and the price moves back up the same day or next session.
 - Set a buy-back cap so the assistant does not chase far above the stop-out price without explicit user approval.
 - After a buy-back fills, recreate an appropriate sell-side gliding stop-loss, usually wider than the stop that just triggered if the stop-out looked like normal volatility.
+- For volatile trackers, crypto-linked products, high-beta names, and spike-sale buy-backs, this quick-recapture concept must be overridden by the coordinated sell/buy-back band rule unless the user explicitly asks for immediate recapture.
 
 Fixed-to-gliding buy-back preference:
 
@@ -399,6 +434,8 @@ Suggested default re-entry ladder after a full or near-full stop-out:
 | 50% | Buy back if price rebounds to around the sell price plus `0.5-1.0%` | Recapture exposure quickly if the stop was a false dip |
 | 30% | Use a gliding buy after price falls further and then rebounds by about `2-3%` | Catch a better dip without catching a falling knife |
 | 20% | Manual review or wider gliding buy | Preserve flexibility if news or market regime changed |
+
+This generic ladder is not the default for volatile trackers, crypto-linked products, high-beta names, or spike-sale buy-backs. For those, use coordinated sell/buy-back bands with a clear dead-zone and deeper staged entries unless the user explicitly wants near-sale recapture.
 
 Rules for re-entry plans:
 
@@ -447,6 +484,7 @@ Lesson:
 - `8% / 99%` has about `8.92%` effective drop.
 - A tighter alternative is `7% / 99%`, with about `7.93%` effective drop.
 - Avoid `5% / 99%` for volatile trackers unless the user explicitly wants a high chance of being shaken out by normal volatility.
+- Do not operate volatile tracker sell stops and buy-back glides as independent orders. Review them together with recent transactions and enforce a dead-zone so the account does not sell weakness and then buy back almost immediately at a similar price.
 
 Preferred volatile-tracker strategy:
 
