@@ -7948,6 +7948,8 @@ class AvanzaTradingTui(App):
         self.login_target_session_id: str | None = None
         self.login_target_session_label: str | None = None
         self.mcp_scope_original_session_id: str | None = None
+        self.mcp_scope_depth = 0
+        self.live_refresh_deferred_by_mcp_scope = False
         self.last_resize: tuple[int, int] | None = None
         self.position_row_cache: dict[str, tuple[str, ...]] = {}
         self.holding_volumes_by_order_book: dict[str, str] = {}
@@ -9078,6 +9080,7 @@ class AvanzaTradingTui(App):
             return
         current = self.active_session_id
         self.mcp_scope_original_session_id = current
+        self.mcp_scope_depth += 1
         self.activate_tenant_session(target, refresh_ui=False, announce=False, update_controls=False)
         try:
             yield
@@ -9085,6 +9088,10 @@ class AvanzaTradingTui(App):
             if current and current in self.tenant_sessions:
                 self.activate_tenant_session(current, refresh_ui=False, announce=False, update_controls=False)
             self.mcp_scope_original_session_id = None
+            self.mcp_scope_depth = max(0, self.mcp_scope_depth - 1)
+            if self.mcp_scope_depth == 0 and self.live_refresh_deferred_by_mcp_scope:
+                self.live_refresh_deferred_by_mcp_scope = False
+                self.safe_call_from_thread(self.refresh_selected_account_live)
 
     def apply_accounts_overview(self, overview: dict[str, Any], announce: bool = True) -> None:
         self.accounts = account_rows_from_overview(overview)
@@ -12129,6 +12136,10 @@ class AvanzaTradingTui(App):
 
     def _refresh_selected_account_live_worker(self) -> None:
         started = time.perf_counter()
+        if self.mcp_scope_depth > 0:
+            self.live_refresh_deferred_by_mcp_scope = True
+            self._finish_live_refresh_cycle()
+            return
         active_session_id = self.active_session_id
         if not self.avanza or not self.selected_account_id:
             self._finish_live_refresh_cycle()
@@ -12179,6 +12190,10 @@ class AvanzaTradingTui(App):
         elapsed: float,
         session_id: str | None,
     ) -> None:
+        if self.mcp_scope_depth > 0:
+            self.live_refresh_deferred_by_mcp_scope = True
+            self._finish_live_refresh_cycle()
+            return
         if session_id and self.active_session_id and session_id != self.active_session_id:
             self._finish_live_refresh_cycle()
             return
@@ -12262,6 +12277,9 @@ class AvanzaTradingTui(App):
 
     def refresh_selected_account_live(self) -> None:
         if self.shutdown_event.is_set():
+            return
+        if self.mcp_scope_depth > 0:
+            self.live_refresh_deferred_by_mcp_scope = True
             return
         if not self.avanza or not self.selected_account_id:
             return

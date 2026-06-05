@@ -2202,6 +2202,44 @@ def test_tui_ignores_stale_account_select_event_after_session_switch():
     asyncio.run(run_app())
 
 
+def test_live_refresh_is_deferred_during_mcp_scope():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.active_session_id = "session-1"
+    app.selected_account_id = "acc-1"
+    app.mcp_scope_depth = 1
+
+    app.refresh_selected_account_live()
+
+    assert app.live_refresh_deferred_by_mcp_scope is True
+    assert app.live_refresh_inflight is False
+    assert app.live_refresh_thread is None
+
+
+def test_live_refresh_payload_is_not_applied_during_mcp_scope():
+    from avanza_cli import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.active_session_id = "visible-session"
+    app.mcp_scope_depth = 1
+
+    calls: list[str] = []
+    app.mark_tenant_session_auth_ok = lambda _session_id: calls.append("auth")  # type: ignore[method-assign]
+    app.apply_portfolio_data = lambda *args, **kwargs: calls.append("portfolio")  # type: ignore[method-assign]
+    app.apply_stoploss_orders_data = lambda *args, **kwargs: calls.append("orders")  # type: ignore[method-assign]
+    app._finish_live_refresh_cycle = lambda: calls.append("finish")  # type: ignore[method-assign]
+
+    app._apply_live_refresh_payload({}, {}, {}, [], [], 0.01, "visible-session")
+
+    assert app.live_refresh_deferred_by_mcp_scope is True
+    assert calls == ["finish"]
+
+
 def test_mcp_unauthorized_marks_scoped_session_expired():
     from avanza_cli import AvanzaTradingTui
 
