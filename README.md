@@ -254,7 +254,7 @@ For multi-session setups:
 | `tv_scrape_heatmap` | Fetch TradingView market heatmap rows (top movers) using free scanner data. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
-| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank and quick analytics (best effort; may be blocked without valid browser session/cookies). |
+| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies). |
 | `fmp_analyst_recommendations` | Fetch analyst recommendation history for a symbol from Financial Modeling Prep (requires FMP API key). |
 | `polygon_analyst_insights` | Fetch analyst insights/ratings for a symbol from Polygon Benzinga feed (requires Polygon API key). |
 | `sec_filings_recent` | Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data). |
@@ -316,7 +316,7 @@ Canonical naming note:
   4. use `tv_auth_*` tools with no repeated cookie input.
 - The TUI `TradingView Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
-- `zacks_scrape_symbol` is best effort; Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
+- `zacks_scrape_symbol` is best effort; it now attempts the quote page and free Zacks equity-report page, returning `analysis_summary`, `analysis_sources`, and `blocked_sources` when available. Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
 - API-key tools:
   - `fmp_analyst_recommendations`: pass `api_key` or set `FMP_API_KEY`.

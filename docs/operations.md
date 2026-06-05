@@ -220,7 +220,7 @@ Multi-session MCP behavior:
 | `tv_scrape_heatmap` | Fetch TradingView market heatmap rows (top movers) using free scanner data. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
-| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank and quick analytics (best effort; may be blocked without valid browser session/cookies). |
+| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies). |
 | `fmp_analyst_recommendations` | Fetch analyst recommendation history for a symbol from Financial Modeling Prep (requires FMP API key). |
 | `polygon_analyst_insights` | Fetch analyst insights/ratings for a symbol from Polygon Benzinga feed (requires Polygon API key). |
 | `sec_filings_recent` | Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data). |

@@ -86,7 +86,7 @@ These instructions capture the user's trading workflow preferences for future LL
 - Use `tv_scrape_heatmap` for top movers and breadth context.
 - Use `tv_auth_watchlist` for authenticated watchlist monitoring (best effort scrape path).
 - Use `tv_auth_custom_lists` for authenticated custom list monitoring by list id/name/URL with deep row collection.
-- Use `zacks_scrape_symbol` for Zacks rank/context checks; if blocked by anti-bot responses, report that clearly.
+- Use `zacks_scrape_symbol` for Zacks rank, Earnings ESP, and available `analysis_summary`/report context; if blocked by anti-bot responses, report that clearly.
 - Use `sec_filings_recent` for official filing flow and `fred_series` for macro regime checks.
 - Use `signal_context_bundle` for a single, normalized cross-source payload and `data_source_status` before strategy decisions.
 - Treat TradingView/Zacks scrape outputs as experimental. If any source is stale, blocked, or low-confidence, mark decision confidence down and prefer paper mode.

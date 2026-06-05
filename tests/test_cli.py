@@ -3151,6 +3151,77 @@ def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
     assert snapshot["rows"][0]["buy"] == 15
 
 
+def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
+    from avanza_cli import zacks_symbol_snapshot
+
+    def fake_fetch_text(url, **kwargs):
+        if "/stock/quote/AAPL" in url:
+            return """
+            <html>
+              <head><title>AAPL: Apple - Zacks</title></head>
+              <body>
+                <div>Zacks Rank #2 (Buy)</div>
+                <div>Industry Rank: #45</div>
+                <div>Earnings ESP: +1.23%</div>
+                <h2>Company Summary</h2>
+                <p>Apple designs consumer devices and services.</p>
+              </body>
+            </html>
+            """
+        if "/zer/report/AAPL" in url:
+            return """
+            <html>
+              <head>
+                <title>Zacks Equity Research Report for AAPL</title>
+                <meta name="description" content="Apple report summary from Zacks." />
+              </head>
+              <body>
+                <h2>Summary</h2>
+                <p>Estimate revisions and services growth support the near-term setup.</p>
+                <h2>Valuation</h2>
+                <p>Forward valuation remains above the industry average.</p>
+                <h2>Industry Analysis</h2>
+                <p>The industry rank remains constructive.</p>
+              </body>
+            </html>
+            """
+        raise AssertionError(url)
+
+    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+
+    snapshot = zacks_symbol_snapshot("AAPL")
+
+    assert snapshot["rank"] == {"value": 2, "label": "Buy"}
+    assert snapshot["industry_rank"] == 45
+    assert snapshot["earnings_esp"] == "+1.23%"
+    assert snapshot["blocked"] is False
+    assert snapshot["analysis_summary"]["available"] is True
+    assert snapshot["analysis_summary"]["source_url"].endswith("/zer/report/AAPL?rwid=Y")
+    assert "Estimate revisions" in snapshot["analysis_summary"]["summary"]
+    assert {section["heading"] for section in snapshot["analysis_summary"]["sections"]} >= {
+        "Summary",
+        "Valuation",
+        "Industry Analysis",
+    }
+
+
+def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
+    from avanza_cli import zacks_symbol_snapshot
+
+    def fake_fetch_text(url, **kwargs):
+        assert "/stock/quote/AAPL" in url
+        return "<html><title>Pardon Our Interruption</title><body>Access denied</body></html>"
+
+    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+
+    snapshot = zacks_symbol_snapshot("AAPL")
+
+    assert snapshot["blocked"] is True
+    assert snapshot["blocked_sources"] == ["quote"]
+    assert snapshot["analysis_summary"]["available"] is False
+    assert snapshot["unsafe_for_execution"] is True
+
+
 def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
     from avanza_cli import polygon_analyst_insights_snapshot
 
