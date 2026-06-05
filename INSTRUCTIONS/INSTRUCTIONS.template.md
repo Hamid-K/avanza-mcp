@@ -9,7 +9,9 @@ These instructions capture the user's trading workflow preferences for future LL
 - The default mode is paper mode. Do not create live/real orders or live/real stop-losses unless the user explicitly authorizes it in the current session and Avanza MCP confirms live read/write is enabled.
 - Do not modify repository code. The user has explicitly stated that another agent is responsible for code. This assistant is only authorized to use MCP/tools/features for trading work. Documentation files may be edited only when the user explicitly asks for that documentation update.
 - Read `INSTRUCTIONS/MEMORY.md` at the start of trading-assistant work. It preserves timestamped lessons, mistakes, and strategy updates across clean sessions, but it is not live portfolio state.
+- Read `INSTRUCTIONS/TRACKER_STATE.md` after `INSTRUCTIONS/MEMORY.md` when reviewing stop-losses, buy-backs, recent sells, cash drift, or tracker positions. It is the live working ledger for current stop coverage, buy-back states, and one-share/unit trackers; refresh it from Avanza MCP before acting because it can become stale.
 - Keep `INSTRUCTIONS/MEMORY.md` updated after meaningful trading sessions, missed opportunities, user corrections, automation changes, or strategy changes.
+- Keep `INSTRUCTIONS/TRACKER_STATE.md` updated after every material portfolio review, heartbeat repair pass, stop-loss mutation, buy order mutation, triggered sell, or filled buy-back.
 
 ## Memory File Standard
 
@@ -19,6 +21,21 @@ These instructions capture the user's trading workflow preferences for future LL
 - Add new entries newest first with Stockholm local timestamp.
 - Historical asset examples in `INSTRUCTIONS/MEMORY.md` are examples only, not permanent watchlists or assumptions.
 - When a user correction exposes a missed checklist item, update `INSTRUCTIONS/MEMORY.md`, `INSTRUCTIONS/INSTRUCTIONS.md`, `INSTRUCTIONS/WARMUP.md`, and relevant automation prompts if applicable.
+
+## Tracker State File Standard
+
+- `INSTRUCTIONS/TRACKER_STATE.md` is the current live-state working ledger for:
+  - active stop-loss coverage and coverage gaps,
+  - active buy-back orders and buy-side stop-losses,
+  - one-share/unit tracker positions,
+  - recent sold slices that still need a same-account re-entry decision,
+  - cash-drift warnings when sell activity is building idle buying power.
+- Treat `INSTRUCTIONS/TRACKER_STATE.md` as a snapshot, not an authority for live action. Before any mutation, refresh live MCP portfolio, stop-losses, open orders, and transactions with explicit `tenant_session_id` plus `account_id`.
+- A tracker should not be marked as adequately monitored just because a deep buy-back exists. Classify each tracker as `NO BUY-BACK`, `GLIDE/DEEP ONLY`, `HAS PERSISTENT BUY STOP`, `HAS FIXED BUY ORDER`, `HOLD TRACKER ONLY`, or `THESIS BROKEN / AVOID`.
+- For fixed tracker buy-back ladders that should survive market close, prefer persistent buy-side stop-losses over ordinary same-day regular buy orders. A same-day regular buy order is intraday-only and must be marked as such in `INSTRUCTIONS/TRACKER_STATE.md`, or converted before close.
+- Buy-side stop-losses do not reserve buying power the way regular open buy orders do. Do not treat a higher buying-power number as free cash until conditional buy-stop notional has been estimated.
+- If market stance is constructive and buying power is building, flag sell-heavy drift. Require either near-current, below-sale, and deeper buy-back stages for intact theses, or an explicit risk-off/no-reentry decision.
+- Update the tracker state file at the end of every review/action turn that changes or discovers stop coverage, buy-back coverage, recent sells, or tracker status.
 
 ## Avanza MCP Operating Rules
 
@@ -149,9 +166,34 @@ Before presenting stop repairs as "fixed", before saying a holding is protected,
    - stop repairs completed or proposed,
    - event risks that remain despite repaired stops.
 
+## Pre-Earnings Marker Decision Gate
+
+This gate exists because a one-share marker or tiny position can keep an asset visible while still failing to participate in a predictable catalyst move.
+
+- For every holding, tracker, or recently discussed candidate with an upcoming after-close or before-open report, force a pre-event exposure decision before the event passes.
+- Do not let a marker, tiny holding, or existing exposure in another account substitute for the decision in the current account. Each account must get its own buy / hold-marker-only / avoid choice.
+- If the clue cluster is favorable or even meaningfully mixed-positive, present an explicit staged buy proposal with:
+  - target SEK exposure,
+  - `Antal`,
+  - maximum acceptable chase price,
+  - whether to buy before the report, wait for a pullback, or use a `FOLLOW_DOWNWARDS` entry,
+  - and the matching post-fill protection plan.
+- If recommending no buy before the report, state the exact reason and the trigger that would change the decision. "Already extended", "only a marker", or "we already have it elsewhere" is not enough.
+- For after-close reports on the current trading day, escalate the decision as time-critical. A daily review must not finish with only stop-loss repair if a current-account marker could reasonably justify a pre-report add.
+- If the report has already happened and a spike was missed, call that out as a missed pre-event exposure decision, not merely a post-event protection issue.
+
 ## Analytical Table Format
 
 When presenting portfolio analysis, use a full table for all holdings unless the user asks for a subset.
+
+Every portfolio review must include a visible "Notable Movers" section before the transaction/protection summary unless the user explicitly asks for transactions only. Sort every current holding by absolute daily move and report at minimum:
+
+- all positions moving `>= 5%` in either direction,
+- the top 5 gainers and top 5 losers if fewer names cross that threshold,
+- every one-share tracker or tiny residual moving `>= 10%`,
+- and any moved name with recent transactions, active buy-back state, upcoming/recent report, or unusual news.
+
+Do not filter out a mover because the SEK value is small. A large tracker move can indicate missed re-entry, catalyst/news, squeeze risk, or a need to decide whether to rebuild exposure, tighten, or deliberately leave only a marker.
 
 Include columns like:
 
@@ -208,15 +250,19 @@ A one-share or one-unit tracker is not passive clutter. It is an active reminder
   - a post-stop re-entry state,
   - or a thesis-broken position to avoid.
 - Do not let a tracker remain unreviewed when a catalyst is near. If the tracker has an upcoming report, recent report, strong volume/relative-strength move, analyst revision, product/customer news, or sector read-through, force an explicit action choice: staged add before event, buy-back only on exact pullback/reclaim levels, hold tracker only, or avoid because the thesis is broken.
+- `Hold tracker only` is allowed only after explicitly comparing the clue cluster, account cash/risk, expected report setup, and missed-upside risk. It must include a concrete reason and a future trigger; otherwise propose a controlled add or pullback entry.
+- `GLIDE/DEEP ONLY` is not enough for an intact tracker or recently sold slice when the account has cash and the market stance is not explicitly risk-off. Add a small fixed near-current or below-sale persistent buy-stop, or document a concrete no-reentry reason.
 - In every portfolio review, separately list trackers/recently reduced names that need a buy-back decision. Stop-loss repair tables are not enough.
 - Every stop-triggered sale creates a buy-back decision state for the sold `Antal`, even when the account still has a meaningful remaining holding. Do not limit this workflow to one-share trackers.
 - If a recent sale reduced exposure, review transaction history to determine the sold `Antal`, sold price, realized result, remaining `Antal`, and whether current price/catalyst setup justifies rebuilding some or all of the sold exposure.
+- If a stop-loss did its job before an upcoming favorable or mixed-positive report, treat the result as two separate outcomes: capital was protected, but exposure may now be too low. Immediately force a same-account pre-report rebuild / gliding entry / hold-marker-only / avoid decision for the sold `Antal` before the report window closes.
 - The default assumption after a stop-triggered sale is that the user wants to buy back cheaper later, unless the user explicitly chose to exit or fresh financial/technical evidence shows the asset is no longer desirable.
 - Buy-back state is per account. A buy-back ladder in one account does not cover a stopped-out or partially sold slice in another account.
 - Any triggered sale, partial sale, or manual tactical peak sale must produce a same-account re-entry plan or an explicit no-reentry decision in the same review. Do not wait for a later portfolio pass.
 - A re-entry plan must be sized relative to the sold `Antal`, not only to the remaining holding. If the sale was large and the account now has only a tracker or much smaller position, call that out as reduced exposure.
 - Before ending a repair/action turn, scan today's transactions for all `SELL` rows and check whether each sold instrument has an active buy-back ladder, close tactical ladder, or documented thesis-broken/exit reason.
 - Do not rely on memory that a buy-back "probably exists." Verify live stop-loss/open-order rows for that account and instrument.
+- Do not count an expiring regular buy limit as a durable buy-back ladder unless the review is explicitly intraday and before the order's market close. If the desired state should persist, convert it to a buy-side stop-loss with `LESS_OR_EQUAL`, monetary trigger/order price, `valid_until` within Avanza limits, and `order_valid_days=1`.
 - A tracker plus strong pre-earnings clue cluster should be treated as low exposure, not as "already participating." If risk/cash allows, propose a meaningful staged pre-position size; if not, state exactly why the tracker is intentionally left alone.
 - If choosing not to add, record the wait trigger or invalidation trigger, such as maximum chase price, pullback level, reclaim level, report outcome requirement, or thesis-damage evidence.
 - Never assume a one-share tracker is too small to matter. Its purpose is to keep the name visible; failing to act on that visibility is a workflow miss.

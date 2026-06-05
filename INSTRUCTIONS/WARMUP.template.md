@@ -11,7 +11,7 @@ Workspace:
 - Avanza MCP is configured as `<MCP_SERVER_NAME>`:
   uv --directory <PROJECT_ROOT>/Avanza run python avanza_cli.py mcp
 - If native MCP tools are not exposed, verify MCP server registration in your client, then use the configured stdio MCP proxy/TUI bridge fallback.
-- Read `INSTRUCTIONS/INSTRUCTIONS.md` and `INSTRUCTIONS/MEMORY.md` before trading analysis. `INSTRUCTIONS/MEMORY.md` is a timestamped ledger of prior lessons, mistakes, and strategy updates, but it is not live portfolio state.
+- Read `INSTRUCTIONS/INSTRUCTIONS.md`, `INSTRUCTIONS/MEMORY.md`, and `INSTRUCTIONS/TRACKER_STATE.md` before trading analysis. `INSTRUCTIONS/MEMORY.md` is a timestamped ledger of prior lessons, mistakes, and strategy updates, but it is not live portfolio state. `INSTRUCTIONS/TRACKER_STATE.md` is the live working ledger for stop-loss coverage, buy-back state, recent sells, cash drift, and one-share/unit trackers; refresh it from Avanza MCP before acting because it can become stale.
 - First action in any trading task: verify Avanza MCP health/status, available multi-session capabilities, loaded tenant sessions, and the currently selected/default account.
 - Canonical Avanza MCP tool names:
   - `avanza_open_orders`
@@ -27,6 +27,7 @@ Hard safety rules:
 - Do not hardcode account numbers, account names, or specific holdings in instructions, automations, or plans. Derive them from live MCP data each time.
 - Market and asset-analysis lessons from `INSTRUCTIONS/MEMORY.md` may carry forward, but only apply them after confirming the asset exists in the currently selected account.
 - Update `INSTRUCTIONS/MEMORY.md` after meaningful sessions, missed opportunities, user corrections, strategy changes, or automation changes.
+- Update `INSTRUCTIONS/TRACKER_STATE.md` after every material portfolio review, heartbeat repair pass, stop-loss mutation, buy order mutation, triggered sell, filled buy-back, or tracker-state change.
 - Live R/W must be off by default. Do not bypass MCP protections.
 - Another agent owns code changes. Do not edit repo code. Documentation files may be edited only if I explicitly ask.
 - Use Avanza wording: `Max ned`, `Kurs`, `Antal`.
@@ -34,10 +35,14 @@ Hard safety rules:
 Standing trading conventions:
 - Sell stop-loss volume should normally be `total holding - 1`, leaving one tracker share/unit.
 - A one-share/one-unit tracker is an active buy-back marker, not passive clutter. For each tracker or tiny residual after a recent sale, explicitly classify it as deliberate permanent tracker, pending buy-back candidate, post-stop re-entry, or thesis-broken avoid.
+- Use the tracker-state file classifications: `NO BUY-BACK`, `GLIDE/DEEP ONLY`, `HAS PERSISTENT BUY STOP`, `HAS FIXED BUY ORDER`, `HOLD TRACKER ONLY`, or `THESIS BROKEN / AVOID`. Deep/gliding-only buy-backs are not adequate monitoring when the market is constructive and cash is building; propose or maintain near-current, below-sale, and deeper stages for intact theses.
+- Fixed tracker buy-back ladders that need to survive market close should normally be persistent buy-side stop-losses, not same-day regular buy orders. If a regular buy order is intentionally intraday-only, mark that explicitly in `TRACKER_STATE.md`; otherwise convert it before close. Buy-side stops do not reserve buying power, so always compare displayed cash against conditional buy-stop notional before calling cash idle or available.
 - Before calling any review complete, scan notable movers first. Any tracker/tiny residual moving `>= 8%` intraday or showing on top-mover/heatmap/news/abnormal-volume screens must be named and forced through an action gate.
 - For a moving tracker/tiny residual, choose one explicitly: rebuild a controlled tranche now, set a close pullback/continuation buy ladder, keep only deeper crash buy-backs with concrete reason, or avoid because the thesis is broken. Existing deep buy-backs alone are not enough for an active squeeze/re-rating.
 - Marker exposure is not participation. If a one-share/unit marker is moving strongly and the setup is positive, label current exposure as insufficient unless there is a documented no-buy decision with invalidation levels.
 - If a tracker has upcoming/recent earnings, strong volume/relative strength, analyst/news change, or sector read-through, force an action choice: staged add before event, buy-back only on exact pullback/reclaim levels, hold tracker only, or avoid because the thesis is broken.
+- Before any after-close or before-open earnings report, a tracker or tiny position must trigger a current-account exposure decision: buy a controlled tranche, use a pullback/gliding entry, deliberately hold marker only with a concrete reason, or avoid because the thesis is weak. Do not let the report pass with only stop-loss commentary.
+- `Hold marker only` is not a default. It requires an explicit reason based on clue quality, valuation/extension, account cash/risk, and missed-upside risk, plus the trigger that would make us buy later.
 - A tracker plus a strong catalyst clue cluster means low exposure, not adequate participation. Check transaction history for sold `Antal` and sold price before deciding whether to rebuild exposure.
 - Every triggered sale, partial sale, or manual tactical peak sale creates a same-account re-entry decision immediately. Before ending any repair/action turn, scan today's `SELL` transactions and verify each sold instrument has a live buy-back ladder, close tactical ladder, or explicit thesis-broken/exit reason.
 - Size re-entry plans against the sold `Antal`, not only against the remaining holding. A remaining position in the same account or exposure in another account does not close the sold-slice decision.
@@ -62,6 +67,7 @@ Standing trading conventions:
 - For pre-earnings adds, always include the downside/gap-risk tradeoff. Stop-losses may not protect against after-hours or pre-market gaps.
 - For after-close or before-open earnings, produce an event-risk table before saying a holding is protected: exact report timing, current `Antal` and SEK exposure, active sell-stop `Antal`, each `Max ned / Kurs`, stop status, any `ERROR` rows, quote freshness, and the explicit choice set of reduce before event, hold and accept gap risk, or avoid new exposure.
 - Event-first gate: run the current/next-session catalyst scan before stop-loss repair or tightening proposals. Stop repairs are not a substitute for deciding whether to reduce, hold through gap risk, or avoid new exposure.
+- For same-day after-close earnings, escalate the buy/no-buy decision as time-critical. If evidence is favorable or mixed-positive and exposure is only a marker/tiny position, propose exact `Antal`, target SEK, max chase price, and post-fill `Max ned / Kurs / Antal` protection before the close.
 - If a same-day before-open report is discovered only after the market has opened, state that pre-event protection is too late. Treat the failure as a missed pre-event sizing/trim decision, then assess post-event damage and updated thesis.
 
 Important operating history:
@@ -77,6 +83,7 @@ Post-stop protocol:
 - A manual sale that leaves only a tracker creates the same buy-back decision state unless the user explicitly says the thesis is closed.
 - For the same volume sold, review whether the thesis remains intact using current transactions, current quote, current news, and current market context.
 - If thesis is intact, propose staged/trailing buy-back.
+- If a stop-loss sale happens shortly before a favorable or mixed-positive report/catalyst, do not stop at "the stop worked." Treat it as protected capital plus reduced exposure, then force a same-account pre-event choice for the sold `Antal`: rebuild a controlled tranche, set gliding/pullback buy-back, hold marker only with reasons, or avoid because the thesis is broken.
 - Default assumption: after a stop-triggered sale, the user wants to buy back cheaper later unless the user chose a true exit or fresh evidence shows the asset is no longer attractive.
 - Do not let "too risky to chase full size" become "do nothing." For a stopped-out or sharply rebounding holding, explicitly choose: partial staged re-entry now, wait with exact triggers, or avoid because the thesis is broken.
 - If headline risk is real but the thesis is not clearly broken, convert that risk into smaller `Antal`, staged entries, strict maximum chase prices, or tighter protection instead of omitting an actionable plan.
@@ -88,6 +95,7 @@ Post-stop protocol:
 - Structural momentum/theme re-rating gate: if a holding, tracker, or recently discussed candidate has strong technicals, high volume, analyst target/rating shock, guidance/estimate upgrades, supply shortage/pricing-power evidence, peer sympathy, or sector-wide re-rating, do not dismiss it as "already extended" without a concrete add/pullback-ladder/wait/avoid decision.
 - For AI infrastructure and semiconductors, explicitly check HBM/DRAM/NAND pricing, AI accelerator supply chain, networking/optical interconnect, advanced packaging, foundry capacity, power/cooling, and data-center capex read-throughs.
 - If a planned SEK starter only buys one high-priced share, label it as marker exposure, not meaningful participation. If the clue cluster is strong, propose a larger controlled tranche, another account, or a deliberate choice to stay as a marker.
+- Existing exposure in one account does not justify ignoring a marker in another account before a catalyst. Analyze the buy/no-buy decision per account unless I explicitly ask to balance accounts globally.
 - After a missed large move, scan adjacent beneficiaries immediately before moving on.
 
 Generic staged buy-back pattern:
@@ -100,6 +108,7 @@ Generic staged buy-back pattern:
 Portfolio review expectations:
 - Refresh live Avanza data; do not assume.
 - Review every current holding if asked for portfolio assessment.
+- Every portfolio review must visibly report notable movers before transactions/protection: all holdings moving `>= 5%`, top 5 gainers/top 5 losers if fewer cross that line, and every one-share tracker or tiny residual moving `>= 10%`. Do not suppress tracker moves because SEK value is small; they can signal missed buy-back, catalyst, squeeze, or profit-protection decisions.
 - Include current `Antal`, position value, P/L %, SEK P/L, recent move, and interpretation.
 - Use current web/news research for high-move or news-sensitive names.
 - For any portfolio review, first surface report-day and next-session event risks before presenting stop-loss repairs as the main action list.
