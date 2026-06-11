@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from datetime import date, timedelta
@@ -482,7 +483,7 @@ def test_tui_on_unmount_stops_timers(monkeypatch):
     app.order_search_timer = search_timer
     app.live_refresh_timer = live_timer
     app.clock_timer = clock_timer
-    monkeypatch.setattr(app, "stop_mcp_bridge", lambda announce=True: None)
+    monkeypatch.setattr(app, "stop_mcp_bridge", lambda announce=True, wait=True: None)
 
     app.on_unmount()
 
@@ -549,6 +550,46 @@ def test_tui_on_unmount_with_mcp_and_missing_log_widgets(monkeypatch, tmp_path):
     assert app.mcp_server is None
     assert app.mcp_thread is None
     assert app.mcp_token is None
+
+
+def test_tui_on_unmount_does_not_block_on_slow_mcp_shutdown(monkeypatch, tmp_path):
+    from avanza_cli import AvanzaTradingTui
+
+    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    shutdown_started = threading.Event()
+    shutdown_release = threading.Event()
+    close_called = threading.Event()
+
+    class SlowServer:
+        def shutdown(self):
+            shutdown_started.set()
+            shutdown_release.wait(timeout=5)
+
+        def server_close(self):
+            close_called.set()
+
+    class FakeThread:
+        def is_alive(self):
+            return False
+
+    app = AvanzaTradingTui()
+    app.mcp_server = SlowServer()
+    app.mcp_thread = FakeThread()
+    app.mcp_token = "token"
+
+    started = time.perf_counter()
+    app.on_unmount()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.3
+    assert app.mcp_server is None
+    assert app.mcp_thread is None
+    assert app.mcp_token is None
+    assert shutdown_started.wait(timeout=0.5)
+
+    shutdown_release.set()
+    assert close_called.wait(timeout=0.5)
 
 
 def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
@@ -2382,6 +2423,72 @@ def test_mcp_account_scoped_portfolio_uses_matching_tenant_session():
     assert app.active_session_id == first.session_id
     assert app.active_tenant_session() is not None
     assert app.active_tenant_session().selected_account_id == "acc-1"
+    assert second.selected_account_id == "acc-2"
+
+
+def test_mcp_account_scoped_portfolio_does_not_activate_visible_session():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self, account_id: str, stock_name: str, orderbook_id: str):
+            self._account_id = account_id
+            self._stock_name = stock_name
+            self._orderbook_id = orderbook_id
+
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": f"pos-{self._account_id}",
+                        "account": {"id": self._account_id, "name": self._account_id},
+                        "instrument": {"name": self._stock_name, "orderbook": {"id": self._orderbook_id}},
+                        "volume": {"value": 1, "unit": "st"},
+                        "value": {"value": 100.0, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 90.0, "unit": "SEK"},
+                        "acquiredValue": {"value": 90.0, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 1.0, "unit": "%"},
+                            "absolute": {"value": 1.0, "unit": "SEK"},
+                        },
+                        "profit": {
+                            "absolute": {"value": 10.0, "unit": "SEK"},
+                            "relative": {"value": 11.11, "unit": "%"},
+                        },
+                    }
+                ],
+                "withoutOrderbook": [],
+            }
+
+    app = AvanzaTradingTui()
+    first = app.register_tenant_session(
+        FakeAvanza("acc-1", "Visible Stock", "ob-a"),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Visible"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Visible",
+    )
+    second = app.register_tenant_session(
+        FakeAvanza("acc-2", "Scoped Stock", "ob-b"),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Scoped"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Scoped",
+    )
+    app.load_active_state_from_tenant(first)
+
+    def fail_activate(*_args, **_kwargs):
+        raise AssertionError("scoped MCP reads must not activate the visible TUI session")
+
+    app.activate_tenant_session = fail_activate  # type: ignore[method-assign]
+
+    snapshot = app.execute_mcp_tool("avanza_portfolio", {"account_id": "acc-2"})
+
+    assert snapshot["account_id"] == "acc-2"
+    assert snapshot["positions"][0]["Stock"] == "Scoped Stock"
+    assert app.active_session_id == first.session_id
+    assert app.selected_account_id == "acc-1"
     assert second.selected_account_id == "acc-2"
 
 

@@ -8838,6 +8838,33 @@ class AvanzaTradingTui(App):
         self.holding_labels_by_order_book = dict(context.holding_labels_by_order_book)
         self.order_search_labels_by_order_book = dict(context.order_search_labels_by_order_book)
 
+    def capture_active_runtime_state(self) -> dict[str, Any]:
+        return {
+            "active_session_id": self.active_session_id,
+            "avanza": self.avanza,
+            "accounts": list(self.accounts),
+            "selected_account_id": self.selected_account_id,
+            "latest_portfolio_data": self.latest_portfolio_data,
+            "latest_stoploss_items": list(self.latest_stoploss_items),
+            "latest_open_order_items": list(self.latest_open_order_items),
+            "holding_volumes_by_order_book": dict(self.holding_volumes_by_order_book),
+            "holding_labels_by_order_book": dict(self.holding_labels_by_order_book),
+            "order_search_labels_by_order_book": dict(self.order_search_labels_by_order_book),
+        }
+
+    def restore_active_runtime_state(self, state: dict[str, Any]) -> None:
+        self.active_session_id = state.get("active_session_id")
+        self.avanza = state.get("avanza")
+        self.accounts = list(state.get("accounts") or [])
+        self.selected_account_id = state.get("selected_account_id")
+        portfolio_data = state.get("latest_portfolio_data")
+        self.latest_portfolio_data = portfolio_data if isinstance(portfolio_data, dict) else None
+        self.latest_stoploss_items = list(state.get("latest_stoploss_items") or [])
+        self.latest_open_order_items = list(state.get("latest_open_order_items") or [])
+        self.holding_volumes_by_order_book = dict(state.get("holding_volumes_by_order_book") or {})
+        self.holding_labels_by_order_book = dict(state.get("holding_labels_by_order_book") or {})
+        self.order_search_labels_by_order_book = dict(state.get("order_search_labels_by_order_book") or {})
+
     def session_summary_text(self, context: AvanzaTenantSession) -> Text:
         label = compact_single_line(context.label, max_len=24)
         styled = Text()
@@ -9078,16 +9105,20 @@ class AvanzaTradingTui(App):
             finally:
                 self.mcp_scope_original_session_id = None
             return
+        context = self.tenant_session_by_id(target)
         current = self.active_session_id
+        previous_original = self.mcp_scope_original_session_id
+        previous_state = self.capture_active_runtime_state()
+        self.sync_active_state_to_tenant()
         self.mcp_scope_original_session_id = current
         self.mcp_scope_depth += 1
-        self.activate_tenant_session(target, refresh_ui=False, announce=False, update_controls=False)
+        self.load_active_state_from_tenant(context)
         try:
             yield
         finally:
-            if current and current in self.tenant_sessions:
-                self.activate_tenant_session(current, refresh_ui=False, announce=False, update_controls=False)
-            self.mcp_scope_original_session_id = None
+            self.sync_active_state_to_tenant()
+            self.restore_active_runtime_state(previous_state)
+            self.mcp_scope_original_session_id = previous_original
             self.mcp_scope_depth = max(0, self.mcp_scope_depth - 1)
             if self.mcp_scope_depth == 0 and self.live_refresh_deferred_by_mcp_scope:
                 self.live_refresh_deferred_by_mcp_scope = False
@@ -10207,7 +10238,7 @@ class AvanzaTradingTui(App):
         self.write_mcp_log(f"[green]MCP enabled[/green] at http://{host}:{port}.")
         self.write_mcp_log(f"Proxy command: python {Path(__file__).name} mcp")
 
-    def stop_mcp_bridge(self, announce: bool = True) -> None:
+    def stop_mcp_bridge(self, announce: bool = True, wait: bool = True) -> None:
         if self.mcp_server is None:
             remove_mcp_session_file()
             return
@@ -10216,17 +10247,25 @@ class AvanzaTradingTui(App):
         self.mcp_server = None
         self.mcp_thread = None
         self.mcp_token = None
-        try:
-            server.shutdown()
-        except Exception:
-            pass
-        try:
-            server.server_close()
-        except Exception:
-            pass
-        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=0.5)
         remove_mcp_session_file()
+
+        def shutdown_server() -> None:
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+            try:
+                server.server_close()
+            except Exception:
+                pass
+            if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+                thread.join(timeout=0.5 if wait else 0.05)
+
+        if wait:
+            shutdown_server()
+        else:
+            threading.Thread(target=shutdown_server, daemon=True, name="avanza-mcp-bridge-shutdown").start()
+
         if announce:
             self.write_mcp_log("[yellow]MCP disabled.[/yellow]")
 
@@ -10269,7 +10308,7 @@ class AvanzaTradingTui(App):
         self.background_session_heartbeat_thread = None
         self.tv_lists_refresh_thread = None
         self.update_check_thread = None
-        self.stop_mcp_bridge(announce=False)
+        self.stop_mcp_bridge(announce=False, wait=False)
 
     def require_mcp_write(self, confirmed: bool) -> None:
         if not confirmed:
