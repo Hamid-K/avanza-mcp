@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.10 - 2026-06-18
+
+- Added per-tenant, per-account snapshot caching for positions, stop-losses, and open orders.
+- Refactored inactive multi-session refresh to update tenant caches in the background without activating or visibly switching TUI sessions/accounts.
+- Updated active-session refresh so one full Avanza fetch refreshes cached data for all accounts in the selected tenant while rendering only the selected account.
+- Account switching now paints from cached account data immediately, then live refresh fills in fresh quote/status data.
+- Hardened background refresh worker shutdown/inflight cleanup and added regression coverage for invisible background refresh behavior.
+
 ## 0.1.4 - 2026-05-26
 
 - Fixed critical live stop-loss default/config bug for triggered-order validity:

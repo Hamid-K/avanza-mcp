@@ -2546,6 +2546,120 @@ def test_background_session_heartbeat_marks_inactive_session_expired(monkeypatch
     assert second.session_id in app.live_refresh_auth_blocked_sessions
 
 
+def test_background_session_refresh_updates_inactive_cache_without_visible_switch(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class VisibleAvanza:
+        def get_overview(self):
+            return {"accounts": [{"id": "acc-1", "name": {"defaultName": "Visible"}, "type": "ISK", "status": "ACTIVE"}]}
+
+    class BackgroundAvanza:
+        def get_overview(self):
+            return {
+                "accounts": [
+                    {"id": "acc-2", "name": {"defaultName": "Company A"}, "type": "KF", "status": "ACTIVE"},
+                    {"id": "acc-3", "name": {"defaultName": "Company B"}, "type": "ISK", "status": "ACTIVE"},
+                ]
+            }
+
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "pos-2",
+                        "account": {"id": "acc-2", "name": "Company A"},
+                        "instrument": {"name": "Cached A", "orderbook": {"id": "ob-2"}},
+                        "volume": {"value": 4, "unit": "st"},
+                    },
+                    {
+                        "id": "pos-3",
+                        "account": {"id": "acc-3", "name": "Company B"},
+                        "instrument": {"name": "Cached B", "orderbook": {"id": "ob-3"}},
+                        "volume": {"value": 8, "unit": "st"},
+                    },
+                ],
+                "withoutOrderbook": [],
+            }
+
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "sl-2",
+                    "account": {"id": "acc-2", "name": "Company A"},
+                    "orderbook": {"id": "ob-2", "name": "Cached A"},
+                    "status": "ACTIVE",
+                    "order": {"type": "SELL"},
+                },
+                {
+                    "id": "sl-3",
+                    "account": {"id": "acc-3", "name": "Company B"},
+                    "orderbook": {"id": "ob-3", "name": "Cached B"},
+                    "status": "ACTIVE",
+                    "order": {"type": "SELL"},
+                },
+            ]
+
+        def get_orders(self):
+            return {
+                "buyOrders": [
+                    {
+                        "orderId": "ord-2",
+                        "accountId": "acc-2",
+                        "orderbook": {"id": "ob-2", "name": "Cached A"},
+                        "volume": 1,
+                        "status": "PENDING",
+                    }
+                ],
+                "sellOrders": [
+                    {
+                        "orderId": "ord-3",
+                        "accountId": "acc-3",
+                        "orderbook": {"id": "ob-3", "name": "Cached B"},
+                        "volume": 2,
+                        "status": "PENDING",
+                    }
+                ],
+            }
+
+    app = AvanzaTradingTui()
+    visible = app.register_tenant_session(
+        VisibleAvanza(),
+        {"accounts": [{"id": "acc-1", "name": {"defaultName": "Visible"}, "type": "ISK", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Visible",
+    )
+    background = app.register_tenant_session(
+        BackgroundAvanza(),
+        {"accounts": [{"id": "acc-2", "name": {"defaultName": "Company A"}, "type": "KF", "status": "ACTIVE"}]},
+        {"withOrderbook": [], "withoutOrderbook": []},
+        [],
+        [],
+        label="Background",
+    )
+    app.load_active_state_from_tenant(visible)
+
+    def fail_activate(*_args, **_kwargs):
+        raise AssertionError("background refresh must not activate a visible TUI session")
+
+    app.activate_tenant_session = fail_activate  # type: ignore[method-assign]
+    monkeypatch.setattr(app, "safe_call_from_thread", lambda callback, *args: (callback(*args), True)[1])
+
+    app._background_session_heartbeat_worker()
+
+    assert app.active_session_id == visible.session_id
+    assert app.selected_account_id == "acc-1"
+    assert background.selected_account_id == "acc-2"
+    assert sorted(background.account_snapshots) == ["acc-2", "acc-3"]
+    assert background.account_snapshots["acc-2"].stoploss_items[0]["id"] == "sl-2"
+    assert background.account_snapshots["acc-3"].stoploss_items[0]["id"] == "sl-3"
+    assert background.account_snapshots["acc-2"].open_order_items[0]["orderId"] == "ord-2"
+    assert background.account_snapshots["acc-3"].open_order_items[0]["orderId"] == "ord-3"
+    assert background.latest_stoploss_items[0]["id"] == "sl-2"
+    assert background.latest_open_order_items[0]["orderId"] == "ord-2"
+
+
 def test_mcp_account_scoped_portfolio_uses_matching_tenant_session():
     from avanza_cli import AvanzaTradingTui
 

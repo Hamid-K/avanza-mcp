@@ -55,7 +55,7 @@ python avanza_cli.py tui
 ```
 
 After login, the TUI hides the credential screen and loads the trading workspace. Use the account selector in the top bar to switch accounts. The position and stop-loss/open-order tables are filtered to the selected account and refresh live every 5 seconds. Use `Reload TUI` in the top control bar to hard-restart the app process with the same CLI arguments so local code changes are reloaded without manual quit/relaunch.
-Use `Login extra account` to add additional authenticated Avanza sessions. Switch sessions from the session selector; account list and table data follow the active session.
+Use `Login extra account` to add additional authenticated Avanza sessions. Switch sessions from the session selector; account list and table data follow the active session. Inactive sessions refresh their cached positions, stop-losses, and open orders in the background, so the visible TUI should not flicker through other accounts just to keep them fresh.
 The top-left app label includes the running version (`Avanza vX.Y.Z`) so the active build is always visible during trading sessions.
 The bottom status bar includes an automatic GitHub release check; if your build is outdated it flashes an update warning. Set `AVANZA_UPDATE_CHECK_ENABLED=0` to disable, or `AVANZA_GITHUB_REPO=owner/repo` to change the repository source.
 

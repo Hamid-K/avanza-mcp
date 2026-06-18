@@ -426,6 +426,19 @@ SESSION_ACCENT_COLORS: tuple[str, ...] = (
 
 
 @dataclass
+class AccountDataSnapshot:
+    account_id: str
+    portfolio_data: dict[str, Any] | None = None
+    stoploss_items: list[dict[str, Any]] = field(default_factory=list)
+    open_order_items: list[dict[str, Any]] = field(default_factory=list)
+    refreshed_at: datetime | None = None
+    portfolio_refreshed_at: datetime | None = None
+    orders_refreshed_at: datetime | None = None
+    auth_valid: bool = True
+    auth_error: str = ""
+
+
+@dataclass
 class AvanzaTenantSession:
     session_id: str
     label: str
@@ -436,6 +449,7 @@ class AvanzaTenantSession:
     latest_portfolio_data: dict[str, Any] | None = None
     latest_stoploss_items: list[dict[str, Any]] = field(default_factory=list)
     latest_open_order_items: list[dict[str, Any]] = field(default_factory=list)
+    account_snapshots: dict[str, AccountDataSnapshot] = field(default_factory=dict)
     holding_volumes_by_order_book: dict[str, str] = field(default_factory=dict)
     holding_labels_by_order_book: dict[str, str] = field(default_factory=dict)
     order_search_labels_by_order_book: dict[str, str] = field(default_factory=dict)
@@ -9360,6 +9374,128 @@ class AvanzaTradingTui(App):
                     return context
         return None
 
+    def account_ids_for_payload(
+        self,
+        context: AvanzaTenantSession,
+        portfolio_data: dict[str, Any] | None,
+        stoploss_items: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+    ) -> list[str]:
+        account_ids = {str(account.get("id", "")) for account in context.accounts if account.get("id")}
+        if context.selected_account_id:
+            account_ids.add(str(context.selected_account_id))
+        if isinstance(portfolio_data, dict):
+            for section in ("withOrderbook", "withoutOrderbook"):
+                for item in portfolio_data.get(section, []):
+                    if isinstance(item, dict):
+                        item_account_id = account_id_for_item(item)
+                        if item_account_id:
+                            account_ids.add(item_account_id)
+        for item in stoploss_items:
+            item_account_id = stop_loss_account_id(item)
+            if item_account_id:
+                account_ids.add(item_account_id)
+        for item in open_orders:
+            item_account_id = open_order_account_id(item)
+            if item_account_id:
+                account_ids.add(item_account_id)
+        return sorted(account_ids)
+
+    def update_tenant_account_snapshot(
+        self,
+        context: AvanzaTenantSession,
+        account_id: str,
+        *,
+        portfolio_data: dict[str, Any] | None = None,
+        stoploss_items: list[dict[str, Any]] | None = None,
+        open_orders: list[dict[str, Any]] | None = None,
+        refreshed_at: datetime | None = None,
+    ) -> AccountDataSnapshot:
+        token = str(account_id or "").strip()
+        snapshot = context.account_snapshots.get(token)
+        if snapshot is None:
+            snapshot = AccountDataSnapshot(account_id=token)
+            context.account_snapshots[token] = snapshot
+        now = refreshed_at or datetime.now(timezone.utc)
+        if portfolio_data is not None:
+            snapshot.portfolio_data = portfolio_data
+            snapshot.portfolio_refreshed_at = now
+        if stoploss_items is not None:
+            snapshot.stoploss_items = [
+                item for item in stoploss_items if stop_loss_matches_filters(item, account_id=token)
+            ]
+            snapshot.orders_refreshed_at = now
+        if open_orders is not None:
+            snapshot.open_order_items = [
+                item for item in open_orders if open_order_matches_filters(item, account_id=token)
+            ]
+            snapshot.orders_refreshed_at = now
+        snapshot.refreshed_at = now
+        snapshot.auth_valid = True
+        snapshot.auth_error = ""
+        return snapshot
+
+    def update_tenant_session_data_cache(
+        self,
+        session_id: str,
+        overview: dict[str, Any] | None,
+        portfolio_data: dict[str, Any] | None,
+        stoplosses: Any,
+        orders: Any,
+    ) -> None:
+        context = self.tenant_sessions.get(str(session_id or "").strip())
+        if context is None:
+            return
+        if isinstance(overview, dict):
+            accounts = account_rows_from_overview(overview)
+            if accounts:
+                context.accounts = accounts
+                selected = str(context.selected_account_id or "").strip()
+                if not selected or not any(str(item.get("id", "")) == selected for item in accounts):
+                    default = default_account(accounts)
+                    context.selected_account_id = str(default.get("id", "")) if default else None
+        stoploss_items = [item for item in stoplosses if isinstance(item, dict)] if isinstance(stoplosses, list) else []
+        open_orders = [item for item in open_order_items(orders) if isinstance(item, dict)]
+        refreshed_at = datetime.now(timezone.utc)
+        account_ids = self.account_ids_for_payload(context, portfolio_data, stoploss_items, open_orders)
+        for account_id in account_ids:
+            self.update_tenant_account_snapshot(
+                context,
+                account_id,
+                portfolio_data=portfolio_data if isinstance(portfolio_data, dict) else None,
+                stoploss_items=stoploss_items,
+                open_orders=open_orders,
+                refreshed_at=refreshed_at,
+            )
+        selected = str(context.selected_account_id or "").strip()
+        if selected:
+            snapshot = context.account_snapshots.get(selected)
+            if snapshot is not None:
+                if isinstance(snapshot.portfolio_data, dict):
+                    context.latest_portfolio_data = snapshot.portfolio_data
+                context.latest_stoploss_items = list(snapshot.stoploss_items)
+                context.latest_open_order_items = list(snapshot.open_order_items)
+        context.auth_valid = True
+        context.auth_error = ""
+        self.live_refresh_auth_blocked_sessions.discard(context.session_id)
+        self.live_refresh_auth_last_notice_at.pop(context.session_id, None)
+        self.refresh_session_select_options()
+        self.update_session_auth_badge()
+
+    def update_active_selected_account_snapshot(self, context: AvanzaTenantSession) -> None:
+        selected = str(context.selected_account_id or "").strip()
+        if not selected:
+            return
+        snapshot = self.update_tenant_account_snapshot(
+            context,
+            selected,
+            portfolio_data=context.latest_portfolio_data if isinstance(context.latest_portfolio_data, dict) else None,
+            stoploss_items=list(context.latest_stoploss_items),
+            open_orders=list(context.latest_open_order_items),
+        )
+        if not isinstance(snapshot.portfolio_data, dict) and isinstance(context.latest_portfolio_data, dict):
+            snapshot.portfolio_data = context.latest_portfolio_data
+
     def sync_active_state_to_tenant(self) -> None:
         context = self.active_tenant_session()
         if context is None:
@@ -9372,15 +9508,23 @@ class AvanzaTradingTui(App):
         context.holding_volumes_by_order_book = dict(self.holding_volumes_by_order_book)
         context.holding_labels_by_order_book = dict(self.holding_labels_by_order_book)
         context.order_search_labels_by_order_book = dict(self.order_search_labels_by_order_book)
+        self.update_active_selected_account_snapshot(context)
 
     def load_active_state_from_tenant(self, context: AvanzaTenantSession) -> None:
         self.active_session_id = context.session_id
         self.avanza = context.avanza
         self.accounts = list(context.accounts)
         self.selected_account_id = context.selected_account_id
-        self.latest_portfolio_data = context.latest_portfolio_data
-        self.latest_stoploss_items = list(context.latest_stoploss_items)
-        self.latest_open_order_items = list(context.latest_open_order_items)
+        snapshot = context.account_snapshots.get(str(context.selected_account_id or "").strip())
+        self.latest_portfolio_data = (
+            snapshot.portfolio_data
+            if snapshot is not None and isinstance(snapshot.portfolio_data, dict)
+            else context.latest_portfolio_data
+        )
+        self.latest_stoploss_items = list(snapshot.stoploss_items if snapshot is not None else context.latest_stoploss_items)
+        self.latest_open_order_items = list(
+            snapshot.open_order_items if snapshot is not None else context.latest_open_order_items
+        )
         self.holding_volumes_by_order_book = dict(context.holding_volumes_by_order_book)
         self.holding_labels_by_order_book = dict(context.holding_labels_by_order_book)
         self.order_search_labels_by_order_book = dict(context.order_search_labels_by_order_book)
@@ -9531,6 +9675,13 @@ class AvanzaTradingTui(App):
             latest_open_order_items=[item for item in open_order_items(orders) if isinstance(item, dict)],
         )
         self.tenant_sessions[session_id] = context
+        self.update_tenant_session_data_cache(
+            session_id,
+            overview,
+            portfolio if isinstance(portfolio, dict) else None,
+            stoplosses,
+            orders,
+        )
         return context
 
     def activate_tenant_session(
@@ -9828,6 +9979,21 @@ class AvanzaTradingTui(App):
         self.write_log(f"Loaded {len(self.latest_stoploss_items)} active stop-loss order(s) and {order_count} ongoing open order(s){suffix}.")
         self.sync_active_state_to_tenant()
 
+    def apply_cached_account_snapshot(self, account_id: str) -> bool:
+        context = self.active_tenant_session()
+        if context is None:
+            return False
+        snapshot = context.account_snapshots.get(str(account_id or "").strip())
+        if snapshot is None:
+            return False
+        applied = False
+        if isinstance(snapshot.portfolio_data, dict):
+            self.position_row_cache = {}
+            self.apply_portfolio_data(snapshot.portfolio_data, fetch_quotes=False, allow_status_lookup=False)
+            applied = True
+        self.apply_stoploss_orders_data(snapshot.stoploss_items, snapshot.open_order_items)
+        return applied
+
     def complete_login(
         self,
         avanza: Avanza,
@@ -9869,6 +10035,13 @@ class AvanzaTradingTui(App):
                 orders,
                 label=session_label,
             )
+        self.update_tenant_session_data_cache(
+            context.session_id,
+            overview,
+            portfolio if isinstance(portfolio, dict) else None,
+            stoplosses,
+            orders,
+        )
         self.load_active_state_from_tenant(context)
         self.position_row_cache = {}
         self.query_one("#login-screen").display = False
@@ -13700,6 +13873,8 @@ class AvanzaTradingTui(App):
         if session_id and self.active_session_id and session_id != self.active_session_id:
             self._finish_live_refresh_cycle()
             return
+        if session_id:
+            self.update_tenant_session_data_cache(session_id, None, data, stoplosses, orders)
         self.mark_tenant_session_auth_ok(session_id)
         self.apply_portfolio_data(
             data,
@@ -13736,23 +13911,47 @@ class AvanzaTradingTui(App):
         self.update_session_auth_badge()
 
     def _background_session_heartbeat_worker(self) -> None:
-        active_session_id = str(self.active_session_id or "").strip()
-        session_snapshot = list(self.tenant_sessions.items())
-        for session_id, context in session_snapshot:
-            if session_id == active_session_id:
-                continue
-            try:
-                overview = context.avanza.get_overview()
-            except Exception as exc:
-                if is_unauthorized_http_error(exc):
-                    self.safe_call_from_thread(self.mark_tenant_session_auth_expired, session_id, exc)
-                continue
-            self.safe_call_from_thread(self.mark_tenant_session_auth_ok, session_id)
-            if isinstance(overview, dict):
-                accounts = account_rows_from_overview(overview)
-                self.safe_call_from_thread(self.update_tenant_session_accounts, session_id, accounts)
-        with self.background_session_heartbeat_lock:
-            self.background_session_heartbeat_inflight = False
+        try:
+            active_session_id = str(self.active_session_id or "").strip()
+            session_snapshot = list(self.tenant_sessions.items())
+            for session_id, context in session_snapshot:
+                if self.shutdown_event.is_set():
+                    break
+                if session_id == active_session_id:
+                    continue
+                try:
+                    overview = context.avanza.get_overview()
+                    portfolio = context.avanza.get_accounts_positions()
+                    stoplosses = context.avanza.get_all_stop_losses()
+                    try:
+                        orders = context.avanza.get_orders()
+                    except Exception as exc:
+                        self.safe_call_from_thread(
+                            self.debug_log,
+                            f"background_session_refresh({session_id}) orders fetch failed: {exc}",
+                        )
+                        orders = []
+                except Exception as exc:
+                    if is_unauthorized_http_error(exc):
+                        self.safe_call_from_thread(self.mark_tenant_session_auth_expired, session_id, exc)
+                    else:
+                        self.safe_call_from_thread(
+                            self.debug_log,
+                            f"background_session_refresh({session_id}) failed: {exc}",
+                        )
+                    continue
+                if isinstance(portfolio, dict):
+                    self.safe_call_from_thread(
+                        self.update_tenant_session_data_cache,
+                        session_id,
+                        overview if isinstance(overview, dict) else None,
+                        portfolio,
+                        stoplosses,
+                        orders,
+                    )
+        finally:
+            with self.background_session_heartbeat_lock:
+                self.background_session_heartbeat_inflight = False
 
     def refresh_background_sessions(self) -> None:
         if self.shutdown_event.is_set():
@@ -13831,6 +14030,7 @@ class AvanzaTradingTui(App):
             raise ValueError(f"Unknown account id: {account_id}")
         self.set_selected_account(account)
         self.position_row_cache = {}
+        self.apply_cached_account_snapshot(account_id)
         self.refresh_selected_account_live()
 
     def on_select_changed(self, event: Select.Changed) -> None:
