@@ -68,7 +68,9 @@ These instructions capture the user's trading workflow preferences for future LL
 - Prefer `tenant_session_id` for Avanza tenant routing.
 - Use `session_id` only where paper-ledger tools require it for paper strategy grouping.
 - Use `avanza_sessions` to list loaded authenticated TUI sessions before cross-account analysis. Then call `avanza_accounts` for each tenant session and build an explicit account map.
-- For multi-account portfolio reviews, read each account explicitly with `tenant_session_id` plus `account_id`: `avanza_portfolio`, `avanza_stoplosses`, `avanza_open_orders`, `avanza_ongoing_orders`, `avanza_transactions`, `avanza_live_snapshot`, `avanza_realtime_quotes`, and `avanza_account_performance` where needed.
+- For single-instrument trading checks, prefer focused tools before large dumps: `avanza_position`, `avanza_instrument_state`, `avanza_instrument_stoplosses`, `avanza_instrument_open_orders`, and `avanza_instrument_transactions`.
+- For portfolio-level protection checks, prefer compact summary tools: `avanza_protection_gaps`, `avanza_sold_today_buyback_state`, `avanza_recent_fills_needing_protection`, `avanza_verify_no_raw_failed_orders`, and `avanza_verify_protection`.
+- For multi-account portfolio reviews, read each account explicitly with `tenant_session_id` plus `account_id`. Use focused tools when possible; use broad tools such as `avanza_portfolio`, `avanza_stoplosses`, `avanza_open_orders`, `avanza_ongoing_orders`, `avanza_transactions`, `avanza_live_snapshot`, `avanza_realtime_quotes`, and `avanza_account_performance` only when the full account view is needed.
 - `avanza_select_session` and `avanza_select_account` are read-only context switches. Prefer explicit scoped reads over switching context when reviewing multiple accounts.
 - For mutations, never depend on whatever account happens to be selected in the UI. Pass the intended `tenant_session_id` and `account_id` when the tool supports them, include `confirm: true` only after explicit current-thread authorization, verify readback on the same scoped account, and revoke live authorization afterward.
 - If the bridge cannot route an account by `tenant_session_id` or `account_id`, stop and report the routing uncertainty before proposing or applying any mutation.
@@ -80,7 +82,7 @@ These instructions capture the user's trading workflow preferences for future LL
 ### MCP Transactions History Standard
 
 - Use `avanza_transactions` when the user asks for executed orders or transaction history.
-- Use `avanza_open_orders_raw` when open-order payload shape needs debugging (for example side/id mapping regressions) before making edit/cancel decisions.
+- Use `avanza_open_orders_raw` with `include_raw: true` only when open-order payload shape needs debugging (for example side/id mapping regressions) before making edit/cancel decisions.
 - Use `avanza_account_performance` when the user asks for account-level return/development figures (including since-start / "Sedan start").
 - Default behavior is executed BUY/SELL rows; expand with `types` only when requested (for example `DIVIDEND`, `INTEREST`).
 - For "recent trades", set `max_elements` explicitly (for example `15`).

@@ -3033,6 +3033,344 @@ def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compact_filter_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def name_matches_filter(value: Any, expected: Any) -> bool:
+    expected_text = compact_filter_text(expected)
+    if not expected_text:
+        return True
+    return expected_text in compact_filter_text(value)
+
+
+def status_matches_filter(value: Any, expected: Any) -> bool:
+    expected_text = str(expected or "").strip().upper()
+    if not expected_text:
+        return True
+    return str(value or "").strip().upper() == expected_text
+
+
+def side_matches_filter(value: Any, expected: Any) -> bool:
+    expected_side = normalize_order_side(expected)
+    if not expected_side:
+        return True
+    return normalize_order_side(value) == expected_side
+
+
+def stop_loss_account_id(item: dict[str, Any]) -> str:
+    return str(nested_value(item, "account", "id") or item.get("accountId") or item.get("account_id") or "")
+
+
+def stop_loss_account_name(item: dict[str, Any]) -> str:
+    return str(nested_value(item, "account", "name") or item.get("accountName") or "")
+
+
+def stop_loss_order_book_id(item: dict[str, Any]) -> str:
+    return str(nested_value(item, "orderbook", "id") or item.get("orderBookId") or item.get("order_book_id") or "")
+
+
+def stop_loss_stock_name(item: dict[str, Any]) -> str:
+    return str(nested_value(item, "orderbook", "name") or item.get("instrumentName") or item.get("name") or "")
+
+
+def stop_loss_side(item: dict[str, Any]) -> str:
+    return normalize_order_side(nested_value(item, "order", "type") or item.get("side") or item.get("orderType"))
+
+
+def stop_loss_volume(item: dict[str, Any]) -> float:
+    value = nested_value(item, "order", "volume") or item.get("volume")
+    parsed = scalar_number(value)
+    return float(parsed or 0.0)
+
+
+def position_volume(item: dict[str, Any]) -> float:
+    parsed = value_number(item, "volume")
+    return float(parsed or 0.0)
+
+
+def stop_loss_trigger_percent(item: dict[str, Any]) -> float | None:
+    value_type = str(nested_value(item, "trigger", "valueType") or "").strip().lower()
+    if value_type not in {"percentage", "percent", "%"}:
+        return None
+    return scalar_number(nested_value(item, "trigger", "value"))
+
+
+def transaction_order_book_id(item: dict[str, Any]) -> str:
+    return str(
+        nested_value(item, "orderbook", "id")
+        or item.get("orderBookId")
+        or item.get("order_book_id")
+        or nested_value(item, "instrument", "orderbook", "id")
+        or ""
+    )
+
+
+def transaction_stock_name(item: dict[str, Any]) -> str:
+    orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
+    return str(item.get("instrumentName") or orderbook.get("name") or item.get("description") or "")
+
+
+def transaction_trade_date(item: dict[str, Any]) -> str:
+    return str(item.get("tradeDate") or item.get("date") or "")
+
+
+def transaction_side(item: dict[str, Any]) -> str:
+    return normalize_order_side(item.get("type"))
+
+
+def transaction_volume(item: dict[str, Any]) -> float:
+    parsed = value_number(item, "volume")
+    return float(parsed or 0.0)
+
+
+def transaction_price(item: dict[str, Any]) -> float | None:
+    return value_number(item, "priceInTransactionCurrency") or value_number(item, "priceInTradedCurrency")
+
+
+def transaction_amount(item: dict[str, Any]) -> float | None:
+    return value_number(item, "amount")
+
+
+def instrument_is_eth_like(name: Any, orderbook_id: Any = "") -> bool:
+    text = compact_filter_text(f"{name} {orderbook_id}")
+    return any(token in text for token in ("ethereum", "ether", "ethusd", "etheur", "eth xbt"))
+
+
+def position_mcp_dict(item: dict[str, Any], realtime_status_value: str = "") -> dict[str, Any]:
+    row = list(position_state_row(item, realtime_status_value or None))
+    if realtime_status_value:
+        row[-1] = realtime_status_value
+    account = item.get("account") if isinstance(item.get("account"), dict) else {}
+    return {
+        "Stock": row[0],
+        "Order Book ID": row[1],
+        "Volume": row[2],
+        "Value": row[3],
+        "Avg Price": row[4],
+        "Day %": row[5],
+        "Day SEK": row[6],
+        "Profit %": row[7],
+        "Profit": row[8],
+        "Real-time": row[9],
+        "account_id": str(account.get("id") or ""),
+        "account_name": str(account.get("name") or ""),
+        "orderbook_id": row[1],
+        "stock": row[0],
+        "volume": position_volume(item),
+    }
+
+
+def stop_loss_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
+    trigger = item.get("trigger") if isinstance(item.get("trigger"), dict) else {}
+    order = item.get("order") if isinstance(item.get("order"), dict) else {}
+    account_id = stop_loss_account_id(item)
+    account_name = stop_loss_account_name(item)
+    stock = stop_loss_stock_name(item)
+    orderbook_id = stop_loss_order_book_id(item)
+    side = stop_loss_side(item)
+    trigger_type = str(trigger.get("type", "") or "")
+    trigger_value = trigger.get("value", "")
+    trigger_value_type = str(trigger.get("valueType", "") or "")
+    order_price = order.get("price", "")
+    order_price_type = str(order.get("priceType", "") or "")
+    valid_until = str(trigger.get("validUntil", "") or "")
+    return {
+        "Stop Loss ID": str(item.get("id", "") or ""),
+        "Status": str(item.get("status", "") or ""),
+        "Account": account_name,
+        "Account ID": account_id,
+        "Stock": stock,
+        "Order Book ID": orderbook_id,
+        "Trigger": f"{trigger_type} {formatted_typed_value(trigger_value, trigger_value_type)}".strip(),
+        "Order": f"{str(order.get('type', '') or '')} {order.get('volume', '')} @ {formatted_typed_value(order_price, order_price_type)}".strip(),
+        "Valid Until": valid_until,
+        "stop_loss_id": str(item.get("id", "") or ""),
+        "status": str(item.get("status", "") or ""),
+        "account_id": account_id,
+        "account_name": account_name,
+        "stock": stock,
+        "orderbook_id": orderbook_id,
+        "side": side,
+        "volume": stop_loss_volume(item),
+        "trigger_type": trigger_type,
+        "trigger_value": scalar_number(trigger_value),
+        "trigger_value_type": trigger_value_type,
+        "order_price": scalar_number(order_price),
+        "order_price_type": order_price_type,
+        "valid_until": valid_until,
+        "order_valid_days": order.get("validDays") or order.get("valid_days"),
+    }
+
+
+def stop_loss_matches_filters(
+    item: dict[str, Any],
+    *,
+    account_id: str | None = None,
+    orderbook_id: str | None = None,
+    instrument_name: str | None = None,
+    side: str | None = None,
+    status: str | None = None,
+) -> bool:
+    if account_id and stop_loss_account_id(item) != account_id:
+        return False
+    if orderbook_id and stop_loss_order_book_id(item) != str(orderbook_id):
+        return False
+    if not name_matches_filter(stop_loss_stock_name(item), instrument_name):
+        return False
+    if not side_matches_filter(stop_loss_side(item), side):
+        return False
+    if not status_matches_filter(item.get("status"), status):
+        return False
+    return True
+
+
+def open_order_matches_filters(
+    item: dict[str, Any],
+    *,
+    account_id: str | None = None,
+    orderbook_id: str | None = None,
+    instrument_name: str | None = None,
+    side: str | None = None,
+    status: str | None = None,
+) -> bool:
+    if account_id and open_order_account_id(item) != account_id:
+        return False
+    if orderbook_id and open_order_order_book_id(item) != str(orderbook_id):
+        return False
+    if not name_matches_filter(open_order_stock_name(item), instrument_name):
+        return False
+    if not side_matches_filter(open_order_side_value(item), side):
+        return False
+    if not status_matches_filter(item.get("status"), status):
+        return False
+    return True
+
+
+def transaction_matches_instrument_filters(
+    item: dict[str, Any],
+    *,
+    account_id: str | None = None,
+    orderbook_id: str | None = None,
+    instrument_name: str | None = None,
+    side: str | None = None,
+    status: str | None = None,
+    executed_only: bool = True,
+) -> bool:
+    if not transaction_matches_filters(item, account_id, executed_only):
+        return False
+    if orderbook_id and transaction_order_book_id(item) != str(orderbook_id):
+        return False
+    if not name_matches_filter(transaction_stock_name(item), instrument_name):
+        return False
+    if not side_matches_filter(transaction_side(item), side):
+        return False
+    if status:
+        candidate_status = str(item.get("status") or item.get("orderStatus") or "").strip().upper()
+        if candidate_status != str(status).strip().upper():
+            return False
+    return True
+
+
+def summarize_stop_protection(position: dict[str, Any] | None, stoplosses: list[dict[str, Any]]) -> dict[str, Any]:
+    holding_volume = position_volume(position) if isinstance(position, dict) else 0.0
+    active_sell_volume = sum(
+        stop_loss_volume(item)
+        for item in stoplosses
+        if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "SELL"
+    )
+    active_buy_volume = sum(
+        stop_loss_volume(item)
+        for item in stoplosses
+        if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "BUY"
+    )
+    failed_volume = sum(
+        stop_loss_volume(item)
+        for item in stoplosses
+        if str(item.get("status", "")).upper() in {"ERROR", "FAILED", "REJECTED"}
+    )
+    gap = max(holding_volume - active_sell_volume, 0.0)
+    overcoverage = max(active_sell_volume - holding_volume, 0.0)
+    return {
+        "holding_volume": holding_volume,
+        "active_sell_stop_volume": active_sell_volume,
+        "active_buy_stop_volume": active_buy_volume,
+        "failed_stop_volume": failed_volume,
+        "sell_protection_gap": gap,
+        "sell_overcoverage": overcoverage,
+        "is_fully_sell_protected": holding_volume <= active_sell_volume if holding_volume > 0 else True,
+    }
+
+
+def summarize_sold_transactions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if transaction_side(item) != "SELL":
+            continue
+        key = transaction_order_book_id(item) or transaction_stock_name(item)
+        if not key:
+            continue
+        volume = abs(transaction_volume(item))
+        price = transaction_price(item)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "orderbook_id": transaction_order_book_id(item),
+                "stock": transaction_stock_name(item),
+                "sold_volume": 0.0,
+                "sold_notional": 0.0,
+                "sell_count": 0,
+                "transactions": [],
+            },
+        )
+        bucket["sold_volume"] += volume
+        if price is not None:
+            bucket["sold_notional"] += volume * price
+        bucket["sell_count"] += 1
+        bucket["transactions"].append(transaction_history_dict_row(item))
+    rows: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        volume = float(bucket["sold_volume"] or 0.0)
+        notional = float(bucket["sold_notional"] or 0.0)
+        bucket["avg_sell_price"] = (notional / volume) if volume else None
+        rows.append(bucket)
+    return sorted(rows, key=lambda row: str(row.get("stock") or row.get("orderbook_id") or ""))
+
+
+def first_nested_text_for_keys(data: Any, keys: set[str]) -> str:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key in keys and value not in (None, ""):
+                return str(value)
+        for value in data.values():
+            found = first_nested_text_for_keys(value, keys)
+            if found:
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = first_nested_text_for_keys(value, keys)
+            if found:
+                return found
+    return ""
+
+
+def parse_optional_iso_date(value: Any, *, label: str = "date") -> date | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an ISO date string.") from exc
+
+
+def mcp_orderbook_filter(arguments: dict[str, Any]) -> str | None:
+    value = arguments.get("orderbook_id", arguments.get("order_book_id"))
+    text = str(value or "").strip()
+    return text or None
+
+
 def render_transactions_history(
     payload: Any,
     account_id: str | None = None,
@@ -6063,6 +6401,26 @@ class TicketPaneResizer(Static):
         event.stop()
 
 
+MCP_COMPACT_FILTER_PROPERTIES = {
+    "account_id": {"type": "string"},
+    "orderbook_id": {"type": ["string", "integer"]},
+    "order_book_id": {"type": ["string", "integer"]},
+    "instrument_name": {"type": "string"},
+    "side": {"type": "string", "enum": ["BUY", "SELL", "buy", "sell"]},
+    "status": {"type": "string"},
+    "compact": {"type": "boolean", "default": False},
+}
+
+MCP_DATE_FILTER_PROPERTIES = {
+    "transactions_from": {"type": "string"},
+    "transactions_to": {"type": "string"},
+    "changed_since": {"type": "string"},
+    "date": {"type": "string"},
+    "from": {"type": "string"},
+    "to": {"type": "string"},
+}
+
+
 MCP_TOOLS = [
     {
         "name": "avanza_status",
@@ -6410,28 +6768,28 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_portfolio",
-        "description": "List portfolio positions for the selected account, or a supplied account_id.",
+        "description": "List portfolio positions for the selected account, optionally filtered by one instrument.",
         "inputSchema": {
             "type": "object",
-            "properties": {"account_id": {"type": "string"}},
+            "properties": MCP_COMPACT_FILTER_PROPERTIES,
             "additionalProperties": False,
         },
     },
     {
         "name": "avanza_stoplosses",
-        "description": "List stop-loss orders for the selected account, or a supplied account_id.",
+        "description": "List stop-loss orders for the selected account, optionally filtered by instrument, side, or status.",
         "inputSchema": {
             "type": "object",
-            "properties": {"account_id": {"type": "string"}},
+            "properties": MCP_COMPACT_FILTER_PROPERTIES,
             "additionalProperties": False,
         },
     },
     {
         "name": "avanza_open_orders",
-        "description": "List live open/pending regular orders for the selected account, or a supplied account_id, with stable IDs for edit/cancel flows.",
+        "description": "List live open/pending regular orders, optionally filtered by instrument, side, or status, with stable IDs for edit/cancel flows.",
         "inputSchema": {
             "type": "object",
-            "properties": {"account_id": {"type": "string"}},
+            "properties": MCP_COMPACT_FILTER_PROPERTIES,
             "additionalProperties": False,
         },
     },
@@ -6440,7 +6798,10 @@ MCP_TOOLS = [
         "description": "Debug tool: return normalized open orders plus raw Avanza order payload for schema diagnostics.",
         "inputSchema": {
             "type": "object",
-            "properties": {"account_id": {"type": "string"}},
+            "properties": {
+                **MCP_COMPACT_FILTER_PROPERTIES,
+                "include_raw": {"type": "boolean", "default": False},
+            },
             "additionalProperties": False,
         },
     },
@@ -6450,7 +6811,7 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "account_id": {"type": "string"},
+                **MCP_COMPACT_FILTER_PROPERTIES,
                 "include_paper": {"type": "boolean", "default": True},
             },
             "additionalProperties": False,
@@ -6462,9 +6823,8 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "account_id": {"type": "string"},
-                "transactions_from": {"type": "string"},
-                "transactions_to": {"type": "string"},
+                **MCP_COMPACT_FILTER_PROPERTIES,
+                **MCP_DATE_FILTER_PROPERTIES,
                 "types": {
                     "type": "array",
                     "items": {"type": "string", "enum": TRANSACTION_TYPE_CHOICES},
@@ -6478,10 +6838,149 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_live_snapshot",
-        "description": "Read a decision-ready snapshot for polling loops: positions, live stop-losses/orders, paper orders, and safety mode.",
+        "description": "Read a decision-ready snapshot for polling loops; supports compact instrument filtering to reduce payload size.",
         "inputSchema": {
             "type": "object",
-            "properties": {"account_id": {"type": "string"}},
+            "properties": MCP_COMPACT_FILTER_PROPERTIES,
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_position",
+        "description": "Read one account position by orderbook_id without dumping the full portfolio.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "orderbook_id": {"type": ["string", "integer"]},
+            },
+            "required": ["account_id", "orderbook_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_instrument_stoplosses",
+        "description": "Read stop-loss rows for one instrument/account with optional side/status filters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **MCP_COMPACT_FILTER_PROPERTIES,
+                "account_id": {"type": "string"},
+                "orderbook_id": {"type": ["string", "integer"]},
+            },
+            "required": ["account_id", "orderbook_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_instrument_open_orders",
+        "description": "Read open/pending regular orders for one instrument/account, with optional raw payload diagnostics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **MCP_COMPACT_FILTER_PROPERTIES,
+                "account_id": {"type": "string"},
+                "orderbook_id": {"type": ["string", "integer"]},
+                "include_raw": {"type": "boolean", "default": True},
+            },
+            "required": ["account_id", "orderbook_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_instrument_transactions",
+        "description": "Read recent transactions for one instrument/account without dumping unrelated history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **MCP_COMPACT_FILTER_PROPERTIES,
+                **MCP_DATE_FILTER_PROPERTIES,
+                "account_id": {"type": "string"},
+                "orderbook_id": {"type": ["string", "integer"]},
+                "max_elements": {"type": "integer", "minimum": 1, "maximum": 20000, "default": 1000},
+                "executed_only": {"type": "boolean", "default": True},
+            },
+            "required": ["account_id", "orderbook_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_instrument_state",
+        "description": "Read one instrument's quote, position, active/error stops, open orders, recent transactions, and protection summary.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **MCP_DATE_FILTER_PROPERTIES,
+                "account_id": {"type": "string"},
+                "orderbook_id": {"type": ["string", "integer"]},
+                "include_raw": {"type": "boolean", "default": True},
+            },
+            "required": ["account_id", "orderbook_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_protection_gaps",
+        "description": "Return positions whose active sell stop-loss volume is below current holding, plus error stops.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "exclude_orderbook_ids": {"type": "array", "items": {"type": ["string", "integer"]}},
+                "exclude_eth": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_sold_today_buyback_state",
+        "description": "Summarize same-day sold instruments and whether active buy-back stops/orders cover sold volume.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "date": {"type": "string"},
+                "tight_trigger_percent_max": {"type": "number", "default": 8.0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_recent_fills_needing_protection",
+        "description": "Return recently bought non-ETH instruments whose active sell protection is below current holding.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "since": {"type": "string"},
+                "exclude_eth": {"type": "boolean", "default": True},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_verify_no_raw_failed_orders",
+        "description": "Compact post-mutation check for failed/rejected open regular orders.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "orderbook_ids": {"type": "array", "items": {"type": ["string", "integer"]}},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_verify_protection",
+        "description": "Compact post-mutation check that positions are covered by active sell stop-losses.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "orderbook_ids": {"type": "array", "items": {"type": ["string", "integer"]}},
+                "full_holding": {"type": "boolean", "default": True},
+                "exclude_eth": {"type": "boolean", "default": True},
+            },
             "additionalProperties": False,
         },
     },
@@ -6796,6 +7295,43 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_stoploss_set_batch",
+        "description": "Place multiple stop-loss orders with per-item validation/readback. Live placement requires TUI R/W mode, live authorization, and confirm=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_session_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "order_book_id": {"type": "string"},
+                            "trigger_type": {"type": "string"},
+                            "trigger_value": {"type": "number"},
+                            "trigger_value_type": {"type": "string", "default": "%"},
+                            "valid_until": {"type": "string"},
+                            "order_type": {"type": "string", "default": "sell"},
+                            "order_price": {"type": "number"},
+                            "order_price_type": {"type": "string", "default": "%"},
+                            "volume": {"type": "number"},
+                            "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
+                            "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
+                            "short_selling_allowed": {"type": "boolean", "default": False},
+                        },
+                        "required": ["order_book_id", "trigger_value", "order_price", "volume"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["account_id", "items"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_order_set",
         "description": "Dry-run or place a regular buy/sell order. Live placement requires TUI R/W mode and confirm=true.",
         "inputSchema": {
@@ -6949,9 +7485,20 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_ongoing_orders",
     "avanza_transactions",
     "avanza_live_snapshot",
+    "avanza_position",
+    "avanza_instrument_stoplosses",
+    "avanza_instrument_open_orders",
+    "avanza_instrument_transactions",
+    "avanza_instrument_state",
+    "avanza_protection_gaps",
+    "avanza_sold_today_buyback_state",
+    "avanza_recent_fills_needing_protection",
+    "avanza_verify_no_raw_failed_orders",
+    "avanza_verify_protection",
     "avanza_realtime_quotes",
     "avanza_fee_estimate",
     "avanza_stoploss_set",
+    "avanza_stoploss_set_batch",
     "avanza_order_set",
     "avanza_order_edit",
     "avanza_open_order_edit",
@@ -10166,47 +10713,203 @@ class AvanzaTradingTui(App):
         payload["mode"] = "experimental_scrape_mode"
         return payload
 
-    def portfolio_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+    def filtered_portfolio_items(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         data = avanza.get_accounts_positions()
         if not isinstance(data, dict):
             raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
-        rows = []
+        items: list[dict[str, Any]] = []
         for section in ("withOrderbook", "withoutOrderbook"):
             for item in data.get(section, []):
-                if isinstance(item, dict) and matches_account(item, account_id or None):
-                    status = self.realtime_status_for_position(item)
-                    row = list(position_state_row(item, status))
-                    row[-1] = status
-                    rows.append(tuple(row))
+                if not isinstance(item, dict) or not matches_account(item, account_id or None):
+                    continue
+                if orderbook_id and position_order_book_id(item) != str(orderbook_id):
+                    continue
+                if not name_matches_filter(nested_value(item, "instrument", "name"), instrument_name):
+                    continue
+                items.append(item)
+        return data, items
+
+    def portfolio_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        _data, items = self.filtered_portfolio_items(
+            avanza,
+            account_id,
+            orderbook_id=orderbook_id,
+            instrument_name=instrument_name,
+        )
+        positions = [position_mcp_dict(item, self.realtime_status_for_position(item)) for item in items]
+        if compact:
+            positions = [
+                {
+                    "stock": row["stock"],
+                    "orderbook_id": row["orderbook_id"],
+                    "volume": row["volume"],
+                    "value": row["Value"],
+                    "avg_price": row["Avg Price"],
+                    "day_percent": row["Day %"],
+                    "day_sek": row["Day SEK"],
+                    "profit_percent": row["Profit %"],
+                    "profit": row["Profit"],
+                    "realtime": row["Real-time"],
+                }
+                for row in positions
+            ]
         return {
             "account_id": account_id or None,
-            "positions": rows_as_dicts(
-                ["Stock", "Order Book ID", "Volume", "Value", "Avg Price", "Day %", "Day SEK", "Profit %", "Profit", "Real-time"],
-                rows,
-            ),
+            "positions": positions,
         }
 
-    def stoploss_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+    def filtered_stoploss_items(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+        side: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
         data = avanza.get_all_stop_losses()
         if not isinstance(data, list):
             raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
-        rows = [stop_loss_mcp_row(item) for item in data if isinstance(item, dict) and matches_account(item, account_id or None)]
+        return [
+            item
+            for item in data
+            if isinstance(item, dict)
+            and stop_loss_matches_filters(
+                item,
+                account_id=account_id or None,
+                orderbook_id=orderbook_id,
+                instrument_name=instrument_name,
+                side=side,
+                status=status,
+            )
+        ]
+
+    def stoploss_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+        side: str | None = None,
+        status: str | None = None,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        items = self.filtered_stoploss_items(
+            avanza,
+            account_id,
+            orderbook_id=orderbook_id,
+            instrument_name=instrument_name,
+            side=side,
+            status=status,
+        )
+        rows = [stop_loss_mcp_dict(item) for item in items]
+        if compact:
+            rows = [
+                {
+                    "stop_loss_id": row["stop_loss_id"],
+                    "status": row["status"],
+                    "account_id": row["account_id"],
+                    "stock": row["stock"],
+                    "orderbook_id": row["orderbook_id"],
+                    "side": row["side"],
+                    "volume": row["volume"],
+                    "trigger_type": row["trigger_type"],
+                    "trigger_value": row["trigger_value"],
+                    "trigger_value_type": row["trigger_value_type"],
+                    "order_price": row["order_price"],
+                    "order_price_type": row["order_price_type"],
+                    "valid_until": row["valid_until"],
+                }
+                for row in rows
+            ]
         return {
             "account_id": account_id or None,
-            "stoplosses": rows_as_dicts(
-                ["Stop Loss ID", "Status", "Account", "Stock", "Order Book ID", "Trigger", "Order", "Valid Until"],
-                rows,
-            ),
+            "stoplosses": rows,
         }
 
-    def open_orders_snapshot(self, avanza: Any, account_id: str, include_raw: bool = False) -> dict[str, Any]:
+    def filtered_open_order_items(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+        side: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Any, list[dict[str, Any]]]:
         try:
             data = avanza.get_orders()
         except Exception:
             data = []
         items = open_order_items(data)
-        filtered_items = [item for item in items if isinstance(item, dict) and matches_account(item, account_id or None)]
+        filtered_items = [
+            item
+            for item in items
+            if isinstance(item, dict)
+            and open_order_matches_filters(
+                item,
+                account_id=account_id or None,
+                orderbook_id=orderbook_id,
+                instrument_name=instrument_name,
+                side=side,
+                status=status,
+            )
+        ]
+        return data, filtered_items
+
+    def open_orders_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        include_raw: bool = False,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+        side: str | None = None,
+        status: str | None = None,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        data, filtered_items = self.filtered_open_order_items(
+            avanza,
+            account_id,
+            orderbook_id=orderbook_id,
+            instrument_name=instrument_name,
+            side=side,
+            status=status,
+        )
         orders = [open_order_mcp_dict(item) for item in filtered_items]
+        if compact:
+            orders = [
+                {
+                    "order_id": row["order_id"],
+                    "account_id": row["account_id"],
+                    "orderbook_id": row["order_book_id"],
+                    "stock": row["Stock"],
+                    "side": row["side"],
+                    "volume": row["Volume"],
+                    "price": row["Price"],
+                    "valid_until": row["Valid Until"],
+                    "status": row["Status"],
+                }
+                for row in orders
+            ]
         snapshot: dict[str, Any] = {
             "account_id": account_id or None,
             "orders": orders,
@@ -10214,6 +10917,451 @@ class AvanzaTradingTui(App):
         if include_raw:
             snapshot["raw"] = payload_to_json_safe(data)
         return snapshot
+
+    def transactions_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_id: str | None = None,
+        instrument_name: str | None = None,
+        side: str | None = None,
+        status: str | None = None,
+        transactions_from: date | None = None,
+        transactions_to: date | None = None,
+        types: Any = None,
+        isin: str | None = None,
+        max_elements: int = 1000,
+        executed_only: bool = True,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        transaction_types = parse_transaction_types(types)
+        payload = avanza.get_transactions_details(
+            transaction_details_types=transaction_types,
+            transactions_from=transactions_from,
+            transactions_to=transactions_to,
+            isin=isin,
+            max_elements=max_elements,
+        )
+        items, first_date = transactions_items(payload)
+        rows = [
+            transaction_history_dict_row(item)
+            for item in items
+            if transaction_matches_instrument_filters(
+                item,
+                account_id=account_id or None,
+                orderbook_id=orderbook_id,
+                instrument_name=instrument_name,
+                side=side,
+                status=status,
+                executed_only=executed_only,
+            )
+        ]
+        if compact:
+            rows = [
+                {
+                    "date": row["Trade Date"],
+                    "stock": row["Stock"],
+                    "type": row["Type"],
+                    "volume": row["Volume"],
+                    "price": row["Price"],
+                    "amount": row["Amount"],
+                    "result": row["Result"],
+                }
+                for row in rows
+            ]
+        return {
+            "account_id": account_id or None,
+            "executed_only": executed_only,
+            "types": [item.value for item in transaction_types],
+            "transactions_from": transactions_from.isoformat() if transactions_from else None,
+            "transactions_to": transactions_to.isoformat() if transactions_to else None,
+            "first_available_date": first_date,
+            "transactions": rows,
+        }
+
+    def instrument_state_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        orderbook_id: str,
+        *,
+        transactions_from: date | None = None,
+        transactions_to: date | None = None,
+        include_raw_orders: bool = True,
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        orderbook_id = str(orderbook_id)
+        _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id, orderbook_id=orderbook_id)
+        stoploss_items = self.filtered_stoploss_items(avanza, account_id, orderbook_id=orderbook_id)
+        _orders_payload, open_order_items_for_instrument = self.filtered_open_order_items(
+            avanza,
+            account_id,
+            orderbook_id=orderbook_id,
+        )
+        transaction_snapshot = self.transactions_snapshot(
+            avanza,
+            account_id,
+            orderbook_id=orderbook_id,
+            transactions_from=transactions_from,
+            transactions_to=transactions_to,
+            max_elements=1000,
+            executed_only=False,
+            compact=True,
+        )
+        quote = self.orderbook_quotes_snapshot([orderbook_id], refresh=True)["quotes"][0]
+        active_buy_stops = [
+            stop_loss_mcp_dict(item)
+            for item in stoploss_items
+            if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "BUY"
+        ]
+        active_sell_stops = [
+            stop_loss_mcp_dict(item)
+            for item in stoploss_items
+            if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "SELL"
+        ]
+        non_active_stops = [
+            stop_loss_mcp_dict(item)
+            for item in stoploss_items
+            if str(item.get("status", "")).upper() != "ACTIVE"
+        ]
+        open_orders = [open_order_mcp_dict(item) for item in open_order_items_for_instrument]
+        failed_orders = [
+            row
+            for row in open_orders
+            if str(row.get("Status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+        ]
+        position = positions[0] if positions else None
+        snapshot = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "account_id": account_id,
+            "orderbook_id": orderbook_id,
+            "quote": quote,
+            "position": position_mcp_dict(position, self.realtime_status_for_position(position)) if position else None,
+            "active_buy_stops": active_buy_stops,
+            "active_sell_stops": active_sell_stops,
+            "non_active_or_error_stops": non_active_stops,
+            "open_orders": open_orders,
+            "raw_open_orders_included": include_raw_orders,
+            "failed_orders": failed_orders,
+            "recent_transactions": transaction_snapshot["transactions"],
+            "protection": summarize_stop_protection(position, stoploss_items),
+        }
+        if include_raw_orders:
+            snapshot["open_orders_raw"] = payload_to_json_safe(open_order_items_for_instrument)
+        return snapshot
+
+    def protection_gaps_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        exclude_orderbook_ids: list[str] | None = None,
+        exclude_eth: bool = False,
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        excludes = {str(item) for item in (exclude_orderbook_ids or [])}
+        _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
+        stoploss_items = self.filtered_stoploss_items(avanza, account_id)
+        stoplosses_by_orderbook: dict[str, list[dict[str, Any]]] = {}
+        for item in stoploss_items:
+            stoplosses_by_orderbook.setdefault(stop_loss_order_book_id(item), []).append(item)
+        rows: list[dict[str, Any]] = []
+        for position in positions:
+            orderbook_id = position_order_book_id(position)
+            stock = str(nested_value(position, "instrument", "name") or "")
+            if orderbook_id in excludes:
+                continue
+            if exclude_eth and instrument_is_eth_like(stock, orderbook_id):
+                continue
+            summary = summarize_stop_protection(position, stoplosses_by_orderbook.get(orderbook_id, []))
+            if summary["sell_protection_gap"] <= 0 and summary["failed_stop_volume"] <= 0:
+                continue
+            rows.append(
+                {
+                    "stock": stock,
+                    "orderbook_id": orderbook_id,
+                    **summary,
+                }
+            )
+        return {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "account_id": account_id,
+            "count": len(rows),
+            "gaps": rows,
+        }
+
+    def sold_today_buyback_state_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        trade_date: date | None = None,
+        tight_trigger_percent_max: float = 8.0,
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        target_date = trade_date or date.today()
+        transaction_types = [TransactionsDetailsType.BUY, TransactionsDetailsType.SELL]
+        payload = avanza.get_transactions_details(
+            transaction_details_types=transaction_types,
+            transactions_from=target_date,
+            transactions_to=target_date,
+            max_elements=5000,
+        )
+        items, _first_date = transactions_items(payload)
+        sold_rows = summarize_sold_transactions(
+            [
+                item
+                for item in items
+                if transaction_matches_instrument_filters(
+                    item,
+                    account_id=account_id,
+                    side="SELL",
+                    executed_only=True,
+                )
+            ]
+        )
+        _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
+        positions_by_orderbook = {position_order_book_id(item): item for item in positions}
+        stoploss_items = self.filtered_stoploss_items(avanza, account_id)
+        _orders_payload, order_items = self.filtered_open_order_items(avanza, account_id)
+        rows: list[dict[str, Any]] = []
+        for sold in sold_rows:
+            orderbook_id = str(sold.get("orderbook_id") or "")
+            stock = str(sold.get("stock") or "")
+            buy_stops = [
+                item
+                for item in stoploss_items
+                if stop_loss_order_book_id(item) == orderbook_id
+                and stop_loss_side(item) == "BUY"
+                and str(item.get("status", "")).upper() == "ACTIVE"
+            ]
+            tight_volume = 0.0
+            deep_volume = 0.0
+            unclassified_volume = 0.0
+            for item in buy_stops:
+                volume = stop_loss_volume(item)
+                trigger_percent = stop_loss_trigger_percent(item)
+                if trigger_percent is None:
+                    unclassified_volume += volume
+                elif trigger_percent <= tight_trigger_percent_max:
+                    tight_volume += volume
+                else:
+                    deep_volume += volume
+            generated_orders = [
+                open_order_mcp_dict(item)
+                for item in order_items
+                if open_order_order_book_id(item) == orderbook_id
+            ]
+            failed_orders = [
+                row
+                for row in generated_orders
+                if str(row.get("Status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+            ]
+            current_holding = position_volume(positions_by_orderbook.get(orderbook_id, {}))
+            sold_volume = float(sold.get("sold_volume") or 0.0)
+            active_buyback_volume = tight_volume + deep_volume + unclassified_volume
+            rows.append(
+                {
+                    **sold,
+                    "current_holding": current_holding,
+                    "active_tight_buyback_volume": tight_volume,
+                    "active_deep_buyback_volume": deep_volume,
+                    "active_unclassified_buyback_volume": unclassified_volume,
+                    "generated_open_orders": generated_orders,
+                    "failed_raw_orders": failed_orders,
+                    "missing_buyback_volume": max(sold_volume - active_buyback_volume, 0.0),
+                    "tight_trigger_percent_max": tight_trigger_percent_max,
+                }
+            )
+        return {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "account_id": account_id,
+            "date": target_date.isoformat(),
+            "items": rows,
+        }
+
+    def recent_fills_needing_protection_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        since: date | None = None,
+        exclude_eth: bool = True,
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        since_date = since or date.today()
+        payload = avanza.get_transactions_details(
+            transaction_details_types=[TransactionsDetailsType.BUY, TransactionsDetailsType.SELL],
+            transactions_from=since_date,
+            transactions_to=None,
+            max_elements=5000,
+        )
+        items, _first_date = transactions_items(payload)
+        bought_orderbooks = {
+            transaction_order_book_id(item)
+            for item in items
+            if transaction_matches_instrument_filters(item, account_id=account_id, side="BUY", executed_only=True)
+        }
+        protection = self.protection_gaps_snapshot(avanza, account_id, exclude_eth=exclude_eth)
+        rows = [
+            item
+            for item in protection["gaps"]
+            if str(item.get("orderbook_id") or "") in bought_orderbooks
+        ]
+        return {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "account_id": account_id,
+            "since": since_date.isoformat(),
+            "exclude_eth": exclude_eth,
+            "count": len(rows),
+            "items": rows,
+        }
+
+    def verify_no_raw_failed_orders_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        ids = {str(item) for item in (orderbook_ids or []) if str(item)}
+        _payload, items = self.filtered_open_order_items(avanza, account_id)
+        rows = [
+            open_order_mcp_dict(item)
+            for item in items
+            if (not ids or open_order_order_book_id(item) in ids)
+            and str(item.get("status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+        ]
+        return {
+            "ok": not rows,
+            "account_id": account_id,
+            "orderbook_ids": sorted(ids),
+            "failed_orders": rows,
+        }
+
+    def verify_protection_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        orderbook_ids: list[str] | None = None,
+        full_holding: bool = True,
+        exclude_eth: bool = True,
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        ids = {str(item) for item in (orderbook_ids or []) if str(item)}
+        gaps = self.protection_gaps_snapshot(
+            avanza,
+            account_id,
+            exclude_orderbook_ids=[],
+            exclude_eth=exclude_eth,
+        )["gaps"]
+        if ids:
+            gaps = [item for item in gaps if str(item.get("orderbook_id") or "") in ids]
+        if not full_holding:
+            gaps = [item for item in gaps if float(item.get("active_sell_stop_volume") or 0.0) <= 0.0]
+        return {
+            "ok": not gaps,
+            "account_id": account_id,
+            "orderbook_ids": sorted(ids),
+            "full_holding": full_holding,
+            "exclude_eth": exclude_eth,
+            "gaps": gaps,
+        }
+
+    def stoploss_readback_match(
+        self,
+        avanza: Any,
+        preview: dict[str, Any],
+        result: Any | None = None,
+    ) -> dict[str, Any] | None:
+        account_id = str(preview.get("account_id") or "")
+        orderbook_id = str(preview.get("order_book_id") or "")
+        order_event = preview.get("stop_loss_order_event") if isinstance(preview.get("stop_loss_order_event"), dict) else {}
+        side = str(order_event.get("type") or "")
+        result_id = first_nested_text_for_keys(
+            result,
+            {"stoplossOrderId", "stopLossOrderId", "stop_loss_id", "stopLossId", "id"},
+        )
+        try:
+            items = self.filtered_stoploss_items(
+                avanza,
+                account_id,
+                orderbook_id=orderbook_id,
+                side=side,
+            )
+        except Exception:
+            return None
+        if result_id:
+            for item in items:
+                if str(item.get("id") or "") == result_id:
+                    return stop_loss_mcp_dict(item)
+        requested_volume = scalar_number(order_event.get("volume"))
+        requested_price = scalar_number(order_event.get("price"))
+        trigger = preview.get("stop_loss_trigger") if isinstance(preview.get("stop_loss_trigger"), dict) else {}
+        requested_trigger = scalar_number(trigger.get("value"))
+        best: dict[str, Any] | None = None
+        best_score = -1
+        for item in items:
+            score = 0
+            if str(item.get("status", "")).upper() == "ACTIVE":
+                score += 1
+            if requested_volume is not None and scalar_number(nested_value(item, "order", "volume")) == requested_volume:
+                score += 2
+            if requested_price is not None and scalar_number(nested_value(item, "order", "price")) == requested_price:
+                score += 2
+            if requested_trigger is not None and scalar_number(nested_value(item, "trigger", "value")) == requested_trigger:
+                score += 2
+            if score > best_score:
+                best = item
+                best_score = score
+        return stop_loss_mcp_dict(best) if best else None
+
+    def stoploss_mutation_response(
+        self,
+        *,
+        dry_run: bool,
+        action: str,
+        preview: dict[str, Any],
+        result: Any | None = None,
+        warnings: list[str] | None = None,
+        deleted_stop_loss_id: str = "",
+        deprecated_alias: bool = False,
+    ) -> dict[str, Any]:
+        row = None if dry_run else self.stoploss_readback_match(self.require_connection(), preview, result)
+        order_event = preview.get("stop_loss_order_event") if isinstance(preview.get("stop_loss_order_event"), dict) else {}
+        trigger = preview.get("stop_loss_trigger") if isinstance(preview.get("stop_loss_trigger"), dict) else {}
+        payload: dict[str, Any] = {
+            "dry_run": dry_run,
+            "action": action,
+            "request": preview,
+            "stop_loss_id": (row or {}).get("stop_loss_id") or first_nested_text_for_keys(result, {"stoplossOrderId", "stopLossOrderId", "stop_loss_id", "stopLossId", "id"}) or deleted_stop_loss_id or None,
+            "status": (row or {}).get("status"),
+            "account_id": preview.get("account_id"),
+            "orderbook_id": preview.get("order_book_id"),
+            "stock": (row or {}).get("stock"),
+            "side": normalize_order_side(order_event.get("type")),
+            "volume": scalar_number(order_event.get("volume")),
+            "trigger_type": trigger.get("type"),
+            "trigger_value": scalar_number(trigger.get("value")),
+            "trigger_value_type": trigger.get("value_type"),
+            "order_price": scalar_number(order_event.get("price")),
+            "order_price_type": order_event.get("price_type"),
+            "valid_until": trigger.get("valid_until"),
+            "order_valid_days": order_event.get("valid_days"),
+            "readback": row,
+        }
+        if warnings:
+            payload["warnings"] = warnings
+        if result is not None:
+            payload["result"] = result
+        if deleted_stop_loss_id:
+            payload["deleted_stop_loss_id"] = deleted_stop_loss_id
+        if deprecated_alias:
+            payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
+        return payload
 
     def update_mcp_session_file(self) -> None:
         if self.mcp_server is None or self.mcp_token is None:
@@ -10669,23 +11817,76 @@ class AvanzaTradingTui(App):
             )
 
         if tool == "avanza_portfolio":
-            return self.portfolio_snapshot(avanza, account_id)
+            return self.portfolio_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=mcp_orderbook_filter(arguments),
+                instrument_name=str(arguments.get("instrument_name") or "") or None,
+                compact=bool(arguments.get("compact", False)),
+            )
 
         if tool == "avanza_stoplosses":
-            return self.stoploss_snapshot(avanza, account_id)
+            return self.stoploss_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=mcp_orderbook_filter(arguments),
+                instrument_name=str(arguments.get("instrument_name") or "") or None,
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
+                compact=bool(arguments.get("compact", False)),
+            )
 
         if tool == "avanza_open_orders":
-            return self.open_orders_snapshot(avanza, account_id)
+            return self.open_orders_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=mcp_orderbook_filter(arguments),
+                instrument_name=str(arguments.get("instrument_name") or "") or None,
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
+                compact=bool(arguments.get("compact", False)),
+            )
 
         if tool == "avanza_open_orders_raw":
-            return self.open_orders_snapshot(avanza, account_id, include_raw=True)
+            include_raw = bool(arguments.get("include_raw", False))
+            return self.open_orders_snapshot(
+                avanza,
+                account_id,
+                include_raw=include_raw,
+                orderbook_id=mcp_orderbook_filter(arguments),
+                instrument_name=str(arguments.get("instrument_name") or "") or None,
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
+                compact=bool(arguments.get("compact", False)),
+            )
 
         if tool == "avanza_ongoing_orders":
             include_paper = bool(arguments.get("include_paper", True))
+            orderbook_id = mcp_orderbook_filter(arguments)
+            instrument_name = str(arguments.get("instrument_name") or "") or None
+            side = str(arguments.get("side") or "") or None
+            status = str(arguments.get("status") or "") or None
+            compact = bool(arguments.get("compact", False))
             return {
                 "account_id": account_id or None,
-                "stoplosses": self.stoploss_snapshot(avanza, account_id)["stoplosses"],
-                "open_orders": self.open_orders_snapshot(avanza, account_id)["orders"],
+                "stoplosses": self.stoploss_snapshot(
+                    avanza,
+                    account_id,
+                    orderbook_id=orderbook_id,
+                    instrument_name=instrument_name,
+                    side=side,
+                    status=status,
+                    compact=compact,
+                )["stoplosses"],
+                "open_orders": self.open_orders_snapshot(
+                    avanza,
+                    account_id,
+                    orderbook_id=orderbook_id,
+                    instrument_name=instrument_name,
+                    side=side,
+                    status=status,
+                    compact=compact,
+                )["orders"],
                 "paper_orders": (
                     paper_orders(self.paper_session, account_id or None, active_only=True)
                     if include_paper
@@ -10694,39 +11895,34 @@ class AvanzaTradingTui(App):
             }
 
         if tool == "avanza_transactions":
-            transactions_from_raw = arguments.get("transactions_from")
-            transactions_to_raw = arguments.get("transactions_to")
-            transactions_from = date.fromisoformat(str(transactions_from_raw)) if transactions_from_raw else None
-            transactions_to = date.fromisoformat(str(transactions_to_raw)) if transactions_to_raw else None
-            transaction_types = parse_transaction_types(arguments.get("types"))
-            isin = str(arguments.get("isin", "") or "") or None
-            max_elements = int(arguments.get("max_elements", 1000))
-            executed_only = bool(arguments.get("executed_only", True))
-            payload = avanza.get_transactions_details(
-                transaction_details_types=transaction_types,
+            transactions_from = parse_optional_iso_date(
+                arguments.get("transactions_from") or arguments.get("changed_since") or arguments.get("from"),
+                label="transactions_from",
+            )
+            transactions_to = parse_optional_iso_date(arguments.get("transactions_to") or arguments.get("to"), label="transactions_to")
+            return self.transactions_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=mcp_orderbook_filter(arguments),
+                instrument_name=str(arguments.get("instrument_name") or "") or None,
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
                 transactions_from=transactions_from,
                 transactions_to=transactions_to,
-                isin=isin,
-                max_elements=max_elements,
+                types=arguments.get("types"),
+                isin=str(arguments.get("isin", "") or "") or None,
+                max_elements=int(arguments.get("max_elements", 1000)),
+                executed_only=bool(arguments.get("executed_only", True)),
+                compact=bool(arguments.get("compact", False)),
             )
-            items, first_date = transactions_items(payload)
-            rows = [
-                transaction_history_dict_row(item)
-                for item in items
-                if transaction_matches_filters(item, account_id or None, executed_only)
-            ]
-            return {
-                "account_id": account_id or None,
-                "executed_only": executed_only,
-                "types": [item.value for item in transaction_types],
-                "transactions_from": transactions_from.isoformat() if transactions_from else None,
-                "transactions_to": transactions_to.isoformat() if transactions_to else None,
-                "first_available_date": first_date,
-                "transactions": rows,
-            }
 
         if tool == "avanza_live_snapshot":
             account_id = account_id or self.require_selected_account_id()
+            orderbook_id = mcp_orderbook_filter(arguments)
+            instrument_name = str(arguments.get("instrument_name") or "") or None
+            side = str(arguments.get("side") or "") or None
+            status = str(arguments.get("status") or "") or None
+            compact = bool(arguments.get("compact", False))
             realtime_quotes = self.realtime_quotes_snapshot(account_id)
             return {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -10736,14 +11932,145 @@ class AvanzaTradingTui(App):
                 "live_trading_allowed_for_this_session": self.live_trading_allowed_for_session,
                 "poll_interval_seconds": LIVE_REFRESH_SECONDS,
                 "capabilities": self.mcp_status_payload(),
-                "portfolio": self.portfolio_snapshot(avanza, account_id),
-                "stoplosses": self.stoploss_snapshot(avanza, account_id),
-                "open_orders": self.open_orders_snapshot(avanza, account_id),
+                "portfolio": self.portfolio_snapshot(
+                    avanza,
+                    account_id,
+                    orderbook_id=orderbook_id,
+                    instrument_name=instrument_name,
+                    compact=compact,
+                ),
+                "stoplosses": self.stoploss_snapshot(
+                    avanza,
+                    account_id,
+                    orderbook_id=orderbook_id,
+                    instrument_name=instrument_name,
+                    side=side,
+                    status=status,
+                    compact=compact,
+                ),
+                "open_orders": self.open_orders_snapshot(
+                    avanza,
+                    account_id,
+                    orderbook_id=orderbook_id,
+                    instrument_name=instrument_name,
+                    side=side,
+                    status=status,
+                    compact=compact,
+                ),
                 "realtime_quotes": realtime_quotes,
                 "paper_orders": paper_orders(self.paper_session, account_id),
                 "paper_positions": paper_positions(self.paper_session, account_id=account_id, active_only=False),
                 "paper_trades": paper_trades(self.paper_session, account_id=account_id),
             }
+
+        if tool == "avanza_position":
+            requested_orderbook = str(arguments["orderbook_id"])
+            snapshot = self.portfolio_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=requested_orderbook,
+                compact=bool(arguments.get("compact", False)),
+            )
+            return {
+                "account_id": account_id or None,
+                "orderbook_id": requested_orderbook,
+                "position": snapshot["positions"][0] if snapshot["positions"] else None,
+            }
+
+        if tool == "avanza_instrument_stoplosses":
+            return self.stoploss_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=str(arguments["orderbook_id"]),
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
+                compact=bool(arguments.get("compact", False)),
+            )
+
+        if tool == "avanza_instrument_open_orders":
+            return self.open_orders_snapshot(
+                avanza,
+                account_id,
+                include_raw=bool(arguments.get("include_raw", True)),
+                orderbook_id=str(arguments["orderbook_id"]),
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
+                compact=bool(arguments.get("compact", False)),
+            )
+
+        if tool == "avanza_instrument_transactions":
+            transactions_from = parse_optional_iso_date(
+                arguments.get("transactions_from") or arguments.get("changed_since") or arguments.get("from") or arguments.get("date"),
+                label="transactions_from",
+            )
+            transactions_to = parse_optional_iso_date(arguments.get("transactions_to") or arguments.get("to") or arguments.get("date"), label="transactions_to")
+            return self.transactions_snapshot(
+                avanza,
+                account_id,
+                orderbook_id=str(arguments["orderbook_id"]),
+                side=str(arguments.get("side") or "") or None,
+                status=str(arguments.get("status") or "") or None,
+                transactions_from=transactions_from,
+                transactions_to=transactions_to,
+                max_elements=int(arguments.get("max_elements", 1000)),
+                executed_only=bool(arguments.get("executed_only", True)),
+                compact=bool(arguments.get("compact", False)),
+            )
+
+        if tool == "avanza_instrument_state":
+            return self.instrument_state_snapshot(
+                avanza,
+                account_id,
+                str(arguments["orderbook_id"]),
+                transactions_from=parse_optional_iso_date(
+                    arguments.get("transactions_from") or arguments.get("changed_since") or arguments.get("from") or arguments.get("date"),
+                    label="transactions_from",
+                ),
+                transactions_to=parse_optional_iso_date(arguments.get("transactions_to") or arguments.get("to") or arguments.get("date"), label="transactions_to"),
+                include_raw_orders=bool(arguments.get("include_raw", True)),
+            )
+
+        if tool == "avanza_protection_gaps":
+            excludes_raw = arguments.get("exclude_orderbook_ids") or []
+            excludes = [str(item) for item in excludes_raw] if isinstance(excludes_raw, list) else []
+            return self.protection_gaps_snapshot(
+                avanza,
+                account_id,
+                exclude_orderbook_ids=excludes,
+                exclude_eth=bool(arguments.get("exclude_eth", False)),
+            )
+
+        if tool == "avanza_sold_today_buyback_state":
+            return self.sold_today_buyback_state_snapshot(
+                avanza,
+                account_id,
+                trade_date=parse_optional_iso_date(arguments.get("date"), label="date"),
+                tight_trigger_percent_max=float(arguments.get("tight_trigger_percent_max", 8.0)),
+            )
+
+        if tool == "avanza_recent_fills_needing_protection":
+            return self.recent_fills_needing_protection_snapshot(
+                avanza,
+                account_id,
+                since=parse_optional_iso_date(arguments.get("since"), label="since"),
+                exclude_eth=bool(arguments.get("exclude_eth", True)),
+            )
+
+        if tool == "avanza_verify_no_raw_failed_orders":
+            ids_raw = arguments.get("orderbook_ids") or []
+            ids = [str(item) for item in ids_raw] if isinstance(ids_raw, list) else []
+            return self.verify_no_raw_failed_orders_snapshot(avanza, account_id, orderbook_ids=ids)
+
+        if tool == "avanza_verify_protection":
+            ids_raw = arguments.get("orderbook_ids") or []
+            ids = [str(item) for item in ids_raw] if isinstance(ids_raw, list) else []
+            return self.verify_protection_snapshot(
+                avanza,
+                account_id,
+                orderbook_ids=ids,
+                full_holding=bool(arguments.get("full_holding", True)),
+                exclude_eth=bool(arguments.get("exclude_eth", True)),
+            )
 
         if tool == "avanza_realtime_quotes":
             account_id = account_id or self.require_selected_account_id()
@@ -10758,71 +12085,11 @@ class AvanzaTradingTui(App):
             raw_ids = arguments.get("orderbook_ids")
             if not isinstance(raw_ids, list) or not raw_ids:
                 raise ValueError("orderbook_ids must be a non-empty array.")
-            requested_fields = arguments.get("fields")
-            refresh = bool(arguments.get("refresh", True))
-            ids = [str(item).strip() for item in raw_ids if str(item).strip()]
-            if not ids:
-                raise ValueError("No valid orderbook IDs supplied.")
-            if len(ids) > 100:
-                raise ValueError("Limit orderbook_ids to <= 100 per request.")
-            started = time.monotonic()
-            rows: list[dict[str, Any]] = []
-            errors: list[dict[str, Any]] = []
-            for orderbook_id in ids:
-                payload = None
-                err = ""
-                try:
-                    payload = self.quote_payload_for_order_book(orderbook_id, refresh=refresh)
-                except Exception as exc:
-                    err = str(exc)
-                if payload is None and not err:
-                    err = "quote_unavailable"
-                row = orderbook_quote_row(
-                    orderbook_id,
-                    payload,
-                    fallback_name=self.holding_labels_by_order_book.get(orderbook_id, ""),
-                    error=err,
-                )
-                metadata = self.orderbook_metadata_for_quote(
-                    orderbook_id,
-                    payload if isinstance(payload, dict) else None,
-                    allow_remote_lookup=refresh,
-                )
-                row["name"] = row.get("name") or metadata.get("name")
-                row["ticker"] = normalize_symbol_candidate(row.get("ticker") or metadata.get("ticker")) or None
-                row["market"] = row.get("market") or metadata.get("market")
-                row["currency"] = row.get("currency") or metadata.get("currency") or infer_currency_from_metadata(metadata)
-                row["country"] = metadata.get("country") or metadata.get("country_code") or infer_country_from_metadata(metadata)
-                row["instrument_type"] = metadata.get("instrument_type")
-                row["display_symbol"] = metadata.get("display_symbol") or display_symbol(row.get("ticker"), row.get("name"))
-                if not row.get("currency"):
-                    row["metadata_warnings"] = ["Currency unresolved from quote/search/index/mover metadata."]
-                rows.append(row)
-                if err:
-                    errors.append({"orderbook_id": orderbook_id, "error": err})
-            if isinstance(requested_fields, list) and requested_fields:
-                normalized_fields = [str(field).strip() for field in requested_fields if str(field).strip()]
-                keep = {"orderbook_id", "error"}
-                keep.update(normalized_fields)
-                filtered_rows: list[dict[str, Any]] = []
-                for row in rows:
-                    filtered_rows.append({key: row.get(key) for key in row.keys() if key in keep})
-                rows = filtered_rows
-            elapsed_ms = int((time.monotonic() - started) * 1000.0)
-            return {
-                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "count": len(rows),
-                "requested_count": len(ids),
-                "poll_interval_seconds": LIVE_REFRESH_SECONDS,
-                "quotes": rows,
-                "errors": errors,
-                "error_count": len(errors),
-                "rate_limit": {
-                    "recommended_max_ids_per_call": 50,
-                    "recommended_poll_interval_seconds": LIVE_REFRESH_SECONDS,
-                    "elapsed_ms": elapsed_ms,
-                },
-            }
+            return self.orderbook_quotes_snapshot(
+                [str(item).strip() for item in raw_ids if str(item).strip()],
+                fields=arguments.get("fields") if isinstance(arguments.get("fields"), list) else None,
+                refresh=bool(arguments.get("refresh", True)),
+            )
 
         if tool == "avanza_market_movers":
             country_codes_raw = arguments.get("countryCodes", ["SE"])
@@ -11112,9 +12379,13 @@ class AvanzaTradingTui(App):
             trigger, order_event, preview = build_stop_loss_preview(arguments)
             warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
             if not confirmed:
-                payload = {"dry_run": True, "summary": format_stop_loss_request(preview), "request": preview}
-                if warnings:
-                    payload["warnings"] = warnings
+                payload = self.stoploss_mutation_response(
+                    dry_run=True,
+                    action="set",
+                    preview=preview,
+                    warnings=warnings,
+                )
+                payload["summary"] = format_stop_loss_request(preview)
                 return payload
             result = avanza.place_stop_loss_order(
                 parent_stop_loss_id=preview["parent_stop_loss_id"],
@@ -11124,7 +12395,109 @@ class AvanzaTradingTui(App):
                 stop_loss_order_event=order_event,
             )
             self.record_event("trading", "live_stoploss_set", {"request": preview, "result": result})
-            return {"dry_run": False, "request": preview, "result": result}
+            return self.stoploss_mutation_response(
+                dry_run=False,
+                action="set",
+                preview=preview,
+                result=result,
+                warnings=warnings,
+            )
+
+        if tool == "avanza_stoploss_set_batch":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_write(confirmed)
+            batch_items = arguments.get("items")
+            if not isinstance(batch_items, list) or not batch_items:
+                raise ValueError("items must be a non-empty array.")
+            parent_account_id = str(arguments["account_id"])
+            prepared: list[tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any], list[str]]] = []
+            dry_run_results: list[dict[str, Any]] = []
+            for index, item in enumerate(batch_items):
+                if not isinstance(item, dict):
+                    raise ValueError(f"items[{index}] must be an object.")
+                item_args = {**item, "account_id": parent_account_id}
+                trigger, order_event, preview = build_stop_loss_preview(item_args)
+                warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
+                prepared.append((trigger, order_event, preview, warnings))
+                if not confirmed:
+                    dry_run_results.append(
+                        {
+                            "index": index,
+                            **self.stoploss_mutation_response(
+                                dry_run=True,
+                                action="set",
+                                preview=preview,
+                                warnings=warnings,
+                            ),
+                        }
+                    )
+            if not confirmed:
+                return {
+                    "dry_run": True,
+                    "account_id": parent_account_id,
+                    "count": len(dry_run_results),
+                    "results": dry_run_results,
+                }
+
+            results: list[dict[str, Any]] = []
+            for index, (trigger, order_event, preview, warnings) in enumerate(prepared):
+                try:
+                    result = avanza.place_stop_loss_order(
+                        parent_stop_loss_id=preview["parent_stop_loss_id"],
+                        account_id=preview["account_id"],
+                        order_book_id=preview["order_book_id"],
+                        stop_loss_trigger=trigger,
+                        stop_loss_order_event=order_event,
+                    )
+                    payload = self.stoploss_mutation_response(
+                        dry_run=False,
+                        action="set",
+                        preview=preview,
+                        result=result,
+                        warnings=warnings,
+                    )
+                    payload["index"] = index
+                    readback = payload.get("readback") if isinstance(payload.get("readback"), dict) else {}
+                    if readback and str(readback.get("orderbook_id") or "") != str(preview["order_book_id"]):
+                        payload["ok"] = False
+                        payload["error"] = "Readback orderbook_id mismatch; stopping batch."
+                        results.append(payload)
+                        break
+                    payload["ok"] = True
+                    results.append(payload)
+                except Exception as exc:
+                    results.append(
+                        {
+                            "index": index,
+                            "ok": False,
+                            "dry_run": False,
+                            "account_id": parent_account_id,
+                            "orderbook_id": preview.get("order_book_id"),
+                            "error": str(exc),
+                        }
+                    )
+                    break
+            self.record_event("trading", "live_stoploss_set_batch", {"count": len(results), "results": results})
+            touched_ids = [
+                str(item.get("orderbook_id") or "")
+                for item in results
+                if isinstance(item, dict) and item.get("orderbook_id")
+            ]
+            return {
+                "dry_run": False,
+                "account_id": parent_account_id,
+                "requested_count": len(prepared),
+                "completed_count": len(results),
+                "all_ok": all(bool(item.get("ok")) for item in results) and len(results) == len(prepared),
+                "results": results,
+                "verification": self.verify_protection_snapshot(
+                    avanza,
+                    parent_account_id,
+                    orderbook_ids=touched_ids,
+                    full_holding=False,
+                    exclude_eth=False,
+                ),
+            }
 
         if tool == "avanza_order_set":
             confirmed = bool(arguments.get("confirm", False))
@@ -11423,6 +12796,10 @@ class AvanzaTradingTui(App):
             self.record_event("trading", "live_stoploss_delete", {"request": request, "result": result})
             return {
                 "dry_run": False,
+                "action": "delete",
+                "stop_loss_id": request["stop_loss_id"],
+                "account_id": request["account_id"],
+                "status": "DELETED",
                 "request": request,
                 "result": result,
             }
@@ -11439,9 +12816,16 @@ class AvanzaTradingTui(App):
                 "replacement": preview,
             }
             if not confirmed:
-                payload = {"dry_run": True, "summary": format_stop_loss_request(preview), "request": request}
-                if warnings:
-                    payload["warnings"] = warnings
+                payload = self.stoploss_mutation_response(
+                    dry_run=True,
+                    action="edit",
+                    preview=preview,
+                    warnings=warnings,
+                    deleted_stop_loss_id=stop_loss_id,
+                    deprecated_alias=deprecated_alias,
+                )
+                payload["summary"] = format_stop_loss_request(preview)
+                payload["request"] = request
                 if deprecated_alias:
                     payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
                 return payload
@@ -11459,7 +12843,16 @@ class AvanzaTradingTui(App):
                 "live_stoploss_edit",
                 {"request": request, "result": result, "used_deprecated_alias": deprecated_alias},
             )
-            payload = {"dry_run": False, "request": request, "result": result}
+            payload = self.stoploss_mutation_response(
+                dry_run=False,
+                action="edit",
+                preview=preview,
+                result=result,
+                warnings=warnings,
+                deleted_stop_loss_id=stop_loss_id,
+                deprecated_alias=deprecated_alias,
+            )
+            payload["request"] = request
             if deprecated_alias:
                 payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
             return payload
@@ -11506,6 +12899,77 @@ class AvanzaTradingTui(App):
                 self.quote_payload_checked_at[order_book_id] = datetime.now()
                 return dumped
         return None
+
+    def orderbook_quotes_snapshot(
+        self,
+        orderbook_ids: list[str],
+        *,
+        fields: list[str] | None = None,
+        refresh: bool = True,
+    ) -> dict[str, Any]:
+        ids = [str(item).strip() for item in orderbook_ids if str(item).strip()]
+        if not ids:
+            raise ValueError("No valid orderbook IDs supplied.")
+        if len(ids) > 100:
+            raise ValueError("Limit orderbook_ids to <= 100 per request.")
+        started = time.monotonic()
+        rows: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for orderbook_id in ids:
+            payload = None
+            err = ""
+            try:
+                payload = self.quote_payload_for_order_book(orderbook_id, refresh=refresh)
+            except Exception as exc:
+                err = str(exc)
+            if payload is None and not err:
+                err = "quote_unavailable"
+            row = orderbook_quote_row(
+                orderbook_id,
+                payload,
+                fallback_name=self.holding_labels_by_order_book.get(orderbook_id, ""),
+                error=err,
+            )
+            metadata = self.orderbook_metadata_for_quote(
+                orderbook_id,
+                payload if isinstance(payload, dict) else None,
+                allow_remote_lookup=refresh,
+            )
+            row["name"] = row.get("name") or metadata.get("name")
+            row["ticker"] = normalize_symbol_candidate(row.get("ticker") or metadata.get("ticker")) or None
+            row["market"] = row.get("market") or metadata.get("market")
+            row["currency"] = row.get("currency") or metadata.get("currency") or infer_currency_from_metadata(metadata)
+            row["country"] = metadata.get("country") or metadata.get("country_code") or infer_country_from_metadata(metadata)
+            row["instrument_type"] = metadata.get("instrument_type")
+            row["display_symbol"] = metadata.get("display_symbol") or display_symbol(row.get("ticker"), row.get("name"))
+            if not row.get("currency"):
+                row["metadata_warnings"] = ["Currency unresolved from quote/search/index/mover metadata."]
+            rows.append(row)
+            if err:
+                errors.append({"orderbook_id": orderbook_id, "error": err})
+        if isinstance(fields, list) and fields:
+            normalized_fields = [str(field).strip() for field in fields if str(field).strip()]
+            keep = {"orderbook_id", "error"}
+            keep.update(normalized_fields)
+            filtered_rows: list[dict[str, Any]] = []
+            for row in rows:
+                filtered_rows.append({key: row.get(key) for key in row.keys() if key in keep})
+            rows = filtered_rows
+        elapsed_ms = int((time.monotonic() - started) * 1000.0)
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "count": len(rows),
+            "requested_count": len(ids),
+            "poll_interval_seconds": LIVE_REFRESH_SECONDS,
+            "quotes": rows,
+            "errors": errors,
+            "error_count": len(errors),
+            "rate_limit": {
+                "recommended_max_ids_per_call": 50,
+                "recommended_poll_interval_seconds": LIVE_REFRESH_SECONDS,
+                "elapsed_ms": elapsed_ms,
+            },
+        }
 
     def _cache_orderbook_metadata(self, orderbook_id: str, updates: dict[str, Any] | None = None) -> dict[str, Any]:
         current = self.orderbook_metadata_by_id.get(orderbook_id, {})

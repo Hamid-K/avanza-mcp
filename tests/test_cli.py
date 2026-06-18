@@ -1377,7 +1377,9 @@ def test_mcp_open_orders_include_ids_side_and_raw_shapes():
     assert ids["ord-sell-1"]["Side"] == "SELL"
     assert ids["ord-sell-1"]["Order Book ID"] == "222"
 
-    raw_snapshot = app.execute_mcp_tool("avanza_open_orders_raw", {"account_id": "acc-1"})
+    compact_raw_snapshot = app.execute_mcp_tool("avanza_open_orders_raw", {"account_id": "acc-1"})
+    assert "raw" not in compact_raw_snapshot
+    raw_snapshot = app.execute_mcp_tool("avanza_open_orders_raw", {"account_id": "acc-1", "include_raw": True})
     assert "raw" in raw_snapshot
     assert "buyOrders" in raw_snapshot["raw"]
 
@@ -1511,6 +1513,187 @@ def test_mcp_orderbook_quotes_supports_arbitrary_ids():
     assert rows["111"]["spread_absolute"] == pytest.approx(0.2)
     assert "total_value_traded" in rows["222"]
     assert rows["222"]["total_value_traded"] is None
+
+
+def test_mcp_focused_instrument_state_and_protection_summaries():
+    from avanza_cli import AvanzaTradingTui
+
+    today = date.today().isoformat()
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrument": {"name": "ACN", "orderbook": {"id": "ob-acn"}},
+                        "volume": {"value": 5, "unit": "st"},
+                        "value": {"value": 500, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 90, "unit": "SEK"},
+                        "acquiredValue": {"value": 450, "unit": "SEK"},
+                        "lastTradingDayPerformance": {"relative": {"value": 1.0, "unit": "%"}, "absolute": {"value": 5, "unit": "SEK"}},
+                    },
+                    {
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrument": {"name": "Ethereum XBT", "orderbook": {"id": "ob-eth"}},
+                        "volume": {"value": 9, "unit": "st"},
+                        "value": {"value": 900, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 100, "unit": "SEK"},
+                        "acquiredValue": {"value": 900, "unit": "SEK"},
+                        "lastTradingDayPerformance": {},
+                    },
+                ],
+                "withoutOrderbook": [],
+            }
+
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "sl-sell",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-acn", "name": "ACN"},
+                    "trigger": {"type": "FOLLOW_UPWARDS", "value": 3.0, "valueType": "percentage", "validUntil": TEST_VALID_UNTIL},
+                    "order": {"type": "SELL", "volume": 3, "price": 99, "priceType": "percentage"},
+                },
+                {
+                    "id": "sl-buy",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-acn", "name": "ACN"},
+                    "trigger": {"type": "FOLLOW_DOWNWARDS", "value": 5.0, "valueType": "percentage", "validUntil": TEST_VALID_UNTIL},
+                    "order": {"type": "BUY", "volume": 2, "price": 101, "priceType": "percentage"},
+                },
+                {
+                    "id": "sl-error",
+                    "status": "ERROR",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-acn", "name": "ACN"},
+                    "trigger": {"type": "FOLLOW_UPWARDS", "value": 8.0, "valueType": "percentage", "validUntil": TEST_VALID_UNTIL},
+                    "order": {"type": "SELL", "volume": 1, "price": 98, "priceType": "percentage"},
+                },
+                {
+                    "id": "sl-eth",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-eth", "name": "Ethereum XBT"},
+                    "trigger": {"type": "FOLLOW_UPWARDS", "value": 5.0, "valueType": "percentage", "validUntil": TEST_VALID_UNTIL},
+                    "order": {"type": "SELL", "volume": 1, "price": 99, "priceType": "percentage"},
+                },
+            ]
+
+        def get_orders(self):
+            return {
+                "buyOrders": [
+                    {"orderId": "ord-acn", "status": "PENDING", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-acn", "name": "ACN"}, "volume": 2, "price": 95, "validUntil": TEST_VALID_UNTIL}
+                ],
+                "sellOrders": [
+                    {"orderId": "ord-other", "status": "PENDING", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-other", "name": "Other"}, "volume": 1, "price": 10, "validUntil": TEST_VALID_UNTIL}
+                ],
+            }
+
+        def get_transactions_details(self, **_kwargs):
+            return {
+                "firstTransactionDate": "2024-01-01",
+                "transactions": [
+                    {"tradeDate": today, "type": "SELL", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-acn", "name": "ACN"}, "instrumentName": "ACN", "volume": {"value": 4, "unit": "st"}, "priceInTransactionCurrency": {"value": 100, "unit": "SEK"}, "amount": {"value": 400, "unit": "SEK"}},
+                    {"tradeDate": today, "type": "BUY", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-acn", "name": "ACN"}, "instrumentName": "ACN", "volume": {"value": 1, "unit": "st"}, "priceInTransactionCurrency": {"value": 95, "unit": "SEK"}, "amount": {"value": -95, "unit": "SEK"}},
+                    {"tradeDate": today, "type": "SELL", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-other", "name": "Other"}, "instrumentName": "Other", "volume": {"value": 1, "unit": "st"}},
+                ],
+            }
+
+        def get_market_data(self, order_book_id):
+            return {"name": "ACN" if order_book_id == "ob-acn" else "Ethereum XBT", "quote": {"last": 101, "buy": 100.5, "sell": 101.5, "currency": "SEK"}}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+
+    position = app.execute_mcp_tool("avanza_position", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+    assert position["position"]["Stock"] == "ACN"
+
+    stoplosses = app.execute_mcp_tool("avanza_instrument_stoplosses", {"account_id": "acc-1", "orderbook_id": "ob-acn", "side": "SELL", "status": "ACTIVE"})
+    assert [row["Stop Loss ID"] for row in stoplosses["stoplosses"]] == ["sl-sell"]
+
+    state = app.execute_mcp_tool("avanza_instrument_state", {"account_id": "acc-1", "orderbook_id": "ob-acn", "date": today})
+    assert state["position"]["Stock"] == "ACN"
+    assert len(state["active_buy_stops"]) == 1
+    assert len(state["active_sell_stops"]) == 1
+    assert len(state["non_active_or_error_stops"]) == 1
+    assert state["open_orders"][0]["Order ID"] == "ord-acn"
+    assert state["protection"]["sell_protection_gap"] == 2
+    assert all(row["stock"] == "ACN" for row in state["recent_transactions"])
+
+    gaps = app.execute_mcp_tool("avanza_protection_gaps", {"account_id": "acc-1", "exclude_eth": True})
+    assert [row["orderbook_id"] for row in gaps["gaps"]] == ["ob-acn"]
+
+    buybacks = app.execute_mcp_tool("avanza_sold_today_buyback_state", {"account_id": "acc-1", "date": today})
+    acn = next(row for row in buybacks["items"] if row["orderbook_id"] == "ob-acn")
+    assert acn["sold_volume"] == 4
+    assert acn["active_tight_buyback_volume"] == 2
+    assert acn["missing_buyback_volume"] == 2
+
+    recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
+    assert recent["items"][0]["orderbook_id"] == "ob-acn"
+
+    verify = app.execute_mcp_tool("avanza_verify_protection", {"account_id": "acc-1", "exclude_eth": True})
+    assert verify["ok"] is False
+    assert verify["gaps"][0]["orderbook_id"] == "ob-acn"
+
+
+def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def place_stop_loss_order(self, **_kwargs):
+            return {"stoplossOrderId": "sl-new"}
+
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "sl-new",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-acn", "name": "ACN"},
+                    "trigger": {"type": "FOLLOW_UPWARDS", "value": 3.0, "valueType": "percentage", "validUntil": TEST_VALID_UNTIL},
+                    "order": {"type": "SELL", "volume": 5, "price": 99, "priceType": "percentage", "validDays": 1},
+                }
+            ]
+
+        def get_market_data(self, _order_book_id):
+            return {"name": "ACN", "marketPlaceName": "NASDAQ", "countryCode": "US", "quote": {"last": 100, "buy": 99, "sell": 101, "currency": "USD"}}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+        def get_accounts_positions(self):
+            return {"withOrderbook": [], "withoutOrderbook": []}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.mcp_write_enabled = True
+    app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
+
+    placed = app.execute_mcp_tool(
+        "avanza_stoploss_set",
+        {"account_id": "acc-1", "order_book_id": "ob-acn", "trigger_value": 3, "trigger_value_type": "%", "valid_until": TEST_VALID_UNTIL, "order_price": 99, "order_price_type": "%", "volume": 5, "confirm": True},
+    )
+    assert placed["dry_run"] is False
+    assert placed["stop_loss_id"] == "sl-new"
+    assert placed["readback"]["stock"] == "ACN"
+    assert placed["order_valid_days"] == 1
+
+    batch = app.execute_mcp_tool(
+        "avanza_stoploss_set_batch",
+        {"account_id": "acc-1", "items": [{"order_book_id": "ob-acn", "trigger_value": 3, "trigger_value_type": "%", "valid_until": TEST_VALID_UNTIL, "order_price": 99, "order_price_type": "%", "volume": 5}]},
+    )
+    assert batch["dry_run"] is True
+    assert batch["results"][0]["stop_loss_id"] is None
+    assert batch["results"][0]["orderbook_id"] == "ob-acn"
 
 
 def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):

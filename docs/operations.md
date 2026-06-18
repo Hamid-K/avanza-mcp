@@ -227,13 +227,23 @@ Multi-session MCP behavior:
 | `fred_series` | Fetch FRED macro observations (requires a free FRED API key via FRED_API_KEY or api_key input). |
 | `data_source_status` | Return current health, freshness, and safety flags for Avanza, TradingView, Zacks, FMP, Polygon, SEC, and FRED source integrations. |
 | `signal_context_bundle` | Build a compact cross-source signal bundle (TradingView technicals + SEC filings + optional Zacks/FMP/Polygon + optional FRED macro). |
-| `avanza_portfolio` | List portfolio positions for the selected account, or a supplied account_id. |
-| `avanza_stoplosses` | List stop-loss orders for the selected account, or a supplied account_id. |
-| `avanza_open_orders` | List live open/pending regular orders for the selected account, or a supplied account_id, with stable IDs for edit/cancel flows. |
-| `avanza_open_orders_raw` | Debug tool: return normalized open orders plus raw Avanza order payload for schema diagnostics. |
+| `avanza_portfolio` | List portfolio positions, optionally filtered by one instrument and compact mode. |
+| `avanza_stoplosses` | List stop-loss orders, optionally filtered by instrument, side, status, and compact mode. |
+| `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
+| `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
-| `avanza_transactions` | List executed orders/history (BUY/SELL by default) with optional account/date/type filters. |
-| `avanza_live_snapshot` | Read a decision-ready snapshot for polling loops: positions, live stop-losses/orders, paper orders, and safety mode. |
+| `avanza_transactions` | List executed orders/history with optional account/date/type/instrument filters. |
+| `avanza_live_snapshot` | Read a decision-ready polling snapshot, with optional compact instrument filtering. |
+| `avanza_position` | Read one account position by orderbook ID. |
+| `avanza_instrument_stoplosses` | Read stop-loss rows for one instrument/account. |
+| `avanza_instrument_open_orders` | Read open/pending regular orders for one instrument/account. |
+| `avanza_instrument_transactions` | Read transactions for one instrument/account. |
+| `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and protection summary. |
+| `avanza_protection_gaps` | Return positions whose active sell protection is below current holding. |
+| `avanza_sold_today_buyback_state` | Summarize same-day sold instruments and missing buy-back coverage. |
+| `avanza_recent_fills_needing_protection` | Return recent filled buys whose active sell protection is below current holding. |
+| `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
+| `avanza_verify_protection` | Compact post-mutation check for sell-protection gaps. |
 | `avanza_realtime_quotes` | Fetch real-time quote snapshot for selected account holdings (best with a 5s polling loop). |
 | `avanza_orderbook_quotes` | Fetch arbitrary quote snapshots for supplied orderbook IDs (supports 5s polling loops for 20-50 symbols). |
 | `avanza_market_movers` | Fetch Avanza market movers (gainers/losers) with optional country/market/turnover filters. |
@@ -252,6 +262,7 @@ Multi-session MCP behavior:
 | `avanza_scalp_watchlist_get` | Load a named scalp watchlist and optionally include current quotes for all members. |
 | `avanza_paper_cancel` | Cancel a local paper order. |
 | `avanza_stoploss_set` | Dry-run or place a stop-loss order. |
+| `avanza_stoploss_set_batch` | Place multiple stop-loss orders with per-item validation and final readback. |
 | `avanza_order_set` | Dry-run or place a regular buy/sell order. |
 | `avanza_order_edit` | Dry-run or update an existing open order (price/volume/valid_until). |
 | `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order. |
