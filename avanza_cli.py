@@ -86,9 +86,11 @@ ACCOUNT_PERFORMANCE_PERIOD_CHOICES = [
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 QUOTE_CACHE_SECONDS = 8.0
+QUOTE_REFRESH_COALESCE_SECONDS = float(os.getenv("AVANZA_QUOTE_REFRESH_COALESCE_SECONDS", "1.0"))
 MCP_HEALTH_CHECK_SECONDS = 5.0
 BACKGROUND_SESSION_HEARTBEAT_SECONDS = float(os.getenv("AVANZA_BACKGROUND_SESSION_HEARTBEAT_SECONDS", "30"))
 ORDERBOOK_METADATA_REFRESH_SECONDS = 1800.0
+ACCOUNT_READ_CACHE_SECONDS = float(os.getenv("AVANZA_ACCOUNT_READ_CACHE_SECONDS", "2.0"))
 AUTH_ERROR_LOG_THROTTLE_SECONDS = float(os.getenv("AVANZA_AUTH_ERROR_LOG_THROTTLE_SECONDS", "120"))
 DEFAULT_COURTAGE_RATE_SE = float(os.getenv("AVANZA_DEFAULT_COURTAGE_RATE_SE", "0.0025"))
 DEFAULT_COURTAGE_MIN_SEK = float(os.getenv("AVANZA_DEFAULT_COURTAGE_MIN_SEK", "1.0"))
@@ -282,6 +284,8 @@ TRADINGVIEW_HEATMAP_FIELDS = [
 ]
 TRADINGVIEW_US_EQUITY_EXCHANGES = ("NASDAQ", "NYSE", "NYSEARCA", "NYSEAMERICAN", "AMEX")
 TRADINGVIEW_OTC_EXCHANGES = ("OTC", "OTCBB", "OTCQX", "OTCQB", "OTCMKTS", "PINK")
+TRADINGVIEW_UNSUPPORTED_FIELD_CACHE: dict[str, set[str]] = {}
+TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK = threading.Lock()
 TRADINGVIEW_WATCHLIST_ROW_LIMIT = 1500
 TRADINGVIEW_TUI_REFRESH_SECONDS = 15.0
 TRADINGVIEW_ANALYTICS_FIELDS = [
@@ -448,9 +452,12 @@ class AccountDataSnapshot:
     portfolio_data: dict[str, Any] | None = None
     stoploss_items: list[dict[str, Any]] = field(default_factory=list)
     open_order_items: list[dict[str, Any]] = field(default_factory=list)
+    open_orders_payload: Any = None
     refreshed_at: datetime | None = None
     portfolio_refreshed_at: datetime | None = None
     orders_refreshed_at: datetime | None = None
+    stoploss_refreshed_at: datetime | None = None
+    open_orders_refreshed_at: datetime | None = None
     auth_valid: bool = True
     auth_error: str = ""
 
@@ -4946,8 +4953,11 @@ def tradingview_scan_with_field_fallback(
     descending: bool = True,
     cookie: str = "",
 ) -> tuple[dict[str, Any], list[str]]:
-    columns = unique_strings(fields)
-    unsupported: list[str] = []
+    cache_key = str(market or TRADINGVIEW_DEFAULT_MARKET).strip().lower() or TRADINGVIEW_DEFAULT_MARKET
+    with TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK:
+        cached_unsupported = set(TRADINGVIEW_UNSUPPORTED_FIELD_CACHE.get(cache_key, set()))
+    unsupported: list[str] = [field for field in unique_strings(fields) if field in cached_unsupported]
+    columns = [field for field in unique_strings(fields) if field not in cached_unsupported]
     attempts = 0
     while attempts < 80 and columns:
         attempts += 1
@@ -4971,6 +4981,8 @@ def tradingview_scan_with_field_fallback(
             raise RuntimeError(f"TradingView scanner rejected unsupported field '{unknown_field}'.")
         columns = [column for column in columns if column != unknown_field]
         unsupported.append(unknown_field)
+        with TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK:
+            TRADINGVIEW_UNSUPPORTED_FIELD_CACHE.setdefault(cache_key, set()).add(unknown_field)
     raise RuntimeError("TradingView scanner could not return data with the requested field set.")
 
 
@@ -5059,6 +5071,7 @@ def tradingview_symbol_full_snapshot(
     market: str = TRADINGVIEW_DEFAULT_MARKET,
     exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
     cookie: str = "",
+    include_profile: bool = True,
 ) -> dict[str, Any]:
     attempts = tradingview_symbol_attempts(symbol, exchange=exchange, market=market)
     errors: list[str] = []
@@ -5077,9 +5090,14 @@ def tradingview_symbol_full_snapshot(
             technical_score = analytics.get("Recommend.All")
             moving_average_score = analytics.get("Recommend.MA")
             oscillator_score = analytics.get("Recommend.Other")
-            profile_html = tradingview_symbol_profile_html(attempt_symbol, cookie=cookie)
-            profile_metadata = tradingview_symbol_profile_metadata_from_html(attempt_symbol, profile_html)
-            symbol_candidates = tradingview_extract_symbol_candidates_from_html(profile_html, max_symbols=120)
+            profile_metadata: dict[str, Any] = {}
+            symbol_candidates: list[str] = []
+            source = "tradingview-scanner"
+            if include_profile:
+                profile_html = tradingview_symbol_profile_html(attempt_symbol, cookie=cookie)
+                profile_metadata = tradingview_symbol_profile_metadata_from_html(attempt_symbol, profile_html)
+                symbol_candidates = tradingview_extract_symbol_candidates_from_html(profile_html, max_symbols=120)
+                source = "tradingview-scanner+profile-html"
             return {
                 "symbol": attempt_symbol,
                 "market": attempt_market,
@@ -5100,7 +5118,7 @@ def tradingview_symbol_full_snapshot(
                 "related_symbols": symbol_candidates,
                 "unsupported_fields": unsupported_fields,
                 "field_count": len(analytics),
-                "source": "tradingview-scanner+profile-html",
+                "source": source,
                 "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "unsafe_for_execution": False,
             }
@@ -5113,6 +5131,45 @@ def tradingview_symbol_full_snapshot(
         f"requested={symbol!r}, market={market!r}, exchange={exchange!r}. "
         f"errors={errors[:5]}"
     )
+
+
+def tradingview_symbol_full_snapshot_from_row(
+    row: dict[str, Any],
+    *,
+    symbol: str,
+    requested_symbol: str,
+    requested_market: str,
+    requested_exchange: str,
+    fallback_used: bool = False,
+    unsupported_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    technical_score = row.get("Recommend.All")
+    moving_average_score = row.get("Recommend.MA")
+    oscillator_score = row.get("Recommend.Other")
+    return {
+        "symbol": symbol,
+        "market": requested_market,
+        "requested_symbol": str(requested_symbol or "").strip().upper(),
+        "requested_market": str(requested_market or "").strip().lower(),
+        "requested_exchange": str(requested_exchange or "").strip().upper(),
+        "fallback_used": fallback_used,
+        "analytics": row,
+        "technicals": {
+            "overall_score": technical_score,
+            "overall_label": recommendation_label(technical_score),
+            "moving_average_score": moving_average_score,
+            "moving_average_label": recommendation_label(moving_average_score),
+            "oscillator_score": oscillator_score,
+            "oscillator_label": recommendation_label(oscillator_score),
+        },
+        "profile": {},
+        "related_symbols": [],
+        "unsupported_fields": list(unsupported_fields or []),
+        "field_count": len(row),
+        "source": "tradingview-scanner",
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "unsafe_for_execution": False,
+    }
 
 
 def tradingview_symbol_snapshot(
@@ -5306,7 +5363,7 @@ def tradingview_preopen_symbol_snapshot(
     authenticated: bool = True,
     cookie: str = "",
 ) -> dict[str, Any]:
-    full = tradingview_symbol_full_snapshot(symbol, market=market, exchange=exchange, cookie=cookie)
+    full = tradingview_symbol_full_snapshot(symbol, market=market, exchange=exchange, cookie=cookie, include_profile=False)
     return tradingview_preopen_from_full_snapshot(full, authenticated=authenticated)
 
 
@@ -5343,6 +5400,41 @@ def tradingview_symbol_request_parts(item: Any, default_exchange: str) -> tuple[
     return str(item or "").strip(), default_exchange
 
 
+def tradingview_row_match_keys(row: dict[str, Any]) -> set[tuple[str, str]]:
+    exchange = str(row.get("exchange") or "").strip().upper()
+    tokens = {
+        tv_symbol_core(row.get("ticker")),
+        tv_symbol_core(row.get("name")),
+        tv_symbol_core(row.get("description")),
+    }
+    return {(exchange, token) for token in tokens if token}
+
+
+def tradingview_batch_rows_by_request(
+    rows: list[dict[str, Any]],
+    request_symbols: list[str],
+) -> dict[str, dict[str, Any]]:
+    by_symbol: dict[str, dict[str, Any]] = {}
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    allow_index_fallback = len(rows) == len(request_symbols)
+    for index, row in enumerate(rows):
+        if allow_index_fallback and index < len(request_symbols):
+            by_symbol.setdefault(request_symbols[index], row)
+        for key in tradingview_row_match_keys(row):
+            by_key.setdefault(key, row)
+
+    matched: dict[str, dict[str, Any]] = {}
+    for requested in request_symbols:
+        exchange = requested.split(":", 1)[0].upper() if ":" in requested else ""
+        token = tv_symbol_core(requested)
+        row = by_key.get((exchange, token)) if exchange and token else None
+        if row is None:
+            row = by_symbol.get(requested)
+        if row is not None:
+            matched[requested] = row
+    return matched
+
+
 def tradingview_preopen_batch_snapshot(
     symbols: list[Any],
     *,
@@ -5353,7 +5445,8 @@ def tradingview_preopen_batch_snapshot(
     max_concurrency: int = 4,
     cookie: str = "",
 ) -> dict[str, Any]:
-    del max_concurrency  # Calls are kept sequential to avoid hammering TradingView scanner endpoints.
+    del max_concurrency  # Bulk scanner calls replace per-symbol concurrency for normal operation.
+    requests: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     for index, item in enumerate(symbols):
@@ -5362,29 +5455,82 @@ def tradingview_preopen_batch_snapshot(
             errors.append({"index": index, "symbol": symbol, "error": "symbol is required"})
             rows.append({"index": index, "ok": False, "error": "symbol is required"} if compact else {})
             continue
+        normalized_symbol = normalize_tv_symbol(symbol, item_exchange)
+        requests.append(
+            {
+                "index": index,
+                "symbol": symbol,
+                "exchange": item_exchange,
+                "normalized_symbol": normalized_symbol,
+            }
+        )
+        rows.append({})
+
+    batch_rows_by_symbol: dict[str, dict[str, Any]] = {}
+    unsupported_fields: list[str] = []
+    batch_error = ""
+    if requests:
         try:
-            snapshot = tradingview_preopen_symbol_snapshot(
-                symbol,
+            scan, unsupported_fields = tradingview_scan_with_field_fallback(
+                symbols=[request["normalized_symbol"] for request in requests],
+                fields=TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS,
                 market=market,
-                exchange=item_exchange,
-                authenticated=authenticated,
                 cookie=cookie,
             )
-            row = tradingview_compact_preopen_row(snapshot) if compact else snapshot
-            row["index"] = index
-            row["ok"] = True
-            rows.append(row)
+        except Exception as exc:
+            batch_error = str(exc)
+            scan = {"rows": []}
+        batch_rows_by_symbol = tradingview_batch_rows_by_request(
+            [row for row in scan.get("rows", []) if isinstance(row, dict)] if isinstance(scan, dict) else [],
+            [request["normalized_symbol"] for request in requests],
+        )
+
+    fallback_count = 0
+    for request in requests:
+        index = int(request["index"])
+        symbol = str(request["symbol"])
+        item_exchange = str(request["exchange"])
+        normalized_symbol = str(request["normalized_symbol"])
+        row = batch_rows_by_symbol.get(normalized_symbol)
+        try:
+            if row is not None:
+                snapshot = tradingview_preopen_from_full_snapshot(
+                    tradingview_symbol_full_snapshot_from_row(
+                        row,
+                        symbol=normalized_symbol,
+                        requested_symbol=symbol,
+                        requested_market=market,
+                        requested_exchange=item_exchange,
+                        unsupported_fields=unsupported_fields,
+                    ),
+                    authenticated=authenticated,
+                )
+            else:
+                fallback_count += 1
+                if batch_error:
+                    raise RuntimeError(batch_error)
+                snapshot = tradingview_preopen_symbol_snapshot(
+                    symbol,
+                    market=market,
+                    exchange=item_exchange,
+                    authenticated=authenticated,
+                    cookie=cookie,
+                )
+            output_row = tradingview_compact_preopen_row(snapshot) if compact else snapshot
+            output_row["index"] = index
+            output_row["ok"] = True
+            rows[index] = output_row
         except Exception as exc:
             error = {"index": index, "symbol": symbol, "exchange": item_exchange, "error": str(exc)}
             errors.append(error)
-            rows.append({"index": index, "symbol": symbol, "exchange": item_exchange, "ok": False, "error": str(exc)})
-        if index < len(symbols) - 1:
-            time.sleep(0.05)
+            rows[index] = {"index": index, "symbol": symbol, "exchange": item_exchange, "ok": False, "error": str(exc)}
     return {
         "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "market": market,
         "authenticated": authenticated,
         "compact": compact,
+        "batch_mode": "bulk_scanner",
+        "fallback_count": fallback_count,
         "count": len(rows),
         "ok_count": sum(1 for row in rows if row.get("ok")),
         "error_count": len(errors),
@@ -8995,6 +9141,7 @@ class AvanzaTradingTui(App):
         self.latest_open_order_items: list[dict[str, Any]] = []
         self.latest_tv_lists: list[dict[str, Any]] = []
         self.latest_tv_list_items: list[dict[str, Any]] = []
+        self.account_snapshot_cache: dict[str, AccountDataSnapshot] = {}
         self.tv_list_option_refs: dict[str, dict[str, str]] = {}
         self.session_select_updating = False
         self.account_select_updating = False
@@ -9873,11 +10020,13 @@ class AvanzaTradingTui(App):
             snapshot.stoploss_items = [
                 item for item in stoploss_items if stop_loss_matches_filters(item, account_id=token)
             ]
+            snapshot.stoploss_refreshed_at = now
             snapshot.orders_refreshed_at = now
         if open_orders is not None:
             snapshot.open_order_items = [
                 item for item in open_orders if open_order_matches_filters(item, account_id=token)
             ]
+            snapshot.open_orders_refreshed_at = now
             snapshot.orders_refreshed_at = now
         snapshot.refreshed_at = now
         snapshot.auth_valid = True
@@ -10184,6 +10333,7 @@ class AvanzaTradingTui(App):
         self.latest_portfolio_data = None
         self.latest_stoploss_items = []
         self.latest_open_order_items = []
+        self.account_snapshot_cache.clear()
         self.position_row_cache = {}
         self.holding_volumes_by_order_book = {}
         self.holding_labels_by_order_book = {}
@@ -11582,6 +11732,114 @@ class AvanzaTradingTui(App):
             "note": "Read-only pre-open review bundle. Avanza remains source of truth for account/orders/stops; TradingView supplies market context.",
         }
 
+    def account_snapshot_for_cache(self, account_id: str) -> tuple[AccountDataSnapshot, AvanzaTenantSession | None]:
+        token = str(account_id or "").strip()
+        context = self.active_tenant_session()
+        if context is not None:
+            snapshot = context.account_snapshots.get(token)
+            if snapshot is None:
+                snapshot = AccountDataSnapshot(account_id=token)
+                context.account_snapshots[token] = snapshot
+            return snapshot, context
+        snapshot = self.account_snapshot_cache.get(token)
+        if snapshot is None:
+            snapshot = AccountDataSnapshot(account_id=token)
+            self.account_snapshot_cache[token] = snapshot
+        return snapshot, None
+
+    def cached_at_is_fresh(self, refreshed_at: datetime | None) -> bool:
+        if refreshed_at is None:
+            return False
+        if refreshed_at.tzinfo is None:
+            return datetime.now() - refreshed_at < timedelta(seconds=ACCOUNT_READ_CACHE_SECONDS)
+        return datetime.now(timezone.utc) - refreshed_at < timedelta(seconds=ACCOUNT_READ_CACHE_SECONDS)
+
+    def cached_portfolio_data(self, avanza: Any, account_id: str, *, refresh: bool = False) -> dict[str, Any]:
+        snapshot, context = self.account_snapshot_for_cache(account_id)
+        cached_has_positions = False
+        if isinstance(snapshot.portfolio_data, dict):
+            cached_has_positions = any(
+                isinstance(snapshot.portfolio_data.get(section), list) and bool(snapshot.portfolio_data.get(section))
+                for section in ("withOrderbook", "withoutOrderbook")
+            )
+        if (
+            not refresh
+            and isinstance(snapshot.portfolio_data, dict)
+            and self.cached_at_is_fresh(snapshot.portfolio_refreshed_at)
+            and cached_has_positions
+        ):
+            return snapshot.portfolio_data
+        data = avanza.get_accounts_positions()
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
+        if context is not None:
+            self.update_tenant_account_snapshot(context, account_id, portfolio_data=data)
+        else:
+            snapshot.portfolio_data = data
+            snapshot.portfolio_refreshed_at = datetime.now(timezone.utc)
+            snapshot.refreshed_at = snapshot.portfolio_refreshed_at
+        if str(account_id or "") == str(self.selected_account_id or ""):
+            self.latest_portfolio_data = data
+        return data
+
+    def cached_stoploss_items(self, avanza: Any, account_id: str, *, refresh: bool = False) -> list[dict[str, Any]]:
+        snapshot, context = self.account_snapshot_for_cache(account_id)
+        if not refresh and self.cached_at_is_fresh(snapshot.stoploss_refreshed_at):
+            return list(snapshot.stoploss_items)
+        data = avanza.get_all_stop_losses()
+        if not isinstance(data, list):
+            raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
+        items = [item for item in data if isinstance(item, dict)]
+        if context is not None:
+            self.update_tenant_account_snapshot(context, account_id, stoploss_items=items)
+            snapshot = context.account_snapshots.get(str(account_id or "").strip(), snapshot)
+        else:
+            snapshot.stoploss_items = [
+                item for item in items if stop_loss_matches_filters(item, account_id=account_id or None)
+            ]
+            snapshot.stoploss_refreshed_at = datetime.now(timezone.utc)
+            snapshot.orders_refreshed_at = snapshot.stoploss_refreshed_at
+            snapshot.refreshed_at = snapshot.stoploss_refreshed_at
+        if str(account_id or "") == str(self.selected_account_id or ""):
+            self.latest_stoploss_items = list(snapshot.stoploss_items)
+        return list(snapshot.stoploss_items)
+
+    def cached_open_order_items(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        refresh: bool = False,
+        require_raw: bool = False,
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        snapshot, context = self.account_snapshot_for_cache(account_id)
+        if (
+            not refresh
+            and self.cached_at_is_fresh(snapshot.open_orders_refreshed_at)
+            and (not require_raw or snapshot.open_orders_payload is not None)
+        ):
+            return snapshot.open_orders_payload if require_raw else None, list(snapshot.open_order_items)
+        try:
+            data = avanza.get_orders()
+        except Exception:
+            return [], []
+        items = [item for item in open_order_items(data) if isinstance(item, dict)]
+        if context is not None:
+            self.update_tenant_account_snapshot(context, account_id, open_orders=items)
+            snapshot = context.account_snapshots.get(str(account_id or "").strip(), snapshot)
+            snapshot.open_orders_payload = data
+        else:
+            snapshot.open_order_items = [
+                item for item in items if open_order_matches_filters(item, account_id=account_id or None)
+            ]
+            snapshot.open_orders_payload = data
+            snapshot.open_orders_refreshed_at = datetime.now(timezone.utc)
+            snapshot.orders_refreshed_at = snapshot.open_orders_refreshed_at
+            snapshot.refreshed_at = snapshot.open_orders_refreshed_at
+        if str(account_id or "") == str(self.selected_account_id or ""):
+            self.latest_open_order_items = list(snapshot.open_order_items)
+        return data, list(snapshot.open_order_items)
+
     def filtered_portfolio_items(
         self,
         avanza: Any,
@@ -11589,10 +11847,9 @@ class AvanzaTradingTui(App):
         *,
         orderbook_id: str | None = None,
         instrument_name: str | None = None,
+        refresh: bool = False,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        data = avanza.get_accounts_positions()
-        if not isinstance(data, dict):
-            raise RuntimeError(f"Unexpected portfolio response type: {type(data).__name__}")
+        data = self.cached_portfolio_data(avanza, account_id, refresh=refresh)
         items: list[dict[str, Any]] = []
         for section in ("withOrderbook", "withoutOrderbook"):
             for item in data.get(section, []):
@@ -11613,12 +11870,14 @@ class AvanzaTradingTui(App):
         orderbook_id: str | None = None,
         instrument_name: str | None = None,
         compact: bool = False,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         _data, items = self.filtered_portfolio_items(
             avanza,
             account_id,
             orderbook_id=orderbook_id,
             instrument_name=instrument_name,
+            refresh=refresh,
         )
         positions = [position_mcp_dict(item, self.realtime_status_for_position(item)) for item in items]
         if compact:
@@ -11651,10 +11910,9 @@ class AvanzaTradingTui(App):
         instrument_name: str | None = None,
         side: str | None = None,
         status: str | None = None,
+        refresh: bool = False,
     ) -> list[dict[str, Any]]:
-        data = avanza.get_all_stop_losses()
-        if not isinstance(data, list):
-            raise RuntimeError(f"Unexpected stop-loss response type: {type(data).__name__}")
+        data = self.cached_stoploss_items(avanza, account_id, refresh=refresh)
         return [
             item
             for item in data
@@ -11679,6 +11937,7 @@ class AvanzaTradingTui(App):
         side: str | None = None,
         status: str | None = None,
         compact: bool = False,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         items = self.filtered_stoploss_items(
             avanza,
@@ -11687,6 +11946,7 @@ class AvanzaTradingTui(App):
             instrument_name=instrument_name,
             side=side,
             status=status,
+            refresh=refresh,
         )
         rows = [stop_loss_mcp_dict(item) for item in items]
         if compact:
@@ -11722,12 +11982,10 @@ class AvanzaTradingTui(App):
         instrument_name: str | None = None,
         side: str | None = None,
         status: str | None = None,
+        refresh: bool = False,
+        require_raw: bool = False,
     ) -> tuple[Any, list[dict[str, Any]]]:
-        try:
-            data = avanza.get_orders()
-        except Exception:
-            data = []
-        items = open_order_items(data)
+        data, items = self.cached_open_order_items(avanza, account_id, refresh=refresh, require_raw=require_raw)
         filtered_items = [
             item
             for item in items
@@ -11754,6 +12012,7 @@ class AvanzaTradingTui(App):
         side: str | None = None,
         status: str | None = None,
         compact: bool = False,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         data, filtered_items = self.filtered_open_order_items(
             avanza,
@@ -11762,6 +12021,8 @@ class AvanzaTradingTui(App):
             instrument_name=instrument_name,
             side=side,
             status=status,
+            refresh=refresh,
+            require_raw=include_raw,
         )
         orders = [open_order_mcp_dict(item) for item in filtered_items]
         if compact:
@@ -12160,6 +12421,7 @@ class AvanzaTradingTui(App):
                 account_id,
                 orderbook_id=orderbook_id,
                 side=side,
+                refresh=True,
             )
         except Exception:
             return None
@@ -12783,6 +13045,7 @@ class AvanzaTradingTui(App):
                 orderbook_id=mcp_orderbook_filter(arguments),
                 instrument_name=str(arguments.get("instrument_name") or "") or None,
                 compact=bool(arguments.get("compact", False)),
+                refresh=bool(arguments.get("refresh", False)),
             )
 
         if tool == "avanza_stoplosses":
@@ -12794,6 +13057,7 @@ class AvanzaTradingTui(App):
                 side=str(arguments.get("side") or "") or None,
                 status=str(arguments.get("status") or "") or None,
                 compact=bool(arguments.get("compact", False)),
+                refresh=bool(arguments.get("refresh", False)),
             )
 
         if tool == "avanza_open_orders":
@@ -12805,6 +13069,7 @@ class AvanzaTradingTui(App):
                 side=str(arguments.get("side") or "") or None,
                 status=str(arguments.get("status") or "") or None,
                 compact=bool(arguments.get("compact", False)),
+                refresh=bool(arguments.get("refresh", False)),
             )
 
         if tool == "avanza_open_orders_raw":
@@ -12818,6 +13083,7 @@ class AvanzaTradingTui(App):
                 side=str(arguments.get("side") or "") or None,
                 status=str(arguments.get("status") or "") or None,
                 compact=bool(arguments.get("compact", False)),
+                refresh=bool(arguments.get("refresh", False)),
             )
 
         if tool == "avanza_ongoing_orders":
@@ -13824,11 +14090,18 @@ class AvanzaTradingTui(App):
             return None
         cached = self.quote_payload_by_order_book.get(order_book_id)
         cached_at = self.quote_payload_checked_at.get(order_book_id)
+        now = datetime.now()
+        if (
+            cached is not None
+            and cached_at is not None
+            and now - cached_at < timedelta(seconds=QUOTE_REFRESH_COALESCE_SECONDS)
+        ):
+            return cached
         if (
             not refresh
             and cached is not None
             and cached_at is not None
-            and datetime.now() - cached_at < timedelta(seconds=QUOTE_CACHE_SECONDS)
+            and now - cached_at < timedelta(seconds=QUOTE_CACHE_SECONDS)
         ):
             return cached
         avanza = self.require_connection()
@@ -13867,7 +14140,8 @@ class AvanzaTradingTui(App):
         fields: list[str] | None = None,
         refresh: bool = True,
     ) -> dict[str, Any]:
-        ids = [str(item).strip() for item in orderbook_ids if str(item).strip()]
+        requested_ids = [str(item).strip() for item in orderbook_ids if str(item).strip()]
+        ids = unique_strings(requested_ids)
         if not ids:
             raise ValueError("No valid orderbook IDs supplied.")
         if len(ids) > 100:
@@ -13875,6 +14149,9 @@ class AvanzaTradingTui(App):
         started = time.monotonic()
         rows: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        normalized_fields = [str(field).strip() for field in fields if str(field).strip()] if isinstance(fields, list) else []
+        metadata_fields = {"name", "ticker", "market", "currency", "country", "instrument_type", "display_symbol"}
+        needs_metadata = not normalized_fields or bool(metadata_fields.intersection(normalized_fields))
         for orderbook_id in ids:
             payload = None
             err = ""
@@ -13890,25 +14167,25 @@ class AvanzaTradingTui(App):
                 fallback_name=self.holding_labels_by_order_book.get(orderbook_id, ""),
                 error=err,
             )
-            metadata = self.orderbook_metadata_for_quote(
-                orderbook_id,
-                payload if isinstance(payload, dict) else None,
-                allow_remote_lookup=refresh,
-            )
-            row["name"] = row.get("name") or metadata.get("name")
-            row["ticker"] = normalize_symbol_candidate(row.get("ticker") or metadata.get("ticker")) or None
-            row["market"] = row.get("market") or metadata.get("market")
-            row["currency"] = row.get("currency") or metadata.get("currency") or infer_currency_from_metadata(metadata)
-            row["country"] = metadata.get("country") or metadata.get("country_code") or infer_country_from_metadata(metadata)
-            row["instrument_type"] = metadata.get("instrument_type")
-            row["display_symbol"] = metadata.get("display_symbol") or display_symbol(row.get("ticker"), row.get("name"))
-            if not row.get("currency"):
-                row["metadata_warnings"] = ["Currency unresolved from quote/search/index/mover metadata."]
+            if needs_metadata:
+                metadata = self.orderbook_metadata_for_quote(
+                    orderbook_id,
+                    payload if isinstance(payload, dict) else None,
+                    allow_remote_lookup=refresh,
+                )
+                row["name"] = row.get("name") or metadata.get("name")
+                row["ticker"] = normalize_symbol_candidate(row.get("ticker") or metadata.get("ticker")) or None
+                row["market"] = row.get("market") or metadata.get("market")
+                row["currency"] = row.get("currency") or metadata.get("currency") or infer_currency_from_metadata(metadata)
+                row["country"] = metadata.get("country") or metadata.get("country_code") or infer_country_from_metadata(metadata)
+                row["instrument_type"] = metadata.get("instrument_type")
+                row["display_symbol"] = metadata.get("display_symbol") or display_symbol(row.get("ticker"), row.get("name"))
+                if not row.get("currency"):
+                    row["metadata_warnings"] = ["Currency unresolved from quote/search/index/mover metadata."]
             rows.append(row)
             if err:
                 errors.append({"orderbook_id": orderbook_id, "error": err})
-        if isinstance(fields, list) and fields:
-            normalized_fields = [str(field).strip() for field in fields if str(field).strip()]
+        if normalized_fields:
             keep = {"orderbook_id", "error"}
             keep.update(normalized_fields)
             filtered_rows: list[dict[str, Any]] = []
@@ -13919,7 +14196,8 @@ class AvanzaTradingTui(App):
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "count": len(rows),
-            "requested_count": len(ids),
+            "requested_count": len(requested_ids),
+            "deduplicated_count": len(ids),
             "poll_interval_seconds": LIVE_REFRESH_SECONDS,
             "quotes": rows,
             "errors": errors,

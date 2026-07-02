@@ -289,6 +289,13 @@ Recommended flow:
 3. Use `tv_preopen_batch_snapshot` for watchlists/candidates or `avanza_tv_preopen_portfolio_bundle` for a read-only account review.
 4. Use `tv_scrape_heatmap` with `exchanges`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap outliers.
 
+Performance behavior:
+
+- `tv_preopen_batch_snapshot` performs one TradingView scanner request for normal multi-symbol batches, then falls back per symbol only when a row is missing.
+- TradingView unsupported scanner fields are cached per market after the first rejection.
+- Avanza MCP read tools keep a short in-process account cache for portfolio, stop-loss, and open-order lists; pass `refresh=true` on read tools when a fresh pull is required after an external change.
+- `avanza_orderbook_quotes` deduplicates repeated orderbook IDs and skips remote metadata enrichment when `fields` asks only for price fields.
+
 If Codex or another agent does not expose `tv_*` tools as direct native calls, use the configured local stdio bridge instead. The bridge command remains `python avanza_cli.py mcp`; it forwards tool calls to the authenticated TUI localhost bridge.
 
 TradingView fields such as `premarket_close`, `postmarket_close`, and `update_mode` depend on scanner availability, login state, and account entitlement. Missing/delayed extended-hours fields are returned as `null` plus a freshness warning; do not infer them from Avanza.

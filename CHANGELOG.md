@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12 - 2026-07-02
+
+- Optimized TradingView pre-open batch snapshots to use one scanner request for normal multi-symbol calls, with per-symbol fallback/error isolation only for missing rows.
+- Cached TradingView unsupported scanner fields per market to avoid repeated field-negotiation retries.
+- Added a short per-account Avanza read cache for MCP portfolio, stop-loss, and open-order list pulls to reduce repeated full-list requests during focused workflows.
+- Reduced quote polling overhead by deduplicating orderbook IDs, coalescing rapid repeated quote refreshes, and skipping remote metadata enrichment for price-only field projections.
+
 ## 0.1.11 - 2026-07-02
 
 - Added TradingView pre-open MCP snapshots:

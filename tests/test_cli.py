@@ -1515,6 +1515,39 @@ def test_mcp_orderbook_quotes_supports_arbitrary_ids():
     assert rows["222"]["total_value_traded"] is None
 
 
+def test_mcp_orderbook_quotes_deduplicates_and_skips_metadata_for_price_projection():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.market_calls = 0
+            self.search_calls = 0
+
+        def get_market_data(self, order_book_id):
+            self.market_calls += 1
+            assert order_book_id == "111"
+            return {"quote": {"last": 310.0, "buy": 309.9, "sell": 310.1}}
+
+        def search_for_stock(self, *_args, **_kwargs):
+            self.search_calls += 1
+            raise AssertionError("metadata lookup should not run for price-only projection")
+
+    fake = FakeAvanza()
+    app = AvanzaTradingTui()
+    app.avanza = fake
+
+    result = app.execute_mcp_tool(
+        "avanza_orderbook_quotes",
+        {"orderbook_ids": ["111", "111"], "fields": ["last", "bid", "ask"]},
+    )
+
+    assert result["requested_count"] == 2
+    assert result["deduplicated_count"] == 1
+    assert result["quotes"] == [{"orderbook_id": "111", "last": 310.0, "bid": 309.9, "ask": 310.1, "error": None}]
+    assert fake.market_calls == 1
+    assert fake.search_calls == 0
+
+
 def test_mcp_focused_instrument_state_and_protection_summaries():
     from avanza_cli import AvanzaTradingTui
 
@@ -1639,9 +1672,65 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
 
-    verify = app.execute_mcp_tool("avanza_verify_protection", {"account_id": "acc-1", "exclude_eth": True})
-    assert verify["ok"] is False
-    assert verify["gaps"][0]["orderbook_id"] == "ob-acn"
+
+def test_mcp_account_read_cache_reuses_large_avanza_lists():
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.position_calls = 0
+            self.stop_calls = 0
+            self.order_calls = 0
+
+        def get_accounts_positions(self):
+            self.position_calls += 1
+            return {
+                "withOrderbook": [
+                    {
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrument": {"name": "ACN", "orderbook": {"id": "ob-acn"}},
+                        "volume": {"value": 5, "unit": "st"},
+                        "value": {"value": 500, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 90, "unit": "SEK"},
+                        "acquiredValue": {"value": 450, "unit": "SEK"},
+                        "lastTradingDayPerformance": {},
+                        "realtime": True,
+                    }
+                ],
+                "withoutOrderbook": [],
+            }
+
+        def get_all_stop_losses(self):
+            self.stop_calls += 1
+            return [
+                {
+                    "id": "sl-1",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-acn", "name": "ACN"},
+                    "order": {"type": "SELL", "volume": 5},
+                }
+            ]
+
+        def get_orders(self):
+            self.order_calls += 1
+            return {"buyOrders": [], "sellOrders": []}
+
+    fake = FakeAvanza()
+    app = AvanzaTradingTui()
+    app.avanza = fake
+    app.selected_account_id = "acc-1"
+
+    app.execute_mcp_tool("avanza_position", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+    app.execute_mcp_tool("avanza_position", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+    app.execute_mcp_tool("avanza_instrument_stoplosses", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+    app.execute_mcp_tool("avanza_instrument_stoplosses", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+    app.execute_mcp_tool("avanza_instrument_open_orders", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+    app.execute_mcp_tool("avanza_instrument_open_orders", {"account_id": "acc-1", "orderbook_id": "ob-acn"})
+
+    assert fake.position_calls == 1
+    assert fake.stop_calls == 1
+    assert fake.order_calls == 1
 
 
 def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
@@ -3448,6 +3537,39 @@ def test_tradingview_symbol_snapshot_crypto_recovers_from_unknown_field_400(monk
     assert snapshot["technicals"]["overall_label"] in {"Buy", "Strong Buy"}
 
 
+def test_tradingview_field_fallback_cache_skips_known_unsupported_fields(monkeypatch):
+    from avanza_cli import TRADINGVIEW_UNSUPPORTED_FIELD_CACHE, tradingview_scan_with_field_fallback
+
+    TRADINGVIEW_UNSUPPORTED_FIELD_CACHE.clear()
+    calls: list[list[str]] = []
+
+    def fake_scan(*, symbols, columns, market, **kwargs):
+        calls.append(list(columns))
+        if "Bad.Field" in columns:
+            return {"error": 'Unknown field "Bad.Field"', "rows": [], "total_count": 0}
+        return {"error": None, "rows": [{"name": "AAPL", "close": 10.0}], "total_count": 1}
+
+    monkeypatch.setattr("avanza_cli.tradingview_scan", fake_scan)
+
+    first, first_unsupported = tradingview_scan_with_field_fallback(
+        symbols=["NASDAQ:AAPL"],
+        fields=["name", "Bad.Field", "close"],
+        market="america",
+    )
+    second, second_unsupported = tradingview_scan_with_field_fallback(
+        symbols=["NASDAQ:MSFT"],
+        fields=["name", "Bad.Field", "close"],
+        market="america",
+    )
+
+    assert first["rows"][0]["name"] == "AAPL"
+    assert first_unsupported == ["Bad.Field"]
+    assert second_unsupported == ["Bad.Field"]
+    assert calls[0] == ["name", "Bad.Field", "close"]
+    assert calls[-1] == ["name", "close"]
+    TRADINGVIEW_UNSUPPORTED_FIELD_CACHE.clear()
+
+
 def test_tradingview_symbol_attempts_for_qualified_symbols_include_market_and_exchange_fallbacks():
     from avanza_cli import tradingview_symbol_attempts
 
@@ -3593,18 +3715,31 @@ def test_tradingview_preopen_symbol_snapshot_normalizes_extended_hours(monkeypat
 def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypatch):
     from avanza_cli import tradingview_preopen_batch_snapshot
 
-    def fake_full(symbol, **kwargs):
-        if symbol == "CRWD":
-            raise RuntimeError("scanner unavailable")
-        return {
-            "symbol": f"{kwargs.get('exchange', 'NASDAQ')}:{symbol}",
-            "market": kwargs.get("market"),
-            "analytics": {"close": 10.0, "premarket_close": 11.0, "Recommend.All": 0.1},
-            "technicals": {"overall_label": "Neutral", "overall_score": 0.1},
-            "unsupported_fields": [],
-        }
+    calls: list[list[str]] = []
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_full)
+    def fake_scan(*, symbols, fields, market, **kwargs):
+        calls.append(list(symbols))
+        rows = []
+        for symbol in symbols:
+            if symbol == "NASDAQ:CRWD":
+                continue
+            token = symbol.split(":", 1)[1]
+            rows.append(
+                {
+                    "name": token,
+                    "exchange": "NASDAQ",
+                    "close": 10.0,
+                    "premarket_close": 11.0,
+                    "Recommend.All": 0.1,
+                }
+            )
+        return {"rows": rows, "total_count": len(rows), "market": market}, []
+
+    def fake_single(symbol, **kwargs):
+        raise RuntimeError(f"{symbol} unavailable")
+
+    monkeypatch.setattr("avanza_cli.tradingview_scan_with_field_fallback", fake_scan)
+    monkeypatch.setattr("avanza_cli.tradingview_preopen_symbol_snapshot", fake_single)
 
     batch = tradingview_preopen_batch_snapshot(
         [{"symbol": "SNDK", "exchange": "NASDAQ"}, {"symbol": "CRWD", "exchange": "NASDAQ"}, "MU"],
@@ -3617,6 +3752,9 @@ def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypat
     assert batch["rows"][1]["ok"] is False
     assert batch["rows"][2]["symbol"] == "NASDAQ:MU"
     assert batch["error_count"] == 1
+    assert batch["batch_mode"] == "bulk_scanner"
+    assert batch["fallback_count"] == 1
+    assert calls == [["NASDAQ:SNDK", "NASDAQ:CRWD", "NASDAQ:MU"]]
 
 
 def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):

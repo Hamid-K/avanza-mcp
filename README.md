@@ -336,6 +336,7 @@ Canonical naming note:
   2. confirm `tv_auth_session_status` if authenticated TradingView data is needed,
   3. call `tv_preopen_batch_snapshot` for watchlist/candidate symbols or `avanza_tv_preopen_portfolio_bundle` for an Avanza account review,
   4. use `tv_scrape_heatmap` with filters such as `exchanges=["NASDAQ","NYSE","AMEX"]`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap noise.
+- Performance notes: `tv_preopen_batch_snapshot` uses a bulk TradingView scanner call for normal multi-symbol reviews; Avanza MCP read tools keep a short in-process account cache to avoid repeated full portfolio/stop/order pulls during focused workflows; `avanza_orderbook_quotes` deduplicates IDs and can skip metadata enrichment when `fields` contains only price fields.
 - TradingView extended-hours fields depend on TradingView entitlement/session and scanner availability. `premarket_close`, `postmarket_close`, `update_mode`, and quote freshness warnings are reported explicitly; missing fields are returned as `null` instead of inferred from Avanza.
 - `zacks_scrape_symbol` is best effort; it now attempts the quote page and free Zacks equity-report page, returning `analysis_summary`, `analysis_sources`, and `blocked_sources` when available. Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
