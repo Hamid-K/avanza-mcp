@@ -217,7 +217,10 @@ Multi-session MCP behavior:
 | `tv_auth_session_clear` | Delete saved TradingView authenticated session cookie. |
 | `tv_auth_symbol_analytics` | Fetch TradingView symbol analytics in authenticated mode (inherits account entitlements from supplied TradingView cookie/session). |
 | `tv_auth_symbol_full` | Fetch rich TradingView symbol payload in authenticated mode (scanner analytics + technical labels + profile metadata + entitlement context). |
-| `tv_scrape_heatmap` | Fetch TradingView market heatmap rows (top movers) using free scanner data. |
+| `tv_preopen_symbol_snapshot` | Return a compact TradingView pre-open/extended-hours snapshot for one symbol. |
+| `tv_preopen_batch_snapshot` | Return TradingView pre-open snapshots for a symbol list with per-symbol error isolation. |
+| `tv_scrape_heatmap` | Fetch TradingView market heatmap rows with exchange, OTC, liquidity, market-cap, price, and sort filters. |
+| `avanza_tv_preopen_portfolio_bundle` | Read-only bundle that merges Avanza portfolio/protection state with TradingView pre-open context. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
 | `zacks_scrape_symbol` | Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies). |
@@ -274,6 +277,21 @@ Multi-session MCP behavior:
 Canonical naming note:
 - use `avanza_open_orders`
 - use `avanza_stoplosses`
+
+### TradingView pre-open workflow
+
+For U.S. pre-open reviews, keep Avanza as source of truth for account state, holdings, stops, orders, fills, and mutations. Use TradingView only for market context, extended-hours tape, scanner/heatmap data, and technical labels.
+
+Recommended flow:
+
+1. Start and authenticate the TUI, then enable MCP.
+2. Run `tv_auth_session_status` when authenticated TradingView entitlement/session data is needed.
+3. Use `tv_preopen_batch_snapshot` for watchlists/candidates or `avanza_tv_preopen_portfolio_bundle` for a read-only account review.
+4. Use `tv_scrape_heatmap` with `exchanges`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap outliers.
+
+If Codex or another agent does not expose `tv_*` tools as direct native calls, use the configured local stdio bridge instead. The bridge command remains `python avanza_cli.py mcp`; it forwards tool calls to the authenticated TUI localhost bridge.
+
+TradingView fields such as `premarket_close`, `postmarket_close`, and `update_mode` depend on scanner availability, login state, and account entitlement. Missing/delayed extended-hours fields are returned as `null` plus a freshness warning; do not infer them from Avanza.
 
 ### MCP transaction history examples
 

@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from avanza import Avanza
 from avanza.constants import Condition, HttpMethod, InstrumentType, OrderType, StopLossPriceType, StopLossTriggerType, TimePeriod, TransactionsDetailsType
@@ -261,14 +262,26 @@ TRADINGVIEW_LOGIN_URL = "https://www.tradingview.com/accounts/signin/"
 TRADINGVIEW_HEATMAP_FIELDS = [
     "name",
     "description",
+    "exchange",
+    "type",
+    "subtype",
     "sector",
     "industry",
     "close",
     "change",
     "change_abs",
     "volume",
+    "Value.Traded",
+    "relative_volume_10d_calc",
     "market_cap_basic",
+    "fundamental_currency_code",
+    "currency",
+    "premarket_close",
+    "postmarket_close",
+    "update_mode",
 ]
+TRADINGVIEW_US_EQUITY_EXCHANGES = ("NASDAQ", "NYSE", "NYSEARCA", "NYSEAMERICAN", "AMEX")
+TRADINGVIEW_OTC_EXCHANGES = ("OTC", "OTCBB", "OTCQX", "OTCQB", "OTCMKTS", "PINK")
 TRADINGVIEW_WATCHLIST_ROW_LIMIT = 1500
 TRADINGVIEW_TUI_REFRESH_SECONDS = 15.0
 TRADINGVIEW_ANALYTICS_FIELDS = [
@@ -369,7 +382,11 @@ TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS = [
     "Volatility.W",
     "update_mode",
     "premarket_close",
+    "premarket_high",
+    "premarket_low",
     "postmarket_close",
+    "postmarket_high",
+    "postmarket_low",
     "earnings_release_next_date",
     "earnings_release_next_time",
 ]
@@ -4924,6 +4941,9 @@ def tradingview_scan_with_field_fallback(
     symbols: list[str],
     fields: list[str],
     market: str = TRADINGVIEW_DEFAULT_MARKET,
+    limit: int | None = None,
+    sort_by: str | None = None,
+    descending: bool = True,
     cookie: str = "",
 ) -> tuple[dict[str, Any], list[str]]:
     columns = unique_strings(fields)
@@ -4935,7 +4955,9 @@ def tradingview_scan_with_field_fallback(
             symbols=symbols,
             columns=columns,
             market=market,
-            limit=max(1, len(symbols)),
+            limit=max(1, int(limit if limit is not None else len(symbols))),
+            sort_by=sort_by,
+            descending=descending,
             cookie=cookie,
         )
         error_text = str(snapshot.get("error", "") or "")
@@ -5149,25 +5171,336 @@ def tradingview_symbol_snapshot(
     )
 
 
+def tradingview_numeric_field(row: dict[str, Any], key: str) -> float | None:
+    return scalar_number(row.get(key))
+
+
+def tradingview_premarket_change(row: dict[str, Any]) -> tuple[float | None, float | None]:
+    regular_close = tradingview_numeric_field(row, "close")
+    premarket_price = tradingview_numeric_field(row, "premarket_close")
+    if regular_close is None or regular_close == 0 or premarket_price is None:
+        return None, None
+    change_abs = premarket_price - regular_close
+    return change_abs, (change_abs / regular_close) * 100.0
+
+
+def tradingview_market_state(market: str, exchange: str) -> tuple[str, str]:
+    exchange_text = str(exchange or "").strip().upper()
+    if str(market or "").strip().lower() != "america" and exchange_text not in TRADINGVIEW_US_EQUITY_EXCHANGES:
+        return "unknown", ""
+    try:
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return "unknown", "America/New_York"
+    minutes = now.hour * 60 + now.minute
+    if 4 * 60 <= minutes < 9 * 60 + 30:
+        return "pre_market", "America/New_York"
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return "regular", "America/New_York"
+    if 16 * 60 <= minutes < 20 * 60:
+        return "post_market", "America/New_York"
+    return "closed", "America/New_York"
+
+
+def tradingview_freshness_warning(row: dict[str, Any]) -> str | None:
+    update_mode = str(row.get("update_mode") or "").strip()
+    warnings: list[str] = []
+    if "delayed" in update_mode.lower():
+        warnings.append(f"TradingView update mode is {update_mode}.")
+    if tradingview_numeric_field(row, "premarket_close") is None and tradingview_numeric_field(row, "postmarket_close") is None:
+        warnings.append("Extended-hours price is unavailable in this TradingView payload.")
+    return " ".join(warnings) if warnings else None
+
+
+def tradingview_preopen_from_full_snapshot(snapshot: dict[str, Any], *, authenticated: bool) -> dict[str, Any]:
+    row = snapshot.get("analytics") if isinstance(snapshot.get("analytics"), dict) else {}
+    symbol = str(snapshot.get("symbol") or row.get("ticker") or row.get("name") or "")
+    exchange = str(row.get("exchange") or (symbol.split(":", 1)[0] if ":" in symbol else ""))
+    premarket_abs, premarket_pct = tradingview_premarket_change(row)
+    freshness_warning = tradingview_freshness_warning(row)
+    market_state, exchange_tz = tradingview_market_state(str(snapshot.get("market") or ""), exchange)
+    technicals = snapshot.get("technicals") if isinstance(snapshot.get("technicals"), dict) else {}
+    regular_close = tradingview_numeric_field(row, "close")
+    premarket_price = tradingview_numeric_field(row, "premarket_close")
+    postmarket_price = tradingview_numeric_field(row, "postmarket_close")
+    return {
+        "symbol": symbol,
+        "as_of": snapshot.get("as_of") or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": "tradingview-scanner",
+        "mode": "authenticated_scrape" if authenticated else "free_scrape",
+        "requested_symbol": snapshot.get("requested_symbol"),
+        "requested_exchange": snapshot.get("requested_exchange"),
+        "market": snapshot.get("market"),
+        "quote": {
+            "regular_close": regular_close,
+            "regular_change_abs": tradingview_numeric_field(row, "change_abs"),
+            "regular_change_pct": tradingview_numeric_field(row, "change"),
+            "premarket_price": premarket_price,
+            "premarket_change_abs": premarket_abs,
+            "premarket_change_pct": premarket_pct,
+            "premarket_high": tradingview_numeric_field(row, "premarket_high"),
+            "premarket_low": tradingview_numeric_field(row, "premarket_low"),
+            "postmarket_price": postmarket_price,
+            "postmarket_high": tradingview_numeric_field(row, "postmarket_high"),
+            "postmarket_low": tradingview_numeric_field(row, "postmarket_low"),
+            "update_mode": row.get("update_mode"),
+            "freshness_warning": freshness_warning,
+        },
+        "session": {
+            "market_state": market_state,
+            "exchange_tz": exchange_tz or None,
+        },
+        "technicals": {
+            "overall_label": technicals.get("overall_label") or recommendation_label(row.get("Recommend.All")),
+            "overall_score": technicals.get("overall_score") if "overall_score" in technicals else row.get("Recommend.All"),
+            "moving_average_label": technicals.get("moving_average_label") or recommendation_label(row.get("Recommend.MA")),
+            "moving_average_score": technicals.get("moving_average_score") if "moving_average_score" in technicals else row.get("Recommend.MA"),
+            "oscillator_label": technicals.get("oscillator_label") or recommendation_label(row.get("Recommend.Other")),
+            "oscillator_score": technicals.get("oscillator_score") if "oscillator_score" in technicals else row.get("Recommend.Other"),
+            "rsi": tradingview_numeric_field(row, "RSI"),
+            "macd": tradingview_numeric_field(row, "MACD.macd"),
+            "macd_signal": tradingview_numeric_field(row, "MACD.signal"),
+            "stoch_k": tradingview_numeric_field(row, "Stoch.K"),
+            "stoch_d": tradingview_numeric_field(row, "Stoch.D"),
+            "adx": tradingview_numeric_field(row, "ADX"),
+            "cci20": tradingview_numeric_field(row, "CCI20"),
+        },
+        "levels": {
+            "open": tradingview_numeric_field(row, "open"),
+            "high": tradingview_numeric_field(row, "high"),
+            "low": tradingview_numeric_field(row, "low"),
+            "close": regular_close,
+            "ema20": tradingview_numeric_field(row, "EMA20"),
+            "ema50": tradingview_numeric_field(row, "EMA50"),
+            "ema100": tradingview_numeric_field(row, "EMA100"),
+            "ema200": tradingview_numeric_field(row, "EMA200"),
+            "sma20": tradingview_numeric_field(row, "SMA20"),
+            "sma50": tradingview_numeric_field(row, "SMA50"),
+            "sma100": tradingview_numeric_field(row, "SMA100"),
+            "sma200": tradingview_numeric_field(row, "SMA200"),
+            "vwma": tradingview_numeric_field(row, "VWMA"),
+            "week_52_high": tradingview_numeric_field(row, "52_week_high"),
+            "week_52_low": tradingview_numeric_field(row, "52_week_low"),
+        },
+        "liquidity": {
+            "volume": tradingview_numeric_field(row, "volume"),
+            "relative_volume": tradingview_numeric_field(row, "relative_volume_10d_calc"),
+            "value_traded": tradingview_numeric_field(row, "Value.Traded"),
+            "market_cap": tradingview_numeric_field(row, "market_cap_basic"),
+            "volatility_week": tradingview_numeric_field(row, "Volatility.W"),
+        },
+        "events": {
+            "next_earnings_date": row.get("earnings_release_next_date"),
+            "next_earnings_time": row.get("earnings_release_next_time"),
+        },
+        "unsupported_fields": snapshot.get("unsupported_fields", []),
+        "unsafe_for_execution": False,
+    }
+
+
+def tradingview_preopen_symbol_snapshot(
+    symbol: str,
+    *,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+    authenticated: bool = True,
+    cookie: str = "",
+) -> dict[str, Any]:
+    full = tradingview_symbol_full_snapshot(symbol, market=market, exchange=exchange, cookie=cookie)
+    return tradingview_preopen_from_full_snapshot(full, authenticated=authenticated)
+
+
+def tradingview_compact_preopen_row(snapshot: dict[str, Any]) -> dict[str, Any]:
+    quote = snapshot.get("quote") if isinstance(snapshot.get("quote"), dict) else {}
+    technicals = snapshot.get("technicals") if isinstance(snapshot.get("technicals"), dict) else {}
+    liquidity = snapshot.get("liquidity") if isinstance(snapshot.get("liquidity"), dict) else {}
+    events = snapshot.get("events") if isinstance(snapshot.get("events"), dict) else {}
+    return {
+        "symbol": snapshot.get("symbol"),
+        "regular_close": quote.get("regular_close"),
+        "premarket_price": quote.get("premarket_price"),
+        "premarket_change_pct": quote.get("premarket_change_pct"),
+        "regular_change_pct": quote.get("regular_change_pct"),
+        "update_mode": quote.get("update_mode"),
+        "freshness_warning": quote.get("freshness_warning"),
+        "technical": technicals.get("overall_label"),
+        "technical_score": technicals.get("overall_score"),
+        "ma": technicals.get("moving_average_label"),
+        "oscillator": technicals.get("oscillator_label"),
+        "rsi": technicals.get("rsi"),
+        "relative_volume": liquidity.get("relative_volume"),
+        "volume": liquidity.get("volume"),
+        "market_cap": liquidity.get("market_cap"),
+        "next_earnings_date": events.get("next_earnings_date"),
+    }
+
+
+def tradingview_symbol_request_parts(item: Any, default_exchange: str) -> tuple[str, str]:
+    if isinstance(item, dict):
+        symbol = str(item.get("symbol") or item.get("ticker") or item.get("name") or "").strip()
+        exchange = str(item.get("exchange") or default_exchange).strip() or default_exchange
+        return symbol, exchange
+    return str(item or "").strip(), default_exchange
+
+
+def tradingview_preopen_batch_snapshot(
+    symbols: list[Any],
+    *,
+    market: str = TRADINGVIEW_DEFAULT_MARKET,
+    exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+    authenticated: bool = True,
+    compact: bool = False,
+    max_concurrency: int = 4,
+    cookie: str = "",
+) -> dict[str, Any]:
+    del max_concurrency  # Calls are kept sequential to avoid hammering TradingView scanner endpoints.
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for index, item in enumerate(symbols):
+        symbol, item_exchange = tradingview_symbol_request_parts(item, exchange)
+        if not symbol:
+            errors.append({"index": index, "symbol": symbol, "error": "symbol is required"})
+            rows.append({"index": index, "ok": False, "error": "symbol is required"} if compact else {})
+            continue
+        try:
+            snapshot = tradingview_preopen_symbol_snapshot(
+                symbol,
+                market=market,
+                exchange=item_exchange,
+                authenticated=authenticated,
+                cookie=cookie,
+            )
+            row = tradingview_compact_preopen_row(snapshot) if compact else snapshot
+            row["index"] = index
+            row["ok"] = True
+            rows.append(row)
+        except Exception as exc:
+            error = {"index": index, "symbol": symbol, "exchange": item_exchange, "error": str(exc)}
+            errors.append(error)
+            rows.append({"index": index, "symbol": symbol, "exchange": item_exchange, "ok": False, "error": str(exc)})
+        if index < len(symbols) - 1:
+            time.sleep(0.05)
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "market": market,
+        "authenticated": authenticated,
+        "compact": compact,
+        "count": len(rows),
+        "ok_count": sum(1 for row in rows if row.get("ok")),
+        "error_count": len(errors),
+        "rows": rows,
+        "errors": errors,
+        "unsafe_for_execution": False,
+    }
+
+
+def tradingview_heatmap_sort_value(row: dict[str, Any], sort_by: str) -> float:
+    key = str(sort_by or "change").strip()
+    if key in {"premarket_change", "premarket_change_pct"}:
+        _change_abs, change_pct = tradingview_premarket_change(row)
+        return float(change_pct if change_pct is not None else -1e300)
+    value = tradingview_numeric_field(row, key)
+    if value is None and key.lower() == "relative_volume":
+        value = tradingview_numeric_field(row, "relative_volume_10d_calc")
+    return float(value if value is not None else -1e300)
+
+
+def tradingview_filter_heatmap_rows(
+    rows: list[dict[str, Any]],
+    *,
+    exchanges: list[str] | None = None,
+    min_market_cap: float | None = None,
+    min_price: float | None = None,
+    min_volume: float | None = None,
+    sector: str | None = None,
+    industry: str | None = None,
+    sort_by: str = "change",
+    exclude_otc: bool = True,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    allowed_exchanges = {str(item).strip().upper() for item in (exchanges or []) if str(item).strip()}
+    sector_filter = str(sector or "").strip().lower()
+    industry_filter = str(industry or "").strip().lower()
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        exchange = str(row.get("exchange") or "").strip().upper()
+        if allowed_exchanges and exchange not in allowed_exchanges:
+            continue
+        if exclude_otc and any(exchange == item or exchange.startswith(f"{item}.") for item in TRADINGVIEW_OTC_EXCHANGES):
+            continue
+        if min_market_cap is not None and (tradingview_numeric_field(row, "market_cap_basic") or 0.0) < min_market_cap:
+            continue
+        if min_price is not None and (tradingview_numeric_field(row, "close") or 0.0) < min_price:
+            continue
+        if min_volume is not None and (tradingview_numeric_field(row, "volume") or 0.0) < min_volume:
+            continue
+        if sector_filter and sector_filter not in str(row.get("sector") or "").strip().lower():
+            continue
+        if industry_filter and industry_filter not in str(row.get("industry") or "").strip().lower():
+            continue
+        filtered.append(row)
+    filtered.sort(key=lambda row: tradingview_heatmap_sort_value(row, sort_by), reverse=True)
+    return filtered[: max(1, min(limit, 200))]
+
+
 def tradingview_heatmap_snapshot(
     *,
     market: str = TRADINGVIEW_DEFAULT_MARKET,
     limit: int = 50,
+    exchanges: list[str] | None = None,
+    min_market_cap: float | None = None,
+    min_price: float | None = None,
+    min_volume: float | None = None,
+    sector: str | None = None,
+    industry: str | None = None,
+    sort_by: str = "change",
+    include_premarket: bool = True,
+    exclude_otc: bool = True,
     cookie: str = "",
 ) -> dict[str, Any]:
-    scan = tradingview_scan(
+    fields = list(TRADINGVIEW_HEATMAP_FIELDS)
+    if not include_premarket:
+        fields = [field for field in fields if not field.startswith("premarket_") and not field.startswith("postmarket_")]
+    fetch_limit = max(limit, min(1000, max(limit * 5, 100)))
+    scanner_sort = sort_by if sort_by in fields else "change"
+    scan, unsupported_fields = tradingview_scan_with_field_fallback(
         symbols=[],
-        columns=TRADINGVIEW_HEATMAP_FIELDS,
+        fields=fields,
         market=market,
-        limit=max(1, min(limit, 200)),
-        sort_by="change",
+        limit=fetch_limit,
+        sort_by=scanner_sort,
         descending=True,
         cookie=cookie,
     )
+    rows = tradingview_filter_heatmap_rows(
+        scan["rows"],
+        exchanges=exchanges if exchanges is not None else list(TRADINGVIEW_US_EQUITY_EXCHANGES),
+        min_market_cap=min_market_cap,
+        min_price=min_price,
+        min_volume=min_volume,
+        sector=sector,
+        industry=industry,
+        sort_by=sort_by,
+        exclude_otc=exclude_otc,
+        limit=limit,
+    )
     return {
         "market": market,
-        "rows": scan["rows"],
+        "rows": rows,
+        "rows_before_filter": len(scan["rows"]),
         "total_count": scan["total_count"],
+        "unsupported_fields": unsupported_fields,
+        "filters": {
+            "exchanges": exchanges if exchanges is not None else list(TRADINGVIEW_US_EQUITY_EXCHANGES),
+            "min_market_cap": min_market_cap,
+            "min_price": min_price,
+            "min_volume": min_volume,
+            "sector": sector,
+            "industry": industry,
+            "sort_by": sort_by,
+            "include_premarket": include_premarket,
+            "exclude_otc": exclude_otc,
+        },
         "source": "tradingview-scanner",
         "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "unsafe_for_execution": False,
@@ -6629,6 +6962,60 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "tv_preopen_symbol_snapshot",
+        "description": "Return a compact TradingView pre-open/extended-hours review snapshot for one symbol.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "authenticated": {"type": "boolean", "default": True},
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tv_preopen_batch_snapshot",
+        "description": "Return TradingView pre-open snapshots for a symbol list with per-symbol error isolation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbols": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "symbol": {"type": "string"},
+                                    "exchange": {"type": "string"},
+                                },
+                                "required": ["symbol"],
+                                "additionalProperties": True,
+                            },
+                        ]
+                    },
+                },
+                "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "authenticated": {"type": "boolean", "default": True},
+                "compact": {"type": "boolean", "default": True},
+                "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 8, "default": 4},
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
+            },
+            "required": ["symbols"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "tv_scrape_heatmap",
         "description": "Fetch TradingView market heatmap rows (top movers) using free scanner data.",
         "inputSchema": {
@@ -6636,6 +7023,49 @@ MCP_TOOLS = [
             "properties": {
                 "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "exchanges": {"type": "array", "items": {"type": "string"}},
+                "min_market_cap": {"type": "number"},
+                "min_price": {"type": "number"},
+                "min_volume": {"type": "number"},
+                "sector": {"type": "string"},
+                "industry": {"type": "string"},
+                "sort_by": {"type": "string", "default": "change"},
+                "include_premarket": {"type": "boolean", "default": True},
+                "exclude_otc": {"type": "boolean", "default": True},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_tv_preopen_portfolio_bundle",
+        "description": "Read-only Avanza portfolio protection state merged with TradingView pre-open market/technical snapshots.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "include_symbols": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "symbol": {"type": "string"},
+                                    "exchange": {"type": "string"},
+                                },
+                                "required": ["symbol"],
+                                "additionalProperties": True,
+                            },
+                        ]
+                    },
+                },
+                "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "authenticated": {"type": "boolean", "default": True},
+                "compact": {"type": "boolean", "default": True},
+                "cookie": {"type": "string"},
+                "sessionid": {"type": "string"},
+                "sessionid_sign": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -6765,18 +7195,36 @@ MCP_TOOLS = [
             "type": "object",
             "properties": {
                 "symbol": {"type": "string"},
+                "symbols": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "symbol": {"type": "string"},
+                                    "exchange": {"type": "string"},
+                                },
+                                "required": ["symbol"],
+                                "additionalProperties": True,
+                            },
+                        ]
+                    },
+                },
                 "exchange": {"type": "string", "default": TRADINGVIEW_DEFAULT_EXCHANGE},
                 "market": {"type": "string", "default": TRADINGVIEW_DEFAULT_MARKET},
+                "include_tradingview": {"type": "boolean", "default": True},
                 "include_zacks": {"type": "boolean", "default": True},
                 "include_fmp": {"type": "boolean", "default": False},
                 "include_polygon": {"type": "boolean", "default": False},
                 "include_sec": {"type": "boolean", "default": True},
+                "compact": {"type": "boolean", "default": False},
                 "fred_series_id": {"type": "string"},
                 "fred_api_key": {"type": "string"},
                 "fmp_api_key": {"type": "string"},
                 "polygon_api_key": {"type": "string"},
             },
-            "required": ["symbol"],
             "additionalProperties": False,
         },
     },
@@ -7510,6 +7958,7 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_verify_no_raw_failed_orders",
     "avanza_verify_protection",
     "avanza_realtime_quotes",
+    "avanza_tv_preopen_portfolio_bundle",
     "avanza_fee_estimate",
     "avanza_stoploss_set",
     "avanza_stoploss_set_batch",
@@ -10786,6 +11235,7 @@ class AvanzaTradingTui(App):
         symbol: str,
         exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
         market: str = TRADINGVIEW_DEFAULT_MARKET,
+        include_tradingview: bool = True,
         include_zacks: bool = True,
         include_fmp: bool = False,
         include_polygon: bool = False,
@@ -10804,18 +11254,25 @@ class AvanzaTradingTui(App):
             "requested_symbol": normalized_symbol,
             "market": market,
             "sources": [],
+            "errors": [],
         }
 
-        tv = tradingview_symbol_snapshot(
-            symbol_input,
-            market=market,
-            exchange=exchange,
-            cookie="",
-        )
-        payload["tradingview"] = tv
-        payload["symbol"] = str(tv.get("symbol") or normalized_symbol)
-        symbol_token = tv_symbol_core(payload["symbol"]) or symbol_token
-        payload["sources"].append("tradingview")
+        if include_tradingview:
+            try:
+                tv = tradingview_symbol_snapshot(
+                    symbol_input,
+                    market=market,
+                    exchange=exchange,
+                    cookie="",
+                )
+                payload["tradingview"] = tv
+                payload["symbol"] = str(tv.get("symbol") or normalized_symbol)
+                symbol_token = tv_symbol_core(payload["symbol"]) or symbol_token
+                payload["sources"].append("tradingview")
+            except Exception as exc:
+                payload["tradingview"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["errors"].append({"source": "tradingview", "symbol": symbol_input, "error": str(exc)})
+                payload["sources"].append("tradingview")
 
         if include_zacks:
             try:
@@ -10824,6 +11281,7 @@ class AvanzaTradingTui(App):
                 payload["sources"].append("zacks")
             except Exception as exc:
                 payload["zacks"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["errors"].append({"source": "zacks", "symbol": symbol_token, "error": str(exc)})
                 payload["sources"].append("zacks")
 
         if include_fmp:
@@ -10837,6 +11295,7 @@ class AvanzaTradingTui(App):
                 payload["sources"].append("fmp")
             except Exception as exc:
                 payload["fmp"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["errors"].append({"source": "fmp", "symbol": symbol_token, "error": str(exc)})
                 payload["sources"].append("fmp")
 
         if include_polygon:
@@ -10850,6 +11309,7 @@ class AvanzaTradingTui(App):
                 payload["sources"].append("polygon")
             except Exception as exc:
                 payload["polygon"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["errors"].append({"source": "polygon", "symbol": symbol_token, "error": str(exc)})
                 payload["sources"].append("polygon")
 
         if include_sec:
@@ -10859,6 +11319,7 @@ class AvanzaTradingTui(App):
                 payload["sources"].append("sec")
             except Exception as exc:
                 payload["sec"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["errors"].append({"source": "sec", "symbol": symbol_token, "error": str(exc)})
                 payload["sources"].append("sec")
 
         if fred_series_id:
@@ -10873,10 +11334,11 @@ class AvanzaTradingTui(App):
                 payload["sources"].append("fred")
             except Exception as exc:
                 payload["fred"] = {"error": str(exc), "unsafe_for_execution": True}
+                payload["errors"].append({"source": "fred", "series_id": fred_series_id, "error": str(exc)})
                 payload["sources"].append("fred")
 
-        unsafe_flags: list[bool] = [bool(tv.get("unsafe_for_execution"))]
-        for key in ("zacks", "sec", "fred"):
+        unsafe_flags: list[bool] = []
+        for key in ("tradingview", "zacks", "fmp", "polygon", "sec", "fred"):
             item = payload.get(key)
             if isinstance(item, dict):
                 unsafe_flags.append(bool(item.get("unsafe_for_execution")))
@@ -10885,6 +11347,240 @@ class AvanzaTradingTui(App):
         payload["unsafe_for_execution"] = any(unsafe_flags)
         payload["mode"] = "experimental_scrape_mode"
         return payload
+
+    def signal_context_bundle_batch_snapshot(
+        self,
+        *,
+        symbols: list[Any],
+        exchange: str = TRADINGVIEW_DEFAULT_EXCHANGE,
+        market: str = TRADINGVIEW_DEFAULT_MARKET,
+        include_tradingview: bool = True,
+        include_zacks: bool = True,
+        include_fmp: bool = False,
+        include_polygon: bool = False,
+        include_sec: bool = True,
+        fred_series_id: str | None = None,
+        fred_api_key: str | None = None,
+        fmp_api_key: str | None = None,
+        polygon_api_key: str | None = None,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for index, item in enumerate(symbols):
+            symbol, item_exchange = tradingview_symbol_request_parts(item, exchange)
+            if not symbol:
+                error = {"index": index, "error": "symbol is required"}
+                rows.append(error)
+                errors.append(error)
+                continue
+            try:
+                snapshot = self.signal_context_bundle_snapshot(
+                    symbol=symbol,
+                    exchange=item_exchange,
+                    market=market,
+                    include_tradingview=include_tradingview,
+                    include_zacks=include_zacks,
+                    include_fmp=include_fmp,
+                    include_polygon=include_polygon,
+                    include_sec=include_sec,
+                    fred_series_id=fred_series_id,
+                    fred_api_key=fred_api_key,
+                    fmp_api_key=fmp_api_key,
+                    polygon_api_key=polygon_api_key,
+                )
+                if compact:
+                    rows.append(
+                        {
+                            "index": index,
+                            "symbol": snapshot.get("symbol"),
+                            "requested_symbol": symbol,
+                            "tradingview": snapshot.get("tradingview", {}),
+                            "zacks": snapshot.get("zacks", {}),
+                            "errors": snapshot.get("errors", []),
+                            "unsafe_for_execution": snapshot.get("unsafe_for_execution"),
+                        }
+                    )
+                else:
+                    snapshot["index"] = index
+                    rows.append(snapshot)
+            except Exception as exc:
+                error = {"index": index, "symbol": symbol, "exchange": item_exchange, "error": str(exc)}
+                rows.append(error)
+                errors.append(error)
+        return {
+            "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "market": market,
+            "compact": compact,
+            "rows": rows,
+            "errors": errors,
+            "unsafe_for_execution": any(bool(row.get("unsafe_for_execution")) or bool(row.get("error")) for row in rows),
+        }
+
+    def tradingview_symbol_for_position(self, position: dict[str, Any]) -> tuple[str, str, list[str]]:
+        warnings: list[str] = []
+        orderbook_id = position_order_book_id(position)
+        metadata = self.orderbook_metadata_by_id.get(orderbook_id) or KNOWN_ORDERBOOK_METADATA.get(orderbook_id, {})
+        ticker = str(metadata.get("ticker") or metadata.get("display_symbol") or "").strip()
+        market_name = str(metadata.get("market") or "").strip().upper()
+        exchange = str(metadata.get("exchange") or "").strip().upper()
+        if not exchange:
+            if "NASDAQ" in market_name:
+                exchange = "NASDAQ"
+            elif "NYSE" in market_name:
+                exchange = "NYSE"
+            elif "STOCKHOLM" in market_name:
+                exchange = "OMXSTO"
+        instrument = position.get("instrument") if isinstance(position.get("instrument"), dict) else {}
+        orderbook = instrument.get("orderbook") if isinstance(instrument.get("orderbook"), dict) else {}
+        ticker = ticker or str(
+            instrument.get("tickerSymbol")
+            or instrument.get("symbol")
+            or orderbook.get("tickerSymbol")
+            or orderbook.get("symbol")
+            or ""
+        ).strip()
+        stock_name = str(nested_value(position, "instrument", "name") or "")
+        if not ticker:
+            parsed = trailing_parenthesized_symbol(stock_name)
+            if parsed:
+                ticker = parsed
+        if not ticker:
+            ticker = re.sub(r"[^A-Z0-9.]+", "", stock_name.upper())
+            warnings.append("TradingView symbol was inferred from instrument name and may be wrong.")
+        if not exchange:
+            exchange = TRADINGVIEW_DEFAULT_EXCHANGE
+            warnings.append("TradingView exchange was not available; defaulted to NASDAQ.")
+        return ticker, exchange, warnings
+
+    def avanza_tv_preopen_portfolio_bundle_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        include_symbols: list[Any] | None = None,
+        market: str = TRADINGVIEW_DEFAULT_MARKET,
+        authenticated: bool = True,
+        compact: bool = True,
+        cookie: str = "",
+    ) -> dict[str, Any]:
+        account_id = account_id or self.require_selected_account_id()
+        _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
+        stoploss_items = self.filtered_stoploss_items(avanza, account_id)
+        _orders_payload, open_orders = self.filtered_open_order_items(avanza, account_id)
+        stops_by_orderbook: dict[str, list[dict[str, Any]]] = {}
+        orders_by_orderbook: dict[str, list[dict[str, Any]]] = {}
+        for item in stoploss_items:
+            stops_by_orderbook.setdefault(stop_loss_order_book_id(item), []).append(item)
+        for item in open_orders:
+            orders_by_orderbook.setdefault(open_order_order_book_id(item), []).append(item)
+
+        include_symbol_tokens = {
+            tv_symbol_core(tradingview_symbol_request_parts(item, TRADINGVIEW_DEFAULT_EXCHANGE)[0])
+            for item in (include_symbols or [])
+            if tradingview_symbol_request_parts(item, TRADINGVIEW_DEFAULT_EXCHANGE)[0]
+        }
+        rows: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        seen_symbols: set[str] = set()
+        for position in positions:
+            orderbook_id = position_order_book_id(position)
+            ticker, exchange, symbol_warnings = self.tradingview_symbol_for_position(position)
+            token = tv_symbol_core(ticker)
+            if include_symbol_tokens and token not in include_symbol_tokens:
+                continue
+            seen_symbols.add(token)
+            tv_snapshot: dict[str, Any] | None = None
+            tv_error = ""
+            try:
+                tv_snapshot = tradingview_preopen_symbol_snapshot(
+                    ticker,
+                    market=market,
+                    exchange=exchange,
+                    authenticated=authenticated,
+                    cookie=cookie,
+                )
+            except Exception as exc:
+                tv_error = str(exc)
+                errors.append({"stock": str(nested_value(position, "instrument", "name") or ""), "symbol": ticker, "error": tv_error})
+            position_row = position_mcp_dict(position, self.realtime_status_for_position(position))
+            protection = summarize_stop_protection(position, stops_by_orderbook.get(orderbook_id, []))
+            instrument_orders = [open_order_mcp_dict(item) for item in orders_by_orderbook.get(orderbook_id, [])]
+            failed_orders = [
+                row
+                for row in instrument_orders
+                if str(row.get("Status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+            ]
+            stock_name = str(position_row.get("stock") or "")
+            quote = tv_snapshot.get("quote", {}) if isinstance(tv_snapshot, dict) else {}
+            liquidity = tv_snapshot.get("liquidity", {}) if isinstance(tv_snapshot, dict) else {}
+            flags = {
+                "stale_avanza_quote": str(position_row.get("Real-time") or "").strip().lower() not in {"yes", "real-time", "realtime", "true"},
+                "tradingview_extended_hours_move": abs(float(quote.get("premarket_change_pct") or 0.0)) >= 1.0,
+                "sell_protection_gap": protection["sell_protection_gap"] > 0 and not instrument_is_eth_like(stock_name, orderbook_id),
+                "eth_approved_exception": instrument_is_eth_like(stock_name, orderbook_id),
+                "raw_failed_orders": bool(failed_orders),
+                "high_volatility": abs(float(liquidity.get("volatility_week") or 0.0)) >= 5.0,
+                "oversized_exposure": False,
+            }
+            row = {
+                "account_id": account_id,
+                "stock": stock_name,
+                "orderbook_id": orderbook_id,
+                "tradingview_symbol": tv_snapshot.get("symbol") if isinstance(tv_snapshot, dict) else normalize_tv_symbol(ticker, exchange),
+                "mapping_warnings": symbol_warnings,
+                "position": position_row,
+                "protection": protection,
+                "open_orders": instrument_orders,
+                "failed_orders": failed_orders,
+                "flags": flags,
+                "tradingview": tradingview_compact_preopen_row(tv_snapshot) if compact and isinstance(tv_snapshot, dict) else tv_snapshot,
+                "tradingview_error": tv_error or None,
+            }
+            rows.append(row)
+
+        for item in include_symbols or []:
+            symbol, exchange = tradingview_symbol_request_parts(item, TRADINGVIEW_DEFAULT_EXCHANGE)
+            token = tv_symbol_core(symbol)
+            if not symbol or token in seen_symbols:
+                continue
+            try:
+                tv_snapshot = tradingview_preopen_symbol_snapshot(
+                    symbol,
+                    market=market,
+                    exchange=exchange,
+                    authenticated=authenticated,
+                    cookie=cookie,
+                )
+                rows.append(
+                    {
+                        "account_id": account_id,
+                        "stock": None,
+                        "orderbook_id": None,
+                        "tradingview_symbol": tv_snapshot.get("symbol"),
+                        "position": None,
+                        "protection": None,
+                        "open_orders": [],
+                        "failed_orders": [],
+                        "flags": {"not_in_portfolio": True},
+                        "tradingview": tradingview_compact_preopen_row(tv_snapshot) if compact else tv_snapshot,
+                        "tradingview_error": None,
+                    }
+                )
+            except Exception as exc:
+                errors.append({"symbol": symbol, "exchange": exchange, "error": str(exc)})
+        return {
+            "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "account_id": account_id,
+            "tenant_session_id": self.active_session_id,
+            "market": market,
+            "authenticated": authenticated,
+            "compact": compact,
+            "rows": rows,
+            "errors": errors,
+            "unsafe_for_execution": False,
+            "note": "Read-only pre-open review bundle. Avanza remains source of truth for account/orders/stops; TradingView supplies market context.",
+        }
 
     def filtered_portfolio_items(
         self,
@@ -11865,13 +12561,83 @@ class AvanzaTradingTui(App):
             snapshot["unsafe_for_execution"] = False
             return snapshot
 
+        if tool == "tv_preopen_symbol_snapshot":
+            symbol = str(arguments["symbol"])
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            authenticated = bool(arguments.get("authenticated", True))
+            cookie = tradingview_cookie_from_inputs(arguments, load_tradingview_session()) if authenticated else ""
+            if authenticated and not cookie:
+                raise ValueError("Authenticated pre-open mode requires saved TradingView session or cookie/sessionid input.")
+            snapshot = tradingview_preopen_symbol_snapshot(
+                symbol,
+                exchange=exchange,
+                market=market,
+                authenticated=authenticated,
+                cookie=cookie,
+            )
+            snapshot["experimental_scrape_mode"] = True
+            return snapshot
+
+        if tool == "tv_preopen_batch_snapshot":
+            raw_symbols = arguments.get("symbols") or []
+            if not isinstance(raw_symbols, list):
+                raise ValueError("symbols must be a list.")
+            exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
+            market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            authenticated = bool(arguments.get("authenticated", True))
+            cookie = tradingview_cookie_from_inputs(arguments, load_tradingview_session()) if authenticated else ""
+            if authenticated and not cookie:
+                raise ValueError("Authenticated pre-open mode requires saved TradingView session or cookie/sessionid input.")
+            return tradingview_preopen_batch_snapshot(
+                raw_symbols,
+                exchange=exchange,
+                market=market,
+                authenticated=authenticated,
+                compact=bool(arguments.get("compact", True)),
+                max_concurrency=int(arguments.get("max_concurrency", 4)),
+                cookie=cookie,
+            )
+
         if tool == "tv_scrape_heatmap":
             market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
             limit = int(arguments.get("limit", 50))
-            snapshot = tradingview_heatmap_snapshot(market=market, limit=limit, cookie="")
+            exchanges_raw = arguments.get("exchanges")
+            exchanges = [str(item) for item in exchanges_raw] if isinstance(exchanges_raw, list) else None
+            snapshot = tradingview_heatmap_snapshot(
+                market=market,
+                limit=limit,
+                exchanges=exchanges,
+                min_market_cap=scalar_number(arguments.get("min_market_cap")),
+                min_price=scalar_number(arguments.get("min_price")),
+                min_volume=scalar_number(arguments.get("min_volume")),
+                sector=str(arguments.get("sector") or "") or None,
+                industry=str(arguments.get("industry") or "") or None,
+                sort_by=str(arguments.get("sort_by", "change") or "change"),
+                include_premarket=bool(arguments.get("include_premarket", True)),
+                exclude_otc=bool(arguments.get("exclude_otc", True)),
+                cookie="",
+            )
             snapshot["mode"] = "free_scrape"
             snapshot["experimental_scrape_mode"] = True
             return snapshot
+
+        if tool == "avanza_tv_preopen_portfolio_bundle":
+            raw_symbols = arguments.get("include_symbols") or []
+            include_symbols = raw_symbols if isinstance(raw_symbols, list) else []
+            authenticated = bool(arguments.get("authenticated", True))
+            cookie = tradingview_cookie_from_inputs(arguments, load_tradingview_session()) if authenticated else ""
+            if authenticated and not cookie:
+                raise ValueError("Authenticated pre-open mode requires saved TradingView session or cookie/sessionid input.")
+            return self.avanza_tv_preopen_portfolio_bundle_snapshot(
+                avanza,
+                account_id,
+                include_symbols=include_symbols,
+                market=str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET)),
+                authenticated=authenticated,
+                compact=bool(arguments.get("compact", True)),
+                cookie=cookie,
+            )
 
         if tool == "tv_auth_watchlist":
             reference_symbol = str(arguments.get("reference_symbol", "AAPL"))
@@ -11964,9 +12730,10 @@ class AvanzaTradingTui(App):
             return self.data_source_status_snapshot(symbol=symbol, exchange=exchange, market=market)
 
         if tool == "signal_context_bundle":
-            symbol = str(arguments["symbol"])
             exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))
             market = str(arguments.get("market", TRADINGVIEW_DEFAULT_MARKET))
+            symbols = arguments.get("symbols")
+            include_tradingview = bool(arguments.get("include_tradingview", True))
             include_zacks = bool(arguments.get("include_zacks", True))
             include_fmp = bool(arguments.get("include_fmp", False))
             include_polygon = bool(arguments.get("include_polygon", False))
@@ -11975,10 +12742,30 @@ class AvanzaTradingTui(App):
             fred_api_key = str(arguments.get("fred_api_key", "") or "") or None
             fmp_api_key = str(arguments.get("fmp_api_key", "") or "") or None
             polygon_api_key = str(arguments.get("polygon_api_key", "") or "") or None
+            if isinstance(symbols, list) and symbols:
+                return self.signal_context_bundle_batch_snapshot(
+                    symbols=symbols,
+                    exchange=exchange,
+                    market=market,
+                    include_tradingview=include_tradingview,
+                    include_zacks=include_zacks,
+                    include_fmp=include_fmp,
+                    include_polygon=include_polygon,
+                    include_sec=include_sec,
+                    fred_series_id=fred_series_id,
+                    fred_api_key=fred_api_key,
+                    fmp_api_key=fmp_api_key,
+                    polygon_api_key=polygon_api_key,
+                    compact=bool(arguments.get("compact", False)),
+                )
+            symbol = str(arguments.get("symbol") or "").strip()
+            if not symbol:
+                raise ValueError("Provide symbol or symbols.")
             return self.signal_context_bundle_snapshot(
                 symbol=symbol,
                 exchange=exchange,
                 market=market,
+                include_tradingview=include_tradingview,
                 include_zacks=include_zacks,
                 include_fmp=include_fmp,
                 include_polygon=include_polygon,

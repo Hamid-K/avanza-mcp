@@ -3523,6 +3523,171 @@ def test_tradingview_symbol_snapshot_falls_back_from_america_to_exchange_market(
     assert any("uk/scan" in url for url, _ in calls)
 
 
+def test_tradingview_preopen_symbol_snapshot_normalizes_extended_hours(monkeypatch):
+    from avanza_cli import tradingview_preopen_symbol_snapshot
+
+    def fake_full(symbol, **kwargs):
+        return {
+            "symbol": "NASDAQ:SNDK",
+            "market": kwargs.get("market"),
+            "requested_symbol": symbol,
+            "requested_exchange": kwargs.get("exchange"),
+            "as_of": "2026-07-02T10:00:00+00:00",
+            "analytics": {
+                "name": "SNDK",
+                "description": "Sandisk Corp",
+                "exchange": "NASDAQ",
+                "close": 100.0,
+                "change": -10.0,
+                "change_abs": -11.11,
+                "premarket_close": 104.0,
+                "premarket_high": 105.0,
+                "premarket_low": 101.0,
+                "open": 99.0,
+                "high": 112.0,
+                "low": 97.0,
+                "volume": 2_500_000,
+                "relative_volume_10d_calc": 1.8,
+                "Value.Traded": 250_000_000,
+                "market_cap_basic": 15_000_000_000,
+                "Recommend.All": 0.42,
+                "Recommend.MA": 0.72,
+                "Recommend.Other": -0.12,
+                "RSI": 54.1,
+                "MACD.macd": 1.2,
+                "MACD.signal": 0.9,
+                "Stoch.K": 68.5,
+                "ADX": 37.8,
+                "EMA20": 96.0,
+                "SMA20": 95.5,
+                "VWMA": 95.8,
+                "update_mode": "delayed_streaming_900",
+                "earnings_release_next_date": "2026-08-13",
+            },
+            "technicals": {
+                "overall_score": 0.42,
+                "overall_label": "Buy",
+                "moving_average_score": 0.72,
+                "moving_average_label": "Strong Buy",
+                "oscillator_score": -0.12,
+                "oscillator_label": "Sell",
+            },
+            "unsupported_fields": [],
+        }
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_full)
+
+    snapshot = tradingview_preopen_symbol_snapshot("SNDK", exchange="NASDAQ", market="america", authenticated=True)
+
+    assert snapshot["symbol"] == "NASDAQ:SNDK"
+    assert snapshot["quote"]["regular_close"] == 100.0
+    assert snapshot["quote"]["premarket_price"] == 104.0
+    assert snapshot["quote"]["premarket_change_abs"] == 4.0
+    assert snapshot["quote"]["premarket_change_pct"] == 4.0
+    assert "delayed_streaming_900" in snapshot["quote"]["freshness_warning"]
+    assert snapshot["technicals"]["moving_average_label"] == "Strong Buy"
+    assert snapshot["levels"]["ema20"] == 96.0
+    assert snapshot["events"]["next_earnings_date"] == "2026-08-13"
+
+
+def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypatch):
+    from avanza_cli import tradingview_preopen_batch_snapshot
+
+    def fake_full(symbol, **kwargs):
+        if symbol == "CRWD":
+            raise RuntimeError("scanner unavailable")
+        return {
+            "symbol": f"{kwargs.get('exchange', 'NASDAQ')}:{symbol}",
+            "market": kwargs.get("market"),
+            "analytics": {"close": 10.0, "premarket_close": 11.0, "Recommend.All": 0.1},
+            "technicals": {"overall_label": "Neutral", "overall_score": 0.1},
+            "unsupported_fields": [],
+        }
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_full)
+
+    batch = tradingview_preopen_batch_snapshot(
+        [{"symbol": "SNDK", "exchange": "NASDAQ"}, {"symbol": "CRWD", "exchange": "NASDAQ"}, "MU"],
+        authenticated=False,
+        compact=True,
+    )
+
+    assert [row["index"] for row in batch["rows"]] == [0, 1, 2]
+    assert batch["rows"][0]["symbol"] == "NASDAQ:SNDK"
+    assert batch["rows"][1]["ok"] is False
+    assert batch["rows"][2]["symbol"] == "NASDAQ:MU"
+    assert batch["error_count"] == 1
+
+
+def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
+    from avanza_cli import tradingview_heatmap_snapshot
+
+    def fake_fetch_json(url, **kwargs):
+        columns = list(kwargs.get("payload", {}).get("columns", []))
+
+        def row(symbol, values):
+            return {"s": symbol, "d": [values.get(column) for column in columns]}
+
+        return {
+            "totalCount": 3,
+            "data": [
+                row(
+                    "OTC:PENNY",
+                    {
+                        "name": "PENNY",
+                        "description": "Penny OTC",
+                        "exchange": "OTC",
+                        "close": 0.4,
+                        "change": 250.0,
+                        "volume": 50_000_000,
+                        "market_cap_basic": 20_000_000,
+                    },
+                ),
+                row(
+                    "NASDAQ:SNDK",
+                    {
+                        "name": "SNDK",
+                        "description": "Sandisk",
+                        "exchange": "NASDAQ",
+                        "close": 20.0,
+                        "change": 12.0,
+                        "volume": 1_000_000,
+                        "market_cap_basic": 2_000_000_000,
+                    },
+                ),
+                row(
+                    "NYSE:BIG",
+                    {
+                        "name": "BIG",
+                        "description": "Big Listed",
+                        "exchange": "NYSE",
+                        "close": 30.0,
+                        "change": 5.0,
+                        "volume": 2_000_000,
+                        "market_cap_basic": 5_000_000_000,
+                    },
+                ),
+            ],
+        }
+
+    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+
+    snapshot = tradingview_heatmap_snapshot(
+        market="america",
+        limit=10,
+        exchanges=["NASDAQ", "NYSE"],
+        min_market_cap=1_000_000_000,
+        min_price=1,
+        min_volume=100_000,
+        exclude_otc=True,
+    )
+
+    tickers = [row["ticker"] for row in snapshot["rows"]]
+    assert tickers == ["NASDAQ:SNDK", "NYSE:BIG"]
+    assert "OTC:PENNY" not in tickers
+    assert snapshot["rows_before_filter"] == 3
+
+
 def test_tradingview_watchlist_entry_matches_target_variants():
     from avanza_cli import tradingview_watchlist_entry_matches_target
 
@@ -3831,6 +3996,138 @@ def test_execute_mcp_signal_context_bundle_uses_raw_symbol_for_tradingview_fallb
     assert captured["zacks_symbol"] == "ETHUSD"
     assert result["symbol"] == "CRYPTO:ETHUSD"
     assert result["unsafe_for_execution"] is False
+
+
+def test_execute_mcp_signal_context_bundle_degrades_when_tradingview_fails(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_tv(*args, **kwargs):
+        raise RuntimeError("TradingView down")
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr(
+        "avanza_cli.zacks_symbol_snapshot",
+        lambda symbol, **kwargs: {"symbol": symbol, "rank": {"value": 2, "label": "Buy"}, "unsafe_for_execution": False},
+    )
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool(
+        "signal_context_bundle",
+        {"symbol": "SNDK", "include_zacks": True, "include_sec": False},
+    )
+
+    assert result["symbol"] == "NASDAQ:SNDK"
+    assert result["tradingview"]["unsafe_for_execution"] is True
+    assert result["zacks"]["rank"]["label"] == "Buy"
+    assert result["errors"][0]["source"] == "tradingview"
+    assert result["unsafe_for_execution"] is True
+
+
+def test_execute_mcp_signal_context_bundle_accepts_symbols_list(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        pass
+
+    def fake_tv(symbol, **kwargs):
+        if symbol == "CRWD":
+            raise RuntimeError("no row")
+        return {"symbol": f"NASDAQ:{symbol}", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False}
+
+    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool(
+        "signal_context_bundle",
+        {
+            "symbols": [{"symbol": "SNDK", "exchange": "NASDAQ"}, {"symbol": "CRWD", "exchange": "NASDAQ"}],
+            "include_zacks": False,
+            "include_sec": False,
+            "compact": True,
+        },
+    )
+
+    assert len(result["rows"]) == 2
+    assert result["rows"][0]["symbol"] == "NASDAQ:SNDK"
+    assert result["rows"][1]["tradingview"]["error"] == "no row"
+    assert result["rows"][1]["errors"][0]["source"] == "tradingview"
+
+
+def test_avanza_tv_preopen_portfolio_bundle_merges_read_only_state(monkeypatch):
+    from avanza_cli import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "pos-1",
+                        "account": {"id": "acc-1", "name": "Test"},
+                        "instrument": {"name": "NVIDIA", "orderbook": {"id": "4478"}},
+                        "volume": {"value": 5, "unit": "st"},
+                        "value": {"value": 10_000, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 100, "unit": "SEK"},
+                        "acquiredValue": {"value": 9_000, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 1.0, "unit": "%"},
+                            "absolute": {"value": 100, "unit": "SEK"},
+                        },
+                        "profit": {
+                            "absolute": {"value": 1_000, "unit": "SEK"},
+                            "relative": {"value": 11.1, "unit": "%"},
+                        },
+                        "realtime": True,
+                    }
+                ],
+                "withoutOrderbook": [],
+            }
+
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "sl-1",
+                    "account": {"id": "acc-1", "name": "Test"},
+                    "orderbook": {"id": "4478", "name": "NVIDIA"},
+                    "status": "ACTIVE",
+                    "order": {"type": "SELL", "volume": {"value": 4}},
+                }
+            ]
+
+        def get_orders(self):
+            return []
+
+    def fake_preopen(symbol, **kwargs):
+        assert symbol == "NVDA"
+        return {
+            "symbol": "NASDAQ:NVDA",
+            "quote": {"regular_close": 200.0, "premarket_price": 204.0, "premarket_change_pct": 2.0},
+            "technicals": {"overall_label": "Buy"},
+            "liquidity": {"volatility_week": 2.0},
+            "events": {},
+        }
+
+    monkeypatch.setattr("avanza_cli.tradingview_preopen_symbol_snapshot", fake_preopen)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.accounts = [{"id": "acc-1", "name": {"defaultName": "Test"}, "type": "ISK", "status": "ACTIVE"}]
+    app.selected_account_id = "acc-1"
+
+    result = app.execute_mcp_tool(
+        "avanza_tv_preopen_portfolio_bundle",
+        {"account_id": "acc-1", "authenticated": False, "compact": True},
+    )
+
+    assert result["account_id"] == "acc-1"
+    assert result["rows"][0]["tradingview_symbol"] == "NASDAQ:NVDA"
+    assert result["rows"][0]["tradingview"]["premarket_change_pct"] == 2.0
+    assert result["rows"][0]["protection"]["sell_protection_gap"] == 1.0
+    assert result["rows"][0]["flags"]["sell_protection_gap"] is True
 
 
 def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):

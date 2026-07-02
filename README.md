@@ -251,7 +251,10 @@ For multi-session setups:
 | `tv_auth_session_clear` | Delete saved TradingView authenticated session cookie. |
 | `tv_auth_symbol_analytics` | Fetch TradingView symbol analytics in authenticated mode (inherits account entitlements from supplied TradingView cookie/session). |
 | `tv_auth_symbol_full` | Fetch rich TradingView symbol payload in authenticated mode (scanner analytics + technical labels + profile metadata + entitlement context). |
-| `tv_scrape_heatmap` | Fetch TradingView market heatmap rows (top movers) using free scanner data. |
+| `tv_preopen_symbol_snapshot` | Return a compact TradingView pre-open/extended-hours snapshot for one symbol. |
+| `tv_preopen_batch_snapshot` | Return TradingView pre-open snapshots for a symbol list with per-symbol error isolation. |
+| `tv_scrape_heatmap` | Fetch TradingView market heatmap rows with exchange, OTC, liquidity, market-cap, price, and sort filters. |
+| `avanza_tv_preopen_portfolio_bundle` | Read-only bundle that merges Avanza portfolio/protection state with TradingView pre-open context. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
 | `zacks_scrape_symbol` | Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies). |
@@ -327,6 +330,13 @@ Canonical naming note:
   4. use `tv_auth_*` tools with no repeated cookie input.
 - The TUI `TradingView Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
+- If Codex or another agent does not expose `tv_*` tools as direct native calls, keep using the registered `avanza_cli` MCP server and call the tools through the local stdio/TUI bridge. The bridge command remains `python avanza_cli.py mcp`; it forwards to the authenticated TUI localhost session.
+- Pre-open workflow:
+  1. start and authenticate the TUI, then enable MCP,
+  2. confirm `tv_auth_session_status` if authenticated TradingView data is needed,
+  3. call `tv_preopen_batch_snapshot` for watchlist/candidate symbols or `avanza_tv_preopen_portfolio_bundle` for an Avanza account review,
+  4. use `tv_scrape_heatmap` with filters such as `exchanges=["NASDAQ","NYSE","AMEX"]`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap noise.
+- TradingView extended-hours fields depend on TradingView entitlement/session and scanner availability. `premarket_close`, `postmarket_close`, `update_mode`, and quote freshness warnings are reported explicitly; missing fields are returned as `null` instead of inferred from Avanza.
 - `zacks_scrape_symbol` is best effort; it now attempts the quote page and free Zacks equity-report page, returning `analysis_summary`, `analysis_sources`, and `blocked_sources` when available. Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
 - API-key tools:

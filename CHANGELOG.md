@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.11 - 2026-07-02
+
+- Added TradingView pre-open MCP snapshots:
+  - `tv_preopen_symbol_snapshot` for one symbol,
+  - `tv_preopen_batch_snapshot` for ordered batch reviews with per-symbol errors.
+- Added read-only `avanza_tv_preopen_portfolio_bundle` to merge Avanza position/protection state with TradingView pre-open technical and extended-hours context.
+- Improved `tv_scrape_heatmap` with exchange, OTC, market-cap, price, volume, sector/industry, premarket, and sort filters for cleaner U.S. trading reviews.
+- Hardened `signal_context_bundle` so TradingView/source failures are returned under `errors`, and added `symbols` batch input support.
+- Documented the TradingView pre-open workflow and local MCP bridge fallback path for agents when direct `tv_*` tool exposure is missing.
+
 ## 0.1.10 - 2026-06-18
 
 - Added per-tenant, per-account snapshot caching for positions, stop-losses, and open orders.
