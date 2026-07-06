@@ -50,6 +50,8 @@ from avanza_cli import (
 def isolate_runtime_files(monkeypatch, tmp_path):
     monkeypatch.setattr("avanza_cli.LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr("avanza_cli.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
+    monkeypatch.setattr("avanza_mcp.config.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr("avanza_mcp.config.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
     monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_UPDATE_CHECK_ENABLED", "0")
