@@ -52,89 +52,18 @@ from avanza_mcp.auth import connect, onepassword_command, onepassword_credential
 from avanza_mcp.stoploss_rules import max_valid_until_date, normalize_stoploss_order_valid_days, stoploss_triggered_order_expiry, validate_valid_until
 from avanza_mcp.utils import append_jsonl, clamp, create_session_log_path, http_status_code_from_exception, is_unauthorized_http_error, mcp_call_log_line, mcp_result_log_detail, mcp_result_log_suffix, mcp_side_badge, mcp_stock_marker, mcp_trade_detail, strip_markup, summarize_mcp_result, timestamp
 from avanza_mcp.external.http import append_cookie_header, bounded_text, external_http_headers, html_document_text, html_meta_content, html_title_text, mask_secret, normalize_text, parse_cookie_value
+from avanza_mcp import avanza_ext, update_check
+from avanza_mcp.external import feeds
+from avanza_mcp.external import zacks as zacks_feed
+from avanza_mcp.update_check import is_version_outdated, normalize_version_text, update_check_enabled, version_tuple
+from avanza_mcp.external.zacks import zacks_analysis_summary_from_html, zacks_blocked_html, zacks_section_excerpt
+from avanza_mcp.external.feeds import sec_cik_text, sec_lookup_cik, sec_ticker_index
+from avanza_mcp.avanza_ext import estimate_avanza_fee
 
 TRADINGVIEW_UNSUPPORTED_FIELD_CACHE: dict[str, set[str]] = {}
 TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK = threading.Lock()
 
 
-def update_check_enabled() -> bool:
-    return str(os.getenv("AVANZA_UPDATE_CHECK_ENABLED", "1")).strip().lower() not in {"0", "false", "no"}
-
-
-def normalize_version_text(value: str) -> str:
-    text = str(value or "").strip()
-    if text.lower().startswith("v"):
-        text = text[1:]
-    return text
-
-
-def version_tuple(value: str) -> tuple[int, ...] | None:
-    normalized = normalize_version_text(value)
-    if not normalized:
-        return None
-    parts = normalized.split(".")
-    numbers: list[int] = []
-    for part in parts:
-        match = re.match(r"^(\d+)", part)
-        if not match:
-            break
-        numbers.append(int(match.group(1)))
-    return tuple(numbers) if numbers else None
-
-
-def is_version_outdated(current: str, latest: str) -> bool:
-    current_tuple = version_tuple(current)
-    latest_tuple = version_tuple(latest)
-    if not current_tuple or not latest_tuple:
-        return False
-    width = max(len(current_tuple), len(latest_tuple))
-    current_padded = current_tuple + (0,) * (width - len(current_tuple))
-    latest_padded = latest_tuple + (0,) * (width - len(latest_tuple))
-    return current_padded < latest_padded
-
-
-def github_latest_version_info(repo: str = GITHUB_RELEASE_REPO) -> dict[str, str]:
-    headers = {"Accept": "application/vnd.github+json"}
-    release_url = f"https://api.github.com/repos/{repo}/releases/latest"
-    try:
-        text = ext_http.external_fetch_text(
-            release_url,
-            headers=headers,
-            timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
-        )
-        payload = json.loads(text)
-        if isinstance(payload, dict):
-            tag = str(payload.get("tag_name", "") or payload.get("name", "")).strip()
-            if tag:
-                return {
-                    "version": normalize_version_text(tag),
-                    "tag": tag,
-                    "url": str(payload.get("html_url", "") or ""),
-                    "source": "release",
-                }
-    except HTTPError as exc:
-        if int(getattr(exc, "code", 0)) != 404:
-            raise
-
-    tags_url = f"https://api.github.com/repos/{repo}/tags?per_page=1"
-    tags_text = ext_http.external_fetch_text(
-        tags_url,
-        headers=headers,
-        timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
-    )
-    tags_payload = json.loads(tags_text)
-    if isinstance(tags_payload, list) and tags_payload:
-        first = tags_payload[0]
-        if isinstance(first, dict):
-            tag = str(first.get("name", "")).strip()
-            if tag:
-                return {
-                    "version": normalize_version_text(tag),
-                    "tag": tag,
-                    "url": str(first.get("zipball_url", "") or ""),
-                    "source": "tag",
-                }
-    raise RuntimeError(f"No GitHub release/tag data found for {repo}.")
 
 
 def stoploss_instrument_metadata(
@@ -2010,12 +1939,12 @@ def search_hit_tradeable_flags(hit: dict[str, Any]) -> tuple[bool | None, bool |
 
 
 def search_hit_price(hit: dict[str, Any], key: str) -> float | None:
-    direct = scalar_number(hit.get(key))
+    direct = utils.scalar_number(hit.get(key))
     if direct is not None:
         return direct
     price = hit.get("price")
     if isinstance(price, dict):
-        return scalar_number(price.get(key))
+        return utils.scalar_number(price.get(key))
     return None
 
 
@@ -2123,14 +2052,14 @@ def search_rows_with_market_data(
         if not isinstance(quote, dict):
             quote = market_data
         if row.get("last_price") is None:
-            row["last_price"] = scalar_number(quote.get("last"))
+            row["last_price"] = utils.scalar_number(quote.get("last"))
         if row.get("bid") is None:
-            row["bid"] = scalar_number(quote.get("buy"))
+            row["bid"] = utils.scalar_number(quote.get("buy"))
         if row.get("ask") is None:
-            row["ask"] = scalar_number(quote.get("sell"))
+            row["ask"] = utils.scalar_number(quote.get("sell"))
         bid = row.get("bid")
         ask = row.get("ask")
-        last_price = scalar_number(row.get("last_price"))
+        last_price = utils.scalar_number(row.get("last_price"))
         if last_price is not None and bid is not None and ask is not None:
             reference = (bid + ask) / 2.0
             if reference > 0:
@@ -2374,7 +2303,7 @@ def stop_loss_side(item: dict[str, Any]) -> str:
 
 def stop_loss_volume(item: dict[str, Any]) -> float:
     value = nested_value(item, "order", "volume") or item.get("volume")
-    parsed = scalar_number(value)
+    parsed = utils.scalar_number(value)
     return float(parsed or 0.0)
 
 
@@ -2387,7 +2316,7 @@ def stop_loss_trigger_percent(item: dict[str, Any]) -> float | None:
     value_type = str(nested_value(item, "trigger", "valueType") or "").strip().lower()
     if value_type not in {"percentage", "percent", "%"}:
         return None
-    return scalar_number(nested_value(item, "trigger", "value"))
+    return utils.scalar_number(nested_value(item, "trigger", "value"))
 
 
 def transaction_order_book_id(item: dict[str, Any]) -> str:
@@ -2488,9 +2417,9 @@ def stop_loss_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
         "side": side,
         "volume": stop_loss_volume(item),
         "trigger_type": trigger_type,
-        "trigger_value": scalar_number(trigger_value),
+        "trigger_value": utils.scalar_number(trigger_value),
         "trigger_value_type": trigger_value_type,
-        "order_price": scalar_number(order_price),
+        "order_price": utils.scalar_number(order_price),
         "order_price_type": order_price_type,
         "valid_until": valid_until,
         "order_valid_days": order.get("validDays") or order.get("valid_days"),
@@ -2851,15 +2780,15 @@ def paper_open_position(
 
 
 def update_position_excursions(position: dict[str, Any], market_price: float) -> None:
-    entry = scalar_number(position.get("entry_price"))
+    entry = utils.scalar_number(position.get("entry_price"))
     if entry in (None, 0):
         return
     side = str(position.get("side", "")).upper()
     move = ((market_price - entry) / entry) * 100.0
     if side == "SELL":
         move = -move
-    mfe = scalar_number(position.get("max_favorable_excursion")) or 0.0
-    mae = scalar_number(position.get("max_adverse_excursion")) or 0.0
+    mfe = utils.scalar_number(position.get("max_favorable_excursion")) or 0.0
+    mae = utils.scalar_number(position.get("max_adverse_excursion")) or 0.0
     position["max_favorable_excursion"] = max(mfe, move)
     position["max_adverse_excursion"] = min(mae, move)
 
@@ -2883,13 +2812,13 @@ def paper_exit_position(
     if target is None:
         raise ValueError("No matching open paper position found.")
 
-    entry_price = float(scalar_number(target.get("entry_price")) or 0.0)
+    entry_price = float(utils.scalar_number(target.get("entry_price")) or 0.0)
     quantity = int(target.get("quantity", 0) or 0)
     side = str(target.get("side", "")).upper()
     notional_entry = entry_price * quantity
     notional_exit = float(exit_price) * quantity
     gross = (notional_exit - notional_entry) if side == "BUY" else (notional_entry - notional_exit)
-    fees_total = float(scalar_number(target.get("estimated_fees")) or 0.0) + float(estimated_exit_fees)
+    fees_total = float(utils.scalar_number(target.get("estimated_fees")) or 0.0) + float(estimated_exit_fees)
     net = gross - fees_total
     pnl_percent = (net / notional_entry * 100.0) if notional_entry else 0.0
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -3030,26 +2959,6 @@ def cancel_paper_order(session: dict[str, Any], paper_order_id: str) -> dict[str
     raise ValueError(f"Unknown paper order id: {paper_order_id}")
 
 
-def scalar_number(value: Any) -> float | None:
-    if isinstance(value, dict):
-        nested = value.get("value")
-        if isinstance(nested, (int, float)):
-            return float(nested)
-        if isinstance(nested, str):
-            try:
-                return float(nested.replace(",", ""))
-            except ValueError:
-                return None
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.replace(",", ""))
-        except ValueError:
-            return None
-    return None
-
 
 def normalize_period_name(value: Any) -> str:
     return str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
@@ -3144,7 +3053,7 @@ def extract_performance_series(
         performance = item.get("performance")
         if not isinstance(performance, dict):
             performance = item
-        value = scalar_number(performance.get("value"))
+        value = utils.scalar_number(performance.get("value"))
         timestamp = item.get("timestamp")
         if timestamp is None:
             timestamp = item.get("time")
@@ -3213,7 +3122,7 @@ def chart_points_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
             timestamp = point.get("timestamp")
             if isinstance(timestamp, (int, float)):
                 return (0, float(timestamp), fallback_index)
-            parsed = scalar_number(timestamp)
+            parsed = utils.scalar_number(timestamp)
             if parsed is not None:
                 return (0, parsed, fallback_index)
             return (1, float(fallback_index), fallback_index)
@@ -3292,7 +3201,7 @@ def chart_points_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             elif isinstance(point, (list, tuple)) and len(point) >= 2:
                 point_date = chart_date_text(point[0])
-                point_value = scalar_number(point[1])
+                point_value = utils.scalar_number(point[1])
                 if point_value is None:
                     continue
                 rows.append(
@@ -3397,83 +3306,6 @@ def account_performance_summary_from_payload(
         "raw": payload_to_json_safe(payload),
     }
 
-
-def zacks_blocked_html(html_text: str) -> bool:
-    lowered = html_text.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "pardon our interruption",
-            "access denied",
-            "request blocked",
-            "verify you are a human",
-            "enable javascript and cookies",
-        )
-    )
-
-
-ZACKS_ANALYSIS_HEADINGS = (
-    "Summary",
-    "Company Summary",
-    "Investment Thesis",
-    "Valuation",
-    "Industry Analysis",
-    "Earnings Estimate Revisions",
-    "Zacks Rank",
-    "Style Scores",
-    "Growth Score",
-    "Value Score",
-    "Momentum Score",
-)
-
-
-def zacks_section_excerpt(document_text: str, heading: str, max_chars: int = 900) -> str:
-    text = str(document_text or "")
-    if not text:
-        return ""
-    match = re.search(rf"(?im)^\s*{re.escape(heading)}\s*$", text)
-    if not match:
-        return ""
-    start = match.end()
-    stop = len(text)
-    for candidate in ZACKS_ANALYSIS_HEADINGS:
-        if candidate.lower() == heading.lower():
-            continue
-        candidate_match = re.search(rf"(?im)^\s*{re.escape(candidate)}\s*$", text[start:])
-        if candidate_match:
-            stop = min(stop, start + candidate_match.start())
-    return bounded_text(text[start:stop], max_chars)
-
-
-def zacks_analysis_summary_from_html(
-    html_text: str,
-    *,
-    source_url: str,
-    max_chars: int = 2500,
-) -> dict[str, Any]:
-    document_text = html_document_text(html_text)
-    title = html_title_text(html_text)
-    description = html_meta_content(html_text, "description") or html_meta_content(html_text, "og:description")
-    sections = []
-    seen_headings: set[str] = set()
-    for heading in ZACKS_ANALYSIS_HEADINGS:
-        excerpt = zacks_section_excerpt(document_text, heading)
-        if excerpt and heading.lower() not in seen_headings:
-            sections.append({"heading": heading, "text": excerpt})
-            seen_headings.add(heading.lower())
-    summary_parts = []
-    if description:
-        summary_parts.append(description)
-    summary_parts.extend(f"{section['heading']}: {section['text']}" for section in sections)
-    summary = bounded_text(" ".join(summary_parts), max_chars)
-    return {
-        "available": bool(summary),
-        "source_url": source_url,
-        "title": title,
-        "meta_description": description,
-        "summary": summary or None,
-        "sections": sections,
-    }
 
 
 def tradingview_cookie_from_browser_cookies(cookies: list[dict[str, Any]]) -> str:
@@ -3768,7 +3600,7 @@ def tradingview_auto_login_and_capture_session(
 
 
 def recommendation_label(value: Any) -> str:
-    score = scalar_number(value)
+    score = utils.scalar_number(value)
     if score is None:
         return "Unknown"
     for threshold, label in TRADINGVIEW_RECOMMENDATION_THRESHOLDS:
@@ -4333,7 +4165,7 @@ def tradingview_symbol_snapshot(
 
 
 def tradingview_numeric_field(row: dict[str, Any], key: str) -> float | None:
-    return scalar_number(row.get(key))
+    return utils.scalar_number(row.get(key))
 
 
 def tradingview_premarket_change(row: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -5072,273 +4904,6 @@ async (maxRows) => {
             context.close()
 
 
-def sec_cik_text(value: Any) -> str:
-    raw = re.sub(r"[^0-9]", "", str(value or ""))
-    if not raw:
-        raise ValueError("CIK must contain digits.")
-    return raw.zfill(10)
-
-
-def sec_ticker_index() -> list[dict[str, Any]]:
-    payload = ext_http.external_fetch_json(SEC_TICKERS_URL, headers={"Accept": "application/json"})
-    rows = payload.get("data", [])
-    fields = payload.get("fields", [])
-    if not isinstance(rows, list) or not isinstance(fields, list):
-        raise RuntimeError("Unexpected SEC ticker payload.")
-    return [
-        {str(fields[idx]): row[idx] if idx < len(row) else None for idx in range(len(fields))}
-        for row in rows
-        if isinstance(row, list)
-    ]
-
-
-def sec_lookup_cik(ticker: str | None = None, cik: str | None = None) -> tuple[str, dict[str, Any] | None]:
-    if cik:
-        return sec_cik_text(cik), None
-    ticker_text = str(ticker or "").strip().upper()
-    if not ticker_text:
-        raise ValueError("ticker or cik is required.")
-    for row in sec_ticker_index():
-        if str(row.get("ticker", "")).strip().upper() == ticker_text:
-            return sec_cik_text(row.get("cik")), row
-    raise ValueError(f"Unknown SEC ticker: {ticker_text}")
-
-
-def sec_recent_filings_snapshot(ticker: str | None, cik: str | None, limit: int = 20) -> dict[str, Any]:
-    cik_text, company = sec_lookup_cik(ticker=ticker, cik=cik)
-    payload = ext_http.external_fetch_json(
-        SEC_SUBMISSIONS_URL_TEMPLATE.format(cik=cik_text),
-        headers={"Accept": "application/json"},
-    )
-    recent = payload.get("filings", {}).get("recent", {})
-    forms = recent.get("form", []) if isinstance(recent, dict) else []
-    accessions = recent.get("accessionNumber", []) if isinstance(recent, dict) else []
-    filing_dates = recent.get("filingDate", []) if isinstance(recent, dict) else []
-    report_dates = recent.get("reportDate", []) if isinstance(recent, dict) else []
-    primary_docs = recent.get("primaryDocument", []) if isinstance(recent, dict) else []
-    rows = []
-    max_len = min(len(forms), max(1, min(limit, 200)))
-    for index in range(max_len):
-        accession = str(accessions[index]) if index < len(accessions) else ""
-        accession_url = ""
-        if accession:
-            accession_compact = accession.replace("-", "")
-            accession_url = (
-                f"https://www.sec.gov/Archives/edgar/data/{int(cik_text)}/{accession_compact}/"
-                f"{primary_docs[index] if index < len(primary_docs) else ''}"
-            )
-        rows.append(
-            {
-                "form": forms[index] if index < len(forms) else "",
-                "filing_date": filing_dates[index] if index < len(filing_dates) else "",
-                "report_date": report_dates[index] if index < len(report_dates) else "",
-                "accession_number": accession,
-                "document": primary_docs[index] if index < len(primary_docs) else "",
-                "url": accession_url,
-            }
-        )
-    return {
-        "ticker": str(ticker or company.get("ticker") if company else "").upper() or None,
-        "cik": cik_text,
-        "company_name": payload.get("name") or (company.get("name") if company else ""),
-        "exchange": company.get("exchange") if company else "",
-        "filings": rows,
-        "source": "sec-edgar",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": False,
-    }
-
-
-def fred_observations_snapshot(
-    series_id: str,
-    *,
-    api_key: str | None = None,
-    limit: int = 100,
-    sort_order: str = "desc",
-) -> dict[str, Any]:
-    key = str(api_key or os.getenv("FRED_API_KEY", "")).strip()
-    if not key:
-        raise ValueError("FRED API key missing. Set FRED_API_KEY or pass api_key.")
-    params = {
-        "series_id": series_id,
-        "api_key": key,
-        "file_type": "json",
-        "sort_order": "asc" if str(sort_order).lower() == "asc" else "desc",
-        "limit": str(max(1, min(limit, 1000))),
-    }
-    url = f"{FRED_OBSERVATIONS_URL}?{urlencode(params)}"
-    payload = ext_http.external_fetch_json(url, headers={"Accept": "application/json"})
-    observations = payload.get("observations", [])
-    rows = []
-    for item in observations if isinstance(observations, list) else []:
-        if not isinstance(item, dict):
-            continue
-        value_raw = str(item.get("value", "")).strip()
-        value = None if value_raw in {"", "."} else scalar_number(value_raw)
-        rows.append({"date": item.get("date"), "value": value, "value_raw": value_raw})
-    return {
-        "series_id": series_id,
-        "title": payload.get("title"),
-        "units": payload.get("units"),
-        "frequency": payload.get("frequency"),
-        "observations": rows,
-        "source": "fred",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": False,
-    }
-
-
-def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
-    ticker = str(symbol or "").strip().upper()
-    if not ticker:
-        raise ValueError("symbol is required.")
-    url = f"https://www.zacks.com/stock/quote/{ticker}"
-    report_url = f"https://www.zacks.com/zer/report/{ticker}?rwid=Y"
-    headers = append_cookie_header({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}, cookie)
-    html_text = ext_http.external_fetch_text(url, headers=headers)
-    quote_blocked = zacks_blocked_html(html_text)
-    rank_match = re.search(r"Zacks\s*Rank\s*#\s*([1-5])\s*\(([^)]+)\)", html_text, re.IGNORECASE)
-    industry_rank_match = re.search(r"Industry Rank\s*:?\s*#?\s*([0-9]+)", html_text, re.IGNORECASE)
-    esp_match = re.search(r"Earnings\s+ESP\s*:?\s*([+-]?[0-9]+(?:\.[0-9]+)?%)", html_text, re.IGNORECASE)
-    quote_analysis = zacks_analysis_summary_from_html(html_text, source_url=url)
-    analysis_sources = [{"kind": "quote", "blocked": quote_blocked, "analysis": quote_analysis}]
-    blocked_sources = ["quote"] if quote_blocked else []
-    report_error = ""
-    if cookie or not quote_blocked:
-        try:
-            report_html = ext_http.external_fetch_text(report_url, headers=headers)
-            report_blocked = zacks_blocked_html(report_html)
-            report_analysis = zacks_analysis_summary_from_html(report_html, source_url=report_url)
-            analysis_sources.append({"kind": "equity_report", "blocked": report_blocked, "analysis": report_analysis})
-            if report_blocked:
-                blocked_sources.append("equity_report")
-        except Exception as exc:
-            report_error = str(exc)
-            analysis_sources.append(
-                {
-                    "kind": "equity_report",
-                    "blocked": False,
-                    "error": report_error,
-                    "analysis": {
-                        "available": False,
-                        "source_url": report_url,
-                        "title": "",
-                        "meta_description": "",
-                        "summary": None,
-                        "sections": [],
-                    },
-                }
-            )
-    selected_analysis = next(
-        (source["analysis"] for source in reversed(analysis_sources) if source.get("analysis", {}).get("available")),
-        {
-            "available": False,
-            "source_url": report_url if cookie else url,
-            "title": "",
-            "meta_description": "",
-            "summary": None,
-            "sections": [],
-        },
-    )
-    blocked = quote_blocked and not selected_analysis.get("available")
-    return {
-        "symbol": ticker,
-        "url": url,
-        "report_url": report_url,
-        "blocked": blocked,
-        "blocked_sources": blocked_sources,
-        "rank": {
-            "value": int(rank_match.group(1)) if rank_match else None,
-            "label": html.unescape(rank_match.group(2)).strip() if rank_match else None,
-        },
-        "industry_rank": int(industry_rank_match.group(1)) if industry_rank_match else None,
-        "earnings_esp": esp_match.group(1) if esp_match else None,
-        "analysis_summary": selected_analysis,
-        "analysis_sources": analysis_sources,
-        "analysis_error": report_error or None,
-        "source": "zacks-web",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": blocked,
-    }
-
-
-def estimate_avanza_fee(
-    *,
-    account_id: str,
-    order_book_id: str,
-    side: str,
-    price: float,
-    quantity: int,
-    currency: str = "SEK",
-    market: str = "",
-    brokerage_class: str = "",
-) -> dict[str, Any]:
-    _ = account_id
-    _ = order_book_id
-    _ = side
-    notional = float(price) * float(quantity)
-    currency_norm = str(currency or "SEK").upper()
-    market_norm = str(market or "").lower()
-    brokerage_norm = str(brokerage_class or "").strip().lower()
-
-    if "fast" in brokerage_norm:
-        courtage_rate = 0.0
-        courtage_min = 99.0 if currency_norm == "SEK" else 9.99
-        notes = ["Using conservative fixed-fee assumption for Fast brokerage class."]
-    else:
-        if currency_norm == "SEK" and ("se" in market_norm or not market_norm):
-            courtage_rate = DEFAULT_COURTAGE_RATE_SE
-            courtage_min = DEFAULT_COURTAGE_MIN_SEK
-        else:
-            courtage_rate = DEFAULT_COURTAGE_RATE_US
-            courtage_min = DEFAULT_COURTAGE_MIN_USD
-        notes = ["Using conservative percentage+minimum estimate; exact fee depends on Avanza courtage class and market."]
-
-    estimated_courtage = max(courtage_min, abs(notional) * courtage_rate)
-    fx_fee = 0.0
-    if currency_norm != "SEK":
-        fx_fee = abs(notional) * DEFAULT_FX_FEE_RATE
-        notes.append("Includes one-way FX fee estimate; round-trip trading incurs FX costs on both entry and exit.")
-
-    estimated_total_cost = estimated_courtage + fx_fee
-    round_trip_cost = estimated_total_cost * 2.0
-    break_even_move_percent = ((round_trip_cost / abs(notional)) * 100.0) if notional not in (0, -0.0) else None
-    return {
-        "account_id": str(account_id),
-        "orderbook_id": str(order_book_id),
-        "side": str(side).upper(),
-        "currency": currency_norm,
-        "market": market,
-        "brokerage_class": brokerage_class or None,
-        "notional": notional,
-        "estimated_courtage": estimated_courtage,
-        "estimated_fx_fee": fx_fee,
-        "estimated_total_cost": estimated_total_cost,
-        "estimated_round_trip_cost": round_trip_cost,
-        "break_even_move_percent": break_even_move_percent,
-        "notes": notes,
-        "assumptions": {
-            "courtage_rate": courtage_rate,
-            "courtage_minimum": courtage_min,
-            "fx_fee_rate": DEFAULT_FX_FEE_RATE if currency_norm != "SEK" else 0.0,
-        },
-    }
-
-
-def avanza_private_get(avanza: Any, path: str, options: dict[str, Any] | None = None) -> Any:
-    caller = getattr(avanza, "_Avanza__call", None)
-    if not callable(caller):
-        raise RuntimeError("Avanza private API call path unavailable in this client version.")
-    return caller(HttpMethod.GET, path, options=options or {})
-
-
-def avanza_private_post(avanza: Any, path: str, body: dict[str, Any] | None = None) -> Any:
-    caller = getattr(avanza, "_Avanza__call", None)
-    if not callable(caller):
-        raise RuntimeError("Avanza private API call path unavailable in this client version.")
-    return caller(HttpMethod.POST, path, options=body or {})
-
-
 def movers_rows_from_payload(items: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not isinstance(items, list):
@@ -5368,16 +4933,16 @@ def movers_rows_from_payload(items: Any) -> list[dict[str, Any]]:
                 "country_code": country,
                 "currency": currency,
                 "instrument_type": str(item.get("instrumentType") or nested_value(item, "orderbook", "instrumentType") or "") or None,
-                "last_price": scalar_number(item.get("lastPrice")) or scalar_number(item.get("last")),
+                "last_price": utils.scalar_number(item.get("lastPrice")) or utils.scalar_number(item.get("last")),
                 "one_day_change_percent": (
-                    scalar_number(item.get("oneDayChangePercent"))
-                    or scalar_number(item.get("changePercent"))
-                    or scalar_number(item.get("change"))
+                    utils.scalar_number(item.get("oneDayChangePercent"))
+                    or utils.scalar_number(item.get("changePercent"))
+                    or utils.scalar_number(item.get("change"))
                 ),
                 "total_value_traded": (
-                    scalar_number(item.get("totalValueTraded"))
-                    or scalar_number(item.get("turnover"))
-                    or scalar_number(item.get("valueTraded"))
+                    utils.scalar_number(item.get("totalValueTraded"))
+                    or utils.scalar_number(item.get("turnover"))
+                    or utils.scalar_number(item.get("valueTraded"))
                 ),
                 "last_price_updated": (
                     iso_from_any_timestamp(item.get("lastPriceUpdated"))
@@ -5398,14 +4963,14 @@ def filter_mover_rows(
 ) -> list[dict[str, Any]]:
     filtered: list[dict[str, Any]] = []
     for row in rows:
-        last_price = scalar_number(row.get("last_price"))
-        total_value_traded = scalar_number(row.get("total_value_traded"))
+        last_price = utils.scalar_number(row.get("last_price"))
+        total_value_traded = utils.scalar_number(row.get("total_value_traded"))
         if min_price is not None and (last_price is None or last_price < min_price):
             continue
         if min_total_value_traded is not None and (total_value_traded is None or total_value_traded < min_total_value_traded):
             continue
         filtered.append(row)
-    filtered.sort(key=lambda item: scalar_number(item.get("one_day_change_percent")) or 0.0, reverse=True)
+    filtered.sort(key=lambda item: utils.scalar_number(item.get("one_day_change_percent")) or 0.0, reverse=True)
     return filtered[: max(1, min(int(limit), 200))]
 
 
@@ -5431,9 +4996,9 @@ def index_constituent_row(item: dict[str, Any]) -> dict[str, Any]:
         "country_code": country,
         "country": country,
         "change_percent": (
-            scalar_number(item.get("changePercent"))
-            or scalar_number(item.get("oneDayChangePercent"))
-            or scalar_number(item.get("change"))
+            utils.scalar_number(item.get("changePercent"))
+            or utils.scalar_number(item.get("oneDayChangePercent"))
+            or utils.scalar_number(item.get("change"))
         ),
         "ticker": ticker or None,
         "symbol": ticker or None,
@@ -5442,113 +5007,6 @@ def index_constituent_row(item: dict[str, Any]) -> dict[str, Any]:
         "currency": str(item.get("currency") or nested_value(item, "orderbook", "currency") or "").strip().upper()
         or infer_currency_from_metadata({"country": country, "market": market}),
         "instrument_type": str(item.get("instrumentType") or nested_value(item, "orderbook", "instrumentType") or "").strip().upper() or None,
-    }
-
-
-def fmp_analyst_recommendations_snapshot(
-    symbol: str,
-    *,
-    api_key: str | None = None,
-    limit: int = 52,
-) -> dict[str, Any]:
-    ticker = str(symbol or "").strip().upper()
-    if not ticker:
-        raise ValueError("symbol is required.")
-    resolved_key = str(api_key or os.getenv("FMP_API_KEY", "")).strip()
-    if not resolved_key:
-        raise ValueError("FMP API key missing. Pass api_key or set FMP_API_KEY.")
-    url = f"{FMP_ANALYST_RECOMMENDATIONS_URL_TEMPLATE.format(symbol=ticker)}?apikey={resolved_key}"
-    payload = json.loads(ext_http.external_fetch_text(url, headers={"Accept": "application/json"}))
-    rows_raw: list[Any]
-    if isinstance(payload, list):
-        rows_raw = payload
-    elif isinstance(payload, dict):
-        nested = payload.get("data")
-        rows_raw = nested if isinstance(nested, list) else []
-    else:
-        rows_raw = []
-
-    rows: list[dict[str, Any]] = []
-    for item in rows_raw[: max(1, min(limit, 5000))]:
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            {
-                "date": str(item.get("date", "") or ""),
-                "symbol": str(item.get("symbol", ticker) or ticker),
-                "strong_buy": int(item.get("strongBuy", 0) or 0),
-                "buy": int(item.get("buy", 0) or 0),
-                "hold": int(item.get("hold", 0) or 0),
-                "sell": int(item.get("sell", 0) or 0),
-                "strong_sell": int(item.get("strongSell", 0) or 0),
-            }
-        )
-
-    latest = rows[0] if rows else None
-    return {
-        "symbol": ticker,
-        "rows": rows,
-        "latest": latest,
-        "source": "fmp-analyst-stock-recommendations",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": False,
-    }
-
-
-def polygon_analyst_insights_snapshot(
-    symbol: str,
-    *,
-    api_key: str | None = None,
-    limit: int = 50,
-    date_value: str | None = None,
-) -> dict[str, Any]:
-    ticker = str(symbol or "").strip().upper()
-    if not ticker:
-        raise ValueError("symbol is required.")
-    resolved_key = str(api_key or os.getenv("POLYGON_API_KEY", "")).strip()
-    if not resolved_key:
-        raise ValueError("Polygon API key missing. Pass api_key or set POLYGON_API_KEY.")
-    params: dict[str, str] = {
-        "ticker": ticker,
-        "limit": str(max(1, min(limit, 5000))),
-        "apiKey": resolved_key,
-        "sort": "-date",
-    }
-    if str(date_value or "").strip():
-        params["date"] = str(date_value).strip()
-    url = f"{POLYGON_ANALYST_INSIGHTS_URL}?{urlencode(params)}"
-    payload = ext_http.external_fetch_json(url, headers={"Accept": "application/json"})
-
-    results_raw = payload.get("results", []) if isinstance(payload, dict) else []
-    if not isinstance(results_raw, list):
-        results_raw = []
-    rows: list[dict[str, Any]] = []
-    for item in results_raw:
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            {
-                "date": str(item.get("date", "") or ""),
-                "ticker": str(item.get("ticker", ticker) or ticker),
-                "firm": str(item.get("firm", "") or ""),
-                "rating": str(item.get("rating", "") or ""),
-                "rating_action": str(item.get("rating_action", "") or ""),
-                "price_target": scalar_number(item.get("price_target")),
-                "insight": str(item.get("insight", "") or ""),
-                "company_name": str(item.get("company_name", "") or ""),
-                "last_updated": str(item.get("last_updated", "") or ""),
-            }
-        )
-    return {
-        "symbol": ticker,
-        "status": str(payload.get("status", "") or ""),
-        "count": len(rows),
-        "rows": rows,
-        "next_url": str(payload.get("next_url", "") or ""),
-        "request_id": str(payload.get("request_id", "") or ""),
-        "source": "polygon-benzinga-analyst-insights",
-        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "unsafe_for_execution": False,
     }
 
 
@@ -5562,7 +5020,7 @@ def first_numeric(payload: Any, paths: tuple[tuple[str, ...], ...]) -> float | N
                 current = None
             if current is None:
                 break
-        value = scalar_number(current)
+        value = utils.scalar_number(current)
         if value is not None:
             return value
     return None
@@ -5628,7 +5086,7 @@ def iso_from_any_timestamp(value: Any) -> str | None:
             parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
             return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
         except Exception:
-            parsed_num = scalar_number(text)
+            parsed_num = utils.scalar_number(text)
             if parsed_num is None:
                 return text
             value = parsed_num
@@ -10004,7 +9462,7 @@ class AvanzaTradingTui(App):
         info: dict[str, str] | None = None
         error = ""
         try:
-            info = github_latest_version_info(self.update_status_repo)
+            info = update_check.github_latest_version_info(self.update_status_repo)
         except Exception as exc:
             error = str(exc)
         if not self.safe_call_from_thread(self.apply_update_check_result, info, error):
@@ -10318,7 +9776,7 @@ class AvanzaTradingTui(App):
             )
 
         try:
-            zacks = zacks_symbol_snapshot(symbol_token)
+            zacks = zacks_feed.zacks_symbol_snapshot(symbol_token)
             status = "blocked" if zacks.get("blocked") else "ok"
             sources.append(
                 {
@@ -10341,7 +9799,7 @@ class AvanzaTradingTui(App):
         fmp_key = os.getenv("FMP_API_KEY", "").strip()
         if fmp_key:
             try:
-                fmp = fmp_analyst_recommendations_snapshot(symbol_token, limit=1, api_key=fmp_key)
+                fmp = feeds.fmp_analyst_recommendations_snapshot(symbol_token, limit=1, api_key=fmp_key)
                 latest = fmp.get("latest") if isinstance(fmp.get("latest"), dict) else {}
                 sources.append(
                     {
@@ -10378,7 +9836,7 @@ class AvanzaTradingTui(App):
         polygon_key = os.getenv("POLYGON_API_KEY", "").strip()
         if polygon_key:
             try:
-                polygon = polygon_analyst_insights_snapshot(symbol_token, limit=1, api_key=polygon_key)
+                polygon = feeds.polygon_analyst_insights_snapshot(symbol_token, limit=1, api_key=polygon_key)
                 first = polygon.get("rows", [{}])[0] if polygon.get("rows") else {}
                 sources.append(
                     {
@@ -10411,7 +9869,7 @@ class AvanzaTradingTui(App):
             )
 
         try:
-            sec = sec_recent_filings_snapshot(ticker=symbol_token, cik=None, limit=5)
+            sec = feeds.sec_recent_filings_snapshot(ticker=symbol_token, cik=None, limit=5)
             sources.append(
                 {
                     "source": "sec",
@@ -10434,7 +9892,7 @@ class AvanzaTradingTui(App):
         fred_key = os.getenv("FRED_API_KEY", "").strip()
         if fred_key:
             try:
-                fred = fred_observations_snapshot("FEDFUNDS", api_key=fred_key, limit=1)
+                fred = feeds.fred_observations_snapshot("FEDFUNDS", api_key=fred_key, limit=1)
                 last = fred.get("observations", [{}])[-1] if fred.get("observations") else {}
                 sources.append(
                     {
@@ -10530,7 +9988,7 @@ class AvanzaTradingTui(App):
 
         if include_zacks:
             try:
-                zacks = zacks_symbol_snapshot(symbol_token)
+                zacks = zacks_feed.zacks_symbol_snapshot(symbol_token)
                 payload["zacks"] = zacks
                 payload["sources"].append("zacks")
             except Exception as exc:
@@ -10540,7 +9998,7 @@ class AvanzaTradingTui(App):
 
         if include_fmp:
             try:
-                fmp = fmp_analyst_recommendations_snapshot(
+                fmp = feeds.fmp_analyst_recommendations_snapshot(
                     symbol_token,
                     limit=52,
                     api_key=fmp_api_key,
@@ -10554,7 +10012,7 @@ class AvanzaTradingTui(App):
 
         if include_polygon:
             try:
-                polygon = polygon_analyst_insights_snapshot(
+                polygon = feeds.polygon_analyst_insights_snapshot(
                     symbol_token,
                     limit=50,
                     api_key=polygon_api_key,
@@ -10568,7 +10026,7 @@ class AvanzaTradingTui(App):
 
         if include_sec:
             try:
-                sec = sec_recent_filings_snapshot(ticker=symbol_token, cik=None, limit=10)
+                sec = feeds.sec_recent_filings_snapshot(ticker=symbol_token, cik=None, limit=10)
                 payload["sec"] = sec
                 payload["sources"].append("sec")
             except Exception as exc:
@@ -10578,7 +10036,7 @@ class AvanzaTradingTui(App):
 
         if fred_series_id:
             try:
-                fred = fred_observations_snapshot(
+                fred = feeds.fred_observations_snapshot(
                     fred_series_id,
                     api_key=fred_api_key,
                     limit=30,
@@ -11533,21 +10991,21 @@ class AvanzaTradingTui(App):
             for item in items:
                 if str(item.get("id") or "") == result_id:
                     return stop_loss_mcp_dict(item)
-        requested_volume = scalar_number(order_event.get("volume"))
-        requested_price = scalar_number(order_event.get("price"))
+        requested_volume = utils.scalar_number(order_event.get("volume"))
+        requested_price = utils.scalar_number(order_event.get("price"))
         trigger = preview.get("stop_loss_trigger") if isinstance(preview.get("stop_loss_trigger"), dict) else {}
-        requested_trigger = scalar_number(trigger.get("value"))
+        requested_trigger = utils.scalar_number(trigger.get("value"))
         best: dict[str, Any] | None = None
         best_score = -1
         for item in items:
             score = 0
             if str(item.get("status", "")).upper() == "ACTIVE":
                 score += 1
-            if requested_volume is not None and scalar_number(nested_value(item, "order", "volume")) == requested_volume:
+            if requested_volume is not None and utils.scalar_number(nested_value(item, "order", "volume")) == requested_volume:
                 score += 2
-            if requested_price is not None and scalar_number(nested_value(item, "order", "price")) == requested_price:
+            if requested_price is not None and utils.scalar_number(nested_value(item, "order", "price")) == requested_price:
                 score += 2
-            if requested_trigger is not None and scalar_number(nested_value(item, "trigger", "value")) == requested_trigger:
+            if requested_trigger is not None and utils.scalar_number(nested_value(item, "trigger", "value")) == requested_trigger:
                 score += 2
             if score > best_score:
                 best = item
@@ -11578,11 +11036,11 @@ class AvanzaTradingTui(App):
             "orderbook_id": preview.get("order_book_id"),
             "stock": (row or {}).get("stock"),
             "side": normalize_order_side(order_event.get("type")),
-            "volume": scalar_number(order_event.get("volume")),
+            "volume": utils.scalar_number(order_event.get("volume")),
             "trigger_type": trigger.get("type"),
-            "trigger_value": scalar_number(trigger.get("value")),
+            "trigger_value": utils.scalar_number(trigger.get("value")),
             "trigger_value_type": trigger.get("value_type"),
-            "order_price": scalar_number(order_event.get("price")),
+            "order_price": utils.scalar_number(order_event.get("price")),
             "order_price_type": order_event.get("price_type"),
             "valid_until": trigger.get("valid_until"),
             "order_valid_days": order_event.get("valid_days"),
@@ -11974,9 +11432,9 @@ class AvanzaTradingTui(App):
                 market=market,
                 limit=limit,
                 exchanges=exchanges,
-                min_market_cap=scalar_number(arguments.get("min_market_cap")),
-                min_price=scalar_number(arguments.get("min_price")),
-                min_volume=scalar_number(arguments.get("min_volume")),
+                min_market_cap=utils.scalar_number(arguments.get("min_market_cap")),
+                min_price=utils.scalar_number(arguments.get("min_price")),
+                min_volume=utils.scalar_number(arguments.get("min_volume")),
                 sector=str(arguments.get("sector") or "") or None,
                 industry=str(arguments.get("industry") or "") or None,
                 sort_by=str(arguments.get("sort_by", "change") or "change"),
@@ -12042,7 +11500,7 @@ class AvanzaTradingTui(App):
         if tool == "zacks_scrape_symbol":
             symbol = str(arguments["symbol"])
             cookie = str(arguments.get("cookie", "") or "")
-            snapshot = zacks_symbol_snapshot(symbol, cookie=cookie)
+            snapshot = zacks_feed.zacks_symbol_snapshot(symbol, cookie=cookie)
             snapshot["mode"] = "free_scrape"
             snapshot["experimental_scrape_mode"] = True
             return snapshot
@@ -12051,7 +11509,7 @@ class AvanzaTradingTui(App):
             symbol = str(arguments["symbol"])
             limit = int(arguments.get("limit", 52))
             api_key = str(arguments.get("api_key", "") or "") or None
-            snapshot = fmp_analyst_recommendations_snapshot(symbol, limit=limit, api_key=api_key)
+            snapshot = feeds.fmp_analyst_recommendations_snapshot(symbol, limit=limit, api_key=api_key)
             snapshot["mode"] = "api"
             snapshot["experimental_scrape_mode"] = True
             return snapshot
@@ -12061,7 +11519,7 @@ class AvanzaTradingTui(App):
             limit = int(arguments.get("limit", 50))
             date_value = str(arguments.get("date", "") or "") or None
             api_key = str(arguments.get("api_key", "") or "") or None
-            snapshot = polygon_analyst_insights_snapshot(
+            snapshot = feeds.polygon_analyst_insights_snapshot(
                 symbol,
                 limit=limit,
                 date_value=date_value,
@@ -12075,14 +11533,14 @@ class AvanzaTradingTui(App):
             ticker = str(arguments.get("ticker", "") or "") or None
             cik = str(arguments.get("cik", "") or "") or None
             limit = int(arguments.get("limit", 20))
-            return sec_recent_filings_snapshot(ticker=ticker, cik=cik, limit=limit)
+            return feeds.sec_recent_filings_snapshot(ticker=ticker, cik=cik, limit=limit)
 
         if tool == "fred_series":
             series_id = str(arguments["series_id"])
             api_key = str(arguments.get("api_key", "") or "") or None
             limit = int(arguments.get("limit", 120))
             sort_order = str(arguments.get("sort_order", "desc"))
-            return fred_observations_snapshot(
+            return feeds.fred_observations_snapshot(
                 series_id=series_id,
                 api_key=api_key,
                 limit=limit,
@@ -12424,14 +11882,14 @@ class AvanzaTradingTui(App):
         if tool == "avanza_market_movers":
             country_codes_raw = arguments.get("countryCodes", ["SE"])
             market_places_raw = arguments.get("marketPlaces")
-            min_price = scalar_number(arguments.get("min_price"))
-            min_total_value_traded = scalar_number(arguments.get("min_total_value_traded"))
+            min_price = utils.scalar_number(arguments.get("min_price"))
+            min_total_value_traded = utils.scalar_number(arguments.get("min_total_value_traded"))
             limit = int(arguments.get("limit", 30))
             country_codes = [str(item).strip().upper() for item in country_codes_raw if str(item).strip()] if isinstance(country_codes_raw, list) else ["SE"]
             market_places = [str(item).strip() for item in market_places_raw if str(item).strip()] if isinstance(market_places_raw, list) else []
 
             gainers_losers_payload = payload_to_json_safe(
-                avanza_private_post(
+                avanza_ext.avanza_private_post(
                     avanza,
                     "/_api/market-stock-filter/stocks/gainers-losers",
                     body={
@@ -12444,7 +11902,7 @@ class AvanzaTradingTui(App):
                 )
             )
             filter_options_payload = payload_to_json_safe(
-                avanza_private_get(
+                avanza_ext.avanza_private_get(
                     avanza,
                     "/_api/market-stock-filter/stocks/filter-options",
                     options={"countryCodes": country_codes},
@@ -12467,7 +11925,7 @@ class AvanzaTradingTui(App):
                 min_total_value_traded=min_total_value_traded,
                 limit=limit,
             )
-            losers_rows.sort(key=lambda item: scalar_number(item.get("one_day_change_percent")) or 0.0)
+            losers_rows.sort(key=lambda item: utils.scalar_number(item.get("one_day_change_percent")) or 0.0)
             for row in gainers_rows + losers_rows:
                 orderbook_id = str(row.get("orderbook_id") or "").strip()
                 if not orderbook_id:
@@ -12504,7 +11962,7 @@ class AvanzaTradingTui(App):
                 raise ValueError("index_id is required.")
 
             raw_payload = payload_to_json_safe(
-                avanza_private_get(
+                avanza_ext.avanza_private_get(
                     avanza,
                     f"/_api/market-index/{index_id}/constituents",
                     options={},
@@ -12598,7 +12056,7 @@ class AvanzaTradingTui(App):
             orderbook_id = str(arguments.get("orderbook_id") or arguments.get("order_book_id") or "").strip()
             if not orderbook_id:
                 raise ValueError("orderbook_id is required.")
-            price = scalar_number(arguments.get("price"))
+            price = utils.scalar_number(arguments.get("price"))
             quantity = int(arguments.get("quantity", 0) or 0)
             if price is None or price <= 0:
                 raise ValueError("price must be > 0.")
@@ -12890,7 +12348,7 @@ class AvanzaTradingTui(App):
             if bool(arguments.get("fill_immediately", False)):
                 request = paper_order.get("request", {}) if isinstance(paper_order.get("request"), dict) else {}
                 session_id = paper_session_id(arguments.get("session_id"))
-                price = scalar_number(request.get("price")) or 0.0
+                price = utils.scalar_number(request.get("price")) or 0.0
                 quantity = int(request.get("volume", 0) or 0)
                 if quantity <= 0 or price <= 0:
                     raise ValueError("Paper fill_immediately requires price > 0 and volume > 0.")
@@ -12914,8 +12372,8 @@ class AvanzaTradingTui(App):
                     quantity=quantity,
                     estimated_fees=float(fee.get("estimated_total_cost", 0.0) or 0.0),
                     entry_reason=str(arguments.get("entry_reason", "") or ""),
-                    stop_price=scalar_number(arguments.get("stop_price")),
-                    target_price=scalar_number(arguments.get("target_price")),
+                    stop_price=utils.scalar_number(arguments.get("stop_price")),
+                    target_price=utils.scalar_number(arguments.get("target_price")),
                 )
                 paper_order["status"] = "FILLED"
                 paper_order["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -12934,7 +12392,7 @@ class AvanzaTradingTui(App):
                 raise ValueError("account_id is required.")
             position_id = str(arguments.get("position_id", "") or "") or None
             orderbook_id = str(arguments.get("orderbook_id", "") or "") or None
-            exit_price = scalar_number(arguments.get("exit_price"))
+            exit_price = utils.scalar_number(arguments.get("exit_price"))
             if exit_price is None or exit_price <= 0:
                 raise ValueError("exit_price must be > 0.")
             session_id = paper_session_id(arguments.get("session_id"))
@@ -13353,7 +12811,7 @@ class AvanzaTradingTui(App):
 
     def _market_guide_metadata_for_orderbook(self, orderbook_id: str) -> dict[str, Any]:
         try:
-            payload = payload_to_json_safe(avanza_private_get(self.require_connection(), f"/_api/market-guide/stock/{orderbook_id}", options={}))
+            payload = payload_to_json_safe(avanza_ext.avanza_private_get(self.require_connection(), f"/_api/market-guide/stock/{orderbook_id}", options={}))
         except Exception:
             return {}
         if not isinstance(payload, dict):
@@ -13759,7 +13217,7 @@ class AvanzaTradingTui(App):
         for index, entry in enumerate(list_entries):
             entry_id = str(entry.get("id", "") or "").strip()
             entry_name = str(entry.get("name", "") or entry.get("raw_label", "") or f"List {index + 1}").strip()
-            count = scalar_number(entry.get("count"))
+            count = utils.scalar_number(entry.get("count"))
             count_suffix = f" ({int(count)})" if count is not None else ""
             option_value = entry_id or f"list-{index}"
             options.append((f"{entry_name}{count_suffix}", option_value))

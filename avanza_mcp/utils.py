@@ -228,3 +228,24 @@ def is_unauthorized_http_error(exc: Exception) -> bool:
         return True
     message = str(exc).lower()
     return "unauthorized" in message or "forbidden" in message
+
+
+def scalar_number(value: Any) -> float | None:
+    if isinstance(value, dict):
+        nested = value.get("value")
+        if isinstance(nested, (int, float)):
+            return float(nested)
+        if isinstance(nested, str):
+            try:
+                return float(nested.replace(",", ""))
+            except ValueError:
+                return None
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return None
+    return None

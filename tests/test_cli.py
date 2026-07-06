@@ -184,7 +184,7 @@ def test_runtime_version_matches_pyproject():
 
 
 def test_version_outdated_comparison_helpers():
-    from avanza_cli import is_version_outdated, normalize_version_text, version_tuple
+    from avanza_mcp.update_check import is_version_outdated, normalize_version_text, version_tuple
 
     assert normalize_version_text("v1.2.3") == "1.2.3"
     assert version_tuple("v0.1.2") == (0, 1, 2)
@@ -202,7 +202,7 @@ def test_tradingview_watchlist_id_from_url():
 
 
 def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
-    from avanza_cli import github_latest_version_info
+    from avanza_mcp.update_check import github_latest_version_info
     from urllib.error import HTTPError
 
     def fake_fetch_text_release(url, **kwargs):
@@ -1842,8 +1842,8 @@ def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
         assert path == "/_api/market-stock-filter/stocks/filter-options"
         return {"marketPlaces": ["se.xsto.large cap stockholm"]}
 
-    monkeypatch.setattr("avanza_cli.avanza_private_post", fake_private_post)
-    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -1873,8 +1873,8 @@ def test_mcp_market_movers_supports_market_place_filter(monkeypatch):
         captured["body"] = body
         return {"gainers": [], "losers": [], "numberOfGainers": 0, "numberOfLosers": 0, "numberOfNeutrals": 0}
 
-    monkeypatch.setattr("avanza_cli.avanza_private_post", fake_private_post)
-    monkeypatch.setattr("avanza_cli.avanza_private_get", lambda *_args, **_kwargs: {"marketPlaces": []})
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {"marketPlaces": []})
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -1914,7 +1914,7 @@ def test_mcp_index_constituents_omxs30_shape(monkeypatch):
         assert path == "/_api/market-index/19002/constituents"
         return fake_rows
 
-    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("avanza_index_constituents", {"index_id": "19002", "index_name": "OMXS30"})
@@ -1950,7 +1950,7 @@ def test_mcp_index_constituents_include_quotes_and_spread(monkeypatch):
             {"orderBookId": "2002", "name": "NVIDIA", "countryCode": "US", "tickerSymbol": "NVDA"},
         ]
 
-    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool(
@@ -3838,7 +3838,7 @@ def test_tradingview_watchlist_entry_matches_target_variants():
 
 
 def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypatch):
-    from avanza_cli import sec_recent_filings_snapshot
+    from avanza_mcp.external.feeds import sec_recent_filings_snapshot
 
     def fake_fetch_json(url, **kwargs):
         if "company_tickers_exchange.json" in url:
@@ -3872,7 +3872,7 @@ def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypat
 
 
 def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
-    from avanza_cli import fmp_analyst_recommendations_snapshot
+    from avanza_mcp.external.feeds import fmp_analyst_recommendations_snapshot
 
     def fake_fetch_text(url, **kwargs):
         assert "financialmodelingprep.com/api/v3/analyst-stock-recommendations/AAPL" in url
@@ -3899,7 +3899,7 @@ def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
 
 
 def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
-    from avanza_cli import zacks_symbol_snapshot
+    from avanza_mcp.external.zacks import zacks_symbol_snapshot
 
     def fake_fetch_text(url, **kwargs):
         if "/stock/quote/AAPL" in url:
@@ -3953,7 +3953,7 @@ def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
 
 
 def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
-    from avanza_cli import zacks_symbol_snapshot
+    from avanza_mcp.external.zacks import zacks_symbol_snapshot
 
     def fake_fetch_text(url, **kwargs):
         assert "/stock/quote/AAPL" in url
@@ -3970,7 +3970,7 @@ def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
 
 
 def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
-    from avanza_cli import polygon_analyst_insights_snapshot
+    from avanza_mcp.external.feeds import polygon_analyst_insights_snapshot
 
     def fake_fetch_json(url, **kwargs):
         assert "api.polygon.io/benzinga/v1/analyst-insights" in url
@@ -4001,7 +4001,7 @@ def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
 
 
 def test_fred_observations_snapshot_parses_values(monkeypatch):
-    from avanza_cli import fred_observations_snapshot
+    from avanza_mcp.external.feeds import fred_observations_snapshot
 
     def fake_fetch_json(url, **kwargs):
         assert "fred/series/observations" in url
@@ -4043,8 +4043,8 @@ def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
         return {"ticker": "AAPL", "filings": [{"form": "10-Q"}], "unsafe_for_execution": False}
 
     monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
-    monkeypatch.setattr("avanza_cli.zacks_symbol_snapshot", fake_zacks)
-    monkeypatch.setattr("avanza_cli.sec_recent_filings_snapshot", fake_sec)
+    monkeypatch.setattr("avanza_mcp.external.zacks.zacks_symbol_snapshot", fake_zacks)
+    monkeypatch.setattr("avanza_mcp.external.feeds.sec_recent_filings_snapshot", fake_sec)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4068,11 +4068,11 @@ def test_execute_mcp_signal_context_bundle_with_fmp_and_polygon(monkeypatch):
         lambda *args, **kwargs: {"symbol": "NASDAQ:AAPL", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False},
     )
     monkeypatch.setattr(
-        "avanza_cli.fmp_analyst_recommendations_snapshot",
+        "avanza_mcp.external.feeds.fmp_analyst_recommendations_snapshot",
         lambda *args, **kwargs: {"symbol": "AAPL", "rows": [{"buy": 10}], "unsafe_for_execution": False},
     )
     monkeypatch.setattr(
-        "avanza_cli.polygon_analyst_insights_snapshot",
+        "avanza_mcp.external.feeds.polygon_analyst_insights_snapshot",
         lambda *args, **kwargs: {"symbol": "AAPL", "rows": [{"rating": "Buy"}], "unsafe_for_execution": False},
     )
 
@@ -4120,9 +4120,9 @@ def test_execute_mcp_signal_context_bundle_uses_raw_symbol_for_tradingview_fallb
         return {"symbol": symbol, "blocked": False, "rank": {"value": 3, "label": "Hold"}}
 
     monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
-    monkeypatch.setattr("avanza_cli.zacks_symbol_snapshot", fake_zacks)
+    monkeypatch.setattr("avanza_mcp.external.zacks.zacks_symbol_snapshot", fake_zacks)
     monkeypatch.setattr(
-        "avanza_cli.sec_recent_filings_snapshot",
+        "avanza_mcp.external.feeds.sec_recent_filings_snapshot",
         lambda *args, **kwargs: {"ticker": "ETHUSD", "filings": [], "unsafe_for_execution": False},
     )
 
@@ -4149,7 +4149,7 @@ def test_execute_mcp_signal_context_bundle_degrades_when_tradingview_fails(monke
 
     monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
     monkeypatch.setattr(
-        "avanza_cli.zacks_symbol_snapshot",
+        "avanza_mcp.external.zacks.zacks_symbol_snapshot",
         lambda symbol, **kwargs: {"symbol": symbol, "rank": {"value": 2, "label": "Buy"}, "unsafe_for_execution": False},
     )
 
@@ -4513,7 +4513,7 @@ def test_fmp_analyst_recommendations_tool_dispatch(monkeypatch):
         assert symbol == "AAPL"
         return {"symbol": "AAPL", "rows": [{"buy": 11}], "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.fmp_analyst_recommendations_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.external.feeds.fmp_analyst_recommendations_snapshot", fake_snapshot)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("fmp_analyst_recommendations", {"symbol": "AAPL", "api_key": "x"})
@@ -4531,7 +4531,7 @@ def test_polygon_analyst_insights_tool_dispatch(monkeypatch):
         assert symbol == "AAPL"
         return {"symbol": "AAPL", "rows": [{"rating": "Buy"}], "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.polygon_analyst_insights_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.external.feeds.polygon_analyst_insights_snapshot", fake_snapshot)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("polygon_analyst_insights", {"symbol": "AAPL", "api_key": "x"})
@@ -4772,7 +4772,7 @@ def test_update_check_worker_tolerates_call_from_thread_runtime_error(monkeypatc
 
     app = AvanzaTradingTui()
     app.update_check_inflight = True
-    monkeypatch.setattr("avanza_cli.github_latest_version_info", lambda _repo: {"version": "v9.9.9"})
+    monkeypatch.setattr("avanza_mcp.update_check.github_latest_version_info", lambda _repo: {"version": "v9.9.9"})
     monkeypatch.setattr(
         app,
         "call_from_thread",
