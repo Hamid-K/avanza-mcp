@@ -209,7 +209,7 @@ def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
         assert "releases/latest" in url
         return json.dumps({"tag_name": "v0.1.9", "html_url": "https://example/release"})
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text_release)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text_release)
     release_info = github_latest_version_info("hamid-k/avanza-mcp")
     assert release_info["version"] == "0.1.9"
     assert release_info["source"] == "release"
@@ -220,7 +220,7 @@ def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
         assert "tags" in url
         return json.dumps([{"name": "v0.2.0", "zipball_url": "https://example/tag"}])
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text_tags)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text_tags)
     tag_info = github_latest_version_info("hamid-k/avanza-mcp")
     assert tag_info["version"] == "0.2.0"
     assert tag_info["source"] == "tag"
@@ -3349,7 +3349,7 @@ def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monk
             ],
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("AAPL", exchange="NASDAQ", market="america")
 
     assert snapshot["symbol"] == "NASDAQ:AAPL"
@@ -3409,8 +3409,8 @@ def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
         </html>
         """
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
     snapshot = tradingview_symbol_full_snapshot("AAPL", exchange="NASDAQ", market="america")
 
     assert snapshot["symbol"] == "NASDAQ:AAPL"
@@ -3476,7 +3476,7 @@ def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monk
             }
         return {"totalCount": 0, "data": []}
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("ETHUSD", exchange="NASDAQ", market="america")
 
     assert snapshot["fallback_used"] is True
@@ -3528,7 +3528,7 @@ def test_tradingview_symbol_snapshot_crypto_recovers_from_unknown_field_400(monk
             return {"totalCount": 1, "data": [{"s": "BITSTAMP:ETHUSD", "d": values}]}
         return {"totalCount": 0, "data": []}
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("ETHUSD", exchange="NASDAQ", market="america")
 
     assert snapshot["fallback_used"] is True
@@ -3636,7 +3636,7 @@ def test_tradingview_symbol_snapshot_falls_back_from_america_to_exchange_market(
             }
         return {"totalCount": 0, "data": []}
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("LSE:BA.", exchange="NASDAQ", market="america")
 
     assert snapshot["fallback_used"] is True
@@ -3810,7 +3810,7 @@ def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
 
     snapshot = tradingview_heatmap_snapshot(
         market="america",
@@ -3861,7 +3861,7 @@ def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypat
             }
         raise AssertionError(f"Unexpected URL: {url}")
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = sec_recent_filings_snapshot(ticker="AAPL", cik=None, limit=2)
 
     assert snapshot["cik"] == "0000320193"
@@ -3891,7 +3891,7 @@ def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
     snapshot = fmp_analyst_recommendations_snapshot("AAPL", api_key="test-key", limit=5)
     assert snapshot["symbol"] == "AAPL"
     assert snapshot["latest"]["strong_buy"] == 12
@@ -3934,7 +3934,7 @@ def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
             """
         raise AssertionError(url)
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
 
     snapshot = zacks_symbol_snapshot("AAPL")
 
@@ -3959,7 +3959,7 @@ def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
         assert "/stock/quote/AAPL" in url
         return "<html><title>Pardon Our Interruption</title><body>Access denied</body></html>"
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
 
     snapshot = zacks_symbol_snapshot("AAPL")
 
@@ -3992,7 +3992,7 @@ def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
             "next_url": "",
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = polygon_analyst_insights_snapshot("AAPL", api_key="poly-key", limit=5)
     assert snapshot["symbol"] == "AAPL"
     assert snapshot["status"] == "OK"
@@ -4015,7 +4015,7 @@ def test_fred_observations_snapshot_parses_values(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = fred_observations_snapshot("FEDFUNDS", api_key="test-key", limit=2, sort_order="desc")
 
     assert snapshot["series_id"] == "FEDFUNDS"
@@ -4393,7 +4393,7 @@ def test_mcp_tv_auth_session_login_auto_delegates_and_saves(monkeypatch, tmp_pat
         return {"captured": True, "status": {"configured": True}}
 
     monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
-    monkeypatch.setattr("avanza_cli.run_blocking_in_thread", fake_worker)
+    monkeypatch.setattr("avanza_mcp.utils.run_blocking_in_thread", fake_worker)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4487,7 +4487,7 @@ def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
             "source": "tradingview-auth-watchlists",
         }
 
-    monkeypatch.setattr("avanza_cli.run_blocking_in_thread", fake_thread_wrapper)
+    monkeypatch.setattr("avanza_mcp.utils.run_blocking_in_thread", fake_thread_wrapper)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()

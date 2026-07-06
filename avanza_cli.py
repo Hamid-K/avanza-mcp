@@ -46,6 +46,12 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, S
 from avanza_mcp import config
 from avanza_mcp.config import *  # noqa: F401,F403 -- transitional; removed at end of split
 from avanza_mcp.models import AccountDataSnapshot, AvanzaTenantSession
+from avanza_mcp import utils
+from avanza_mcp.external import http as ext_http
+from avanza_mcp.auth import connect, onepassword_command, onepassword_credentials, onepassword_field_value, onepassword_item_json, prompt_credentials
+from avanza_mcp.stoploss_rules import max_valid_until_date, normalize_stoploss_order_valid_days, stoploss_triggered_order_expiry, validate_valid_until
+from avanza_mcp.utils import append_jsonl, clamp, create_session_log_path, http_status_code_from_exception, is_unauthorized_http_error, mcp_call_log_line, mcp_result_log_detail, mcp_result_log_suffix, mcp_side_badge, mcp_stock_marker, mcp_trade_detail, strip_markup, summarize_mcp_result, timestamp
+from avanza_mcp.external.http import append_cookie_header, bounded_text, external_http_headers, html_document_text, html_meta_content, html_title_text, mask_secret, normalize_text, parse_cookie_value
 
 TRADINGVIEW_UNSUPPORTED_FIELD_CACHE: dict[str, set[str]] = {}
 TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK = threading.Lock()
@@ -91,7 +97,7 @@ def github_latest_version_info(repo: str = GITHUB_RELEASE_REPO) -> dict[str, str
     headers = {"Accept": "application/vnd.github+json"}
     release_url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
-        text = external_fetch_text(
+        text = ext_http.external_fetch_text(
             release_url,
             headers=headers,
             timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
@@ -111,7 +117,7 @@ def github_latest_version_info(repo: str = GITHUB_RELEASE_REPO) -> dict[str, str
             raise
 
     tags_url = f"https://api.github.com/repos/{repo}/tags?per_page=1"
-    tags_text = external_fetch_text(
+    tags_text = ext_http.external_fetch_text(
         tags_url,
         headers=headers,
         timeout_seconds=UPDATE_CHECK_TIMEOUT_SECONDS,
@@ -129,38 +135,6 @@ def github_latest_version_info(repo: str = GITHUB_RELEASE_REPO) -> dict[str, str
                     "source": "tag",
                 }
     raise RuntimeError(f"No GitHub release/tag data found for {repo}.")
-
-
-def max_valid_until_date(reference: date | None = None) -> date:
-    base = reference or date.today()
-    return base + timedelta(days=max(1, VALID_UNTIL_MAX_DAYS))
-
-
-def validate_valid_until(value: date, label: str = "Valid until", reference: date | None = None) -> date:
-    today = reference or date.today()
-    max_date = max_valid_until_date(today)
-    if value < today:
-        raise ValueError(f"{label} cannot be before {today.isoformat()}.")
-    if value > max_date:
-        raise ValueError(
-            f"{label} exceeds Avanza limit ({VALID_UNTIL_MAX_DAYS} days). Max: {max_date.isoformat()}."
-        )
-    return value
-
-
-def normalize_stoploss_order_valid_days(value: Any, label: str = "Order valid days") -> int:
-    try:
-        parsed = int(value)
-    except Exception as exc:
-        raise ValueError(f"{label} must be an integer.") from exc
-    if parsed < 1:
-        raise ValueError(f"{label} must be at least 1.")
-    return parsed
-
-
-def stoploss_triggered_order_expiry(valid_days: int, reference: date | None = None) -> str:
-    base = reference or date.today()
-    return (base + timedelta(days=normalize_stoploss_order_valid_days(valid_days))).isoformat()
 
 
 def stoploss_instrument_metadata(
@@ -276,6 +250,7 @@ def stoploss_is_foreign_instrument(metadata: dict[str, Any] | None = None) -> bo
     return None
 
 
+
 def enforce_live_stoploss_order_valid_days(
     valid_days: int,
     metadata: dict[str, Any] | None = None,
@@ -287,295 +262,6 @@ def enforce_live_stoploss_order_valid_days(
     if live and days > 1 and stoploss_is_foreign_instrument(metadata) is True and warnings:
         raise ValueError(warnings[0])
     return warnings
-
-
-def prompt_credentials(username: str | None) -> dict[str, str]:
-    if not username:
-        username = input("Avanza username: ").strip()
-
-    password = getpass.getpass("Avanza password: ")
-    totp_code = getpass.getpass("Avanza TOTP code: ").strip()
-
-    if not username:
-        raise ValueError("Username is required.")
-    if not password:
-        raise ValueError("Password is required.")
-    if not totp_code:
-        raise ValueError("TOTP code is required.")
-
-    return {
-        "username": username,
-        "password": password,
-        "totpToken": totp_code,
-    }
-
-
-def onepassword_command(args: list[str]) -> str:
-    try:
-        result = subprocess.run(
-            ["op", *args],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=int(os.getenv("AVANZA_OP_TIMEOUT_SECONDS", "120")),
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError("1Password CLI 'op' is not installed or is not on PATH.") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("1Password CLI timed out waiting for authorization.") from exc
-    except subprocess.CalledProcessError as exc:
-        message = (exc.stderr or exc.stdout or "").strip()
-        raise RuntimeError(f"1Password CLI failed: {message or exc}") from exc
-    return result.stdout.strip()
-
-
-def onepassword_item_json(item: str, vault: str | None = None) -> dict[str, Any]:
-    if not item.strip():
-        raise ValueError("1Password item name or ID is required.")
-    args = ["item", "get", item, "--format", "json"]
-    if vault:
-        args.extend(["--vault", vault])
-    raw = onepassword_command(args)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("1Password CLI returned invalid JSON.") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError("1Password CLI returned an unexpected item shape.")
-    return data
-
-
-def onepassword_field_value(item: dict[str, Any], labels: set[str], purposes: set[str]) -> str:
-    for field in item.get("fields", []):
-        if not isinstance(field, dict):
-            continue
-        label = str(field.get("label") or field.get("id") or "").strip().lower()
-        purpose = str(field.get("purpose") or "").strip().lower()
-        value = field.get("value")
-        if value is None:
-            continue
-        if label in labels or purpose in purposes:
-            return str(value)
-    return ""
-
-
-def onepassword_credentials(item: str, vault: str | None = None) -> dict[str, str]:
-    item_data = onepassword_item_json(item, vault)
-    username = onepassword_field_value(
-        item_data,
-        {"username", "user name", "email", "e-mail"},
-        {"username"},
-    )
-    password = onepassword_field_value(
-        item_data,
-        {"password"},
-        {"password"},
-    )
-
-    otp_args = ["item", "get", item, "--otp"]
-    if vault:
-        otp_args.extend(["--vault", vault])
-    totp_code = onepassword_command(otp_args).strip()
-
-    if not username:
-        raise ValueError("Could not find a username field in the 1Password item.")
-    if not password:
-        raise ValueError("Could not find a password field in the 1Password item.")
-    if not totp_code:
-        raise ValueError("Could not get a TOTP code from the 1Password item.")
-
-    return {
-        "username": username,
-        "password": password,
-        "totpToken": totp_code,
-    }
-
-
-def connect(args: argparse.Namespace) -> Avanza:
-    if getattr(args, "username", None) and getattr(args, "onepassword_item", None):
-        raise ValueError("Use either --username or --onepassword-item, not both.")
-    onepassword_item = getattr(args, "onepassword_item", None)
-    onepassword_vault = getattr(args, "onepassword_vault", None)
-    if onepassword_item:
-        return Avanza(onepassword_credentials(onepassword_item, onepassword_vault))
-    return Avanza(prompt_credentials(args.username))
-
-
-def clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def timestamp() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
-
-
-def create_session_log_path(kind: str) -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return LOG_DIR / f"session-{kind}-{stamp}.jsonl"
-
-
-def strip_markup(value: str) -> str:
-    return (
-        value.replace("[green]", "").replace("[/green]", "")
-        .replace("[yellow]", "").replace("[/yellow]", "")
-        .replace("[red]", "").replace("[/red]", "")
-        .replace("[cyan]", "").replace("[/cyan]", "")
-        .replace("[magenta]", "").replace("[/magenta]", "")
-        .replace("[blue]", "").replace("[/blue]", "")
-        .replace("[bold]", "").replace("[/bold]", "")
-    )
-
-
-def summarize_mcp_result(result: Any) -> dict[str, Any]:
-    if isinstance(result, dict):
-        summary: dict[str, Any] = {}
-        for key, value in result.items():
-            if isinstance(value, list):
-                summary[key] = {"count": len(value)}
-            elif isinstance(value, dict):
-                summary[key] = summarize_mcp_result(value)
-            else:
-                summary[key] = value
-        return summary
-    if isinstance(result, list):
-        return {"count": len(result)}
-    return {"value": result}
-
-
-def mcp_stock_marker(arguments: dict[str, Any]) -> str:
-    for key in ("instrument", "stock", "ticker", "symbol"):
-        value = str(arguments.get(key, "")).strip()
-        if value:
-            return value
-    order_book_id = str(arguments.get("order_book_id", "")).strip()
-    if order_book_id:
-        return f"OB {order_book_id}"
-    query = str(arguments.get("query", "")).strip()
-    if query:
-        return query
-    return ""
-
-
-def mcp_side_badge(value: Any) -> str:
-    side = str(value or "").strip().lower()
-    if side == "buy":
-        return "[green]BUY[/green]"
-    if side == "sell":
-        return "[red]SELL[/red]"
-    return side.upper() if side else "-"
-
-
-def mcp_trade_detail(tool: str, arguments: dict[str, Any]) -> str:
-    if tool in {"avanza_order_set", "avanza_paper_order_set"}:
-        side = mcp_side_badge(arguments.get("order_type", "buy"))
-        volume = arguments.get("volume", "-")
-        price = arguments.get("price", "-")
-        return f"{side} [bold]{volume}[/bold] @ {price} SEK"
-
-    if tool in {"avanza_order_edit", "avanza_open_order_edit"}:
-        volume = arguments.get("volume", "-")
-        price = arguments.get("price", "-")
-        return f"[magenta]EDIT[/magenta] [bold]{volume}[/bold] @ {price} SEK"
-
-    if tool in {"avanza_order_delete", "avanza_open_order_cancel"}:
-        return f"[red]DELETE[/red] {arguments.get('order_id', '-')}"
-
-    if tool in {"avanza_stoploss_set", "avanza_paper_stoploss_set", "avanza_stoploss_edit", "avanza_stoploss_replace"}:
-        side = mcp_side_badge(arguments.get("order_type", "sell"))
-        volume = arguments.get("volume", "-")
-        trigger_value = arguments.get("trigger_value", "-")
-        trigger_value_type = str(arguments.get("trigger_value_type", "%")).strip()
-        trigger_suffix = "%" if trigger_value_type in {"%", "percentage"} else " SEK"
-        return f"{side} [bold]{volume}[/bold] SL {trigger_value}{trigger_suffix}"
-
-    if tool == "avanza_stoploss_delete":
-        return f"[red]DELETE[/red] {arguments.get('stop_loss_id', '-')}"
-
-    if tool == "avanza_transactions":
-        from_date = str(arguments.get("transactions_from", "")).strip() or "..."
-        to_date = str(arguments.get("transactions_to", "")).strip() or "today"
-        return f"[blue]HISTORY[/blue] {from_date}→{to_date}"
-
-    return ""
-
-
-def mcp_call_log_line(tool: str, arguments: dict[str, Any], marker_override: str | None = None) -> str:
-    parts = [f"← {tool}"]
-    marker = marker_override or mcp_stock_marker(arguments)
-    if marker:
-        parts.append(f"[cyan]{marker}[/cyan]")
-    detail = mcp_trade_detail(tool, arguments)
-    if detail:
-        parts.append(detail)
-    return "  ".join(parts)
-
-
-def mcp_result_log_suffix(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    if payload.get("paper"):
-        return " [blue]PAPER[/blue]"
-    if payload.get("dry_run") is True:
-        return " [yellow]DRY[/yellow]"
-    if payload.get("dry_run") is False:
-        return " [green]LIVE[/green]"
-    return ""
-
-
-def mcp_result_log_detail(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-
-    counts: list[str] = []
-    for key, label in (
-        ("positions", "pos"),
-        ("stoplosses", "sl"),
-        ("orders", "ord"),
-        ("open_orders", "ord"),
-        ("paper_orders", "paper"),
-        ("transactions", "txn"),
-        ("quotes", "qt"),
-        ("events", "evt"),
-    ):
-        value = payload.get(key)
-        if isinstance(value, list):
-            counts.append(f"{label}:{len(value)}")
-    if counts:
-        return " [dim]" + " ".join(counts) + "[/dim]"
-
-    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-    order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
-    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-
-    if order:
-        identifier = str(order.get("id", "")).strip()
-        if identifier:
-            return f" [dim]id:{identifier}[/dim]"
-
-    for candidate in (
-        result.get("orderId"),
-        result.get("stoplossOrderId"),
-        result.get("stopLossOrderId"),
-        result.get("id"),
-    ):
-        token = str(candidate or "").strip()
-        if token:
-            return f" [dim]id:{token}[/dim]"
-
-    for candidate in (request.get("order_id"), request.get("stop_loss_id")):
-        token = str(candidate or "").strip()
-        if token:
-            return f" [dim]id:{token}[/dim]"
-    return ""
-
-
 def next_weekday_start(day: date) -> datetime:
     current = day
     while current.weekday() >= 5:
@@ -3712,101 +3398,6 @@ def account_performance_summary_from_payload(
     }
 
 
-def external_http_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
-    headers = {"User-Agent": EXTERNAL_HTTP_USER_AGENT, "Accept": "application/json,text/plain,*/*"}
-    if extra:
-        headers.update({str(key): str(value) for key, value in extra.items() if value is not None})
-    return headers
-
-
-def external_fetch_text(
-    url: str,
-    *,
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    payload: Any | None = None,
-    timeout_seconds: float = EXTERNAL_HTTP_TIMEOUT_SECONDS,
-) -> str:
-    body = None
-    if payload is not None:
-        body = json.dumps(payload).encode("utf-8")
-    request = Request(url, data=body, method=method.upper(), headers=external_http_headers(headers))
-    with urlopen(request, timeout=timeout_seconds) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="replace")
-
-
-def external_fetch_json(
-    url: str,
-    *,
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    payload: Any | None = None,
-    timeout_seconds: float = EXTERNAL_HTTP_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
-    text = external_fetch_text(
-        url,
-        method=method,
-        headers=headers,
-        payload=payload,
-        timeout_seconds=timeout_seconds,
-    )
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected object JSON from {url}.")
-    return data
-
-
-def append_cookie_header(headers: dict[str, str], cookie: str | None) -> dict[str, str]:
-    if not cookie:
-        return headers
-    merged = dict(headers)
-    merged["Cookie"] = cookie.strip()
-    return merged
-
-
-def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def html_meta_content(html_text: str, key: str) -> str:
-    key_pattern = re.escape(str(key or "").strip())
-    if not key_pattern:
-        return ""
-    patterns = (
-        rf"<meta[^>]+(?:name|property)=['\"]{key_pattern}['\"][^>]+content=['\"]([^'\"]+)['\"][^>]*>",
-        rf"<meta[^>]+content=['\"]([^'\"]+)['\"][^>]+(?:name|property)=['\"]{key_pattern}['\"][^>]*>",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, html_text, re.IGNORECASE)
-        if match:
-            return normalize_text(html.unescape(match.group(1)))
-    return ""
-
-
-def html_title_text(html_text: str) -> str:
-    match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.IGNORECASE | re.DOTALL)
-    return normalize_text(html.unescape(match.group(1))) if match else ""
-
-
-def html_document_text(html_text: str) -> str:
-    text = re.sub(r"(?is)<(script|style|svg|canvas|iframe|noscript)\b.*?</\1>", " ", html_text)
-    text = re.sub(r"(?is)<!--.*?-->", " ", text)
-    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
-    text = re.sub(r"(?is)</(p|div|section|article|li|tr|h[1-6])>", "\n", text)
-    text = re.sub(r"(?is)<[^>]+>", " ", text)
-    text = html.unescape(text)
-    lines = [normalize_text(line) for line in text.splitlines()]
-    return "\n".join(line for line in lines if line)
-
-
-def bounded_text(value: str, max_chars: int) -> str:
-    text = normalize_text(value)
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    return text[: max(0, max_chars - 1)].rstrip() + "..."
-
-
 def zacks_blocked_html(html_text: str) -> bool:
     lowered = html_text.lower()
     return any(
@@ -3883,19 +3474,6 @@ def zacks_analysis_summary_from_html(
         "summary": summary or None,
         "sections": sections,
     }
-
-
-def mask_secret(value: str, keep: int = 4) -> str:
-    text = str(value or "")
-    if len(text) <= keep:
-        return "*" * len(text)
-    return "*" * (len(text) - keep) + text[-keep:]
-
-
-def parse_cookie_value(cookie: str, key: str) -> str:
-    pattern = re.compile(rf"(?:^|;\s*){re.escape(key)}=([^;]+)")
-    match = pattern.search(cookie)
-    return match.group(1) if match else ""
 
 
 def tradingview_cookie_from_browser_cookies(cookies: list[dict[str, Any]]) -> str:
@@ -4189,24 +3767,6 @@ def tradingview_auto_login_and_capture_session(
     )
 
 
-def run_blocking_in_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    result_holder: dict[str, Any] = {}
-    error_holder: dict[str, BaseException] = {}
-
-    def target() -> None:
-        try:
-            result_holder["value"] = func(*args, **kwargs)
-        except BaseException as exc:  # pragma: no cover - passthrough
-            error_holder["error"] = exc
-
-    thread = threading.Thread(target=target, daemon=True, name="avanza-blocking-worker")
-    thread.start()
-    thread.join()
-    if "error" in error_holder:
-        raise error_holder["error"]
-    return result_holder.get("value")
-
-
 def recommendation_label(value: Any) -> str:
     score = scalar_number(value)
     if score is None:
@@ -4364,32 +3924,6 @@ def should_retry_tv_scan_error(exc: Exception) -> bool:
     return False
 
 
-def http_status_code_from_exception(exc: Exception) -> int | None:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code
-    if isinstance(exc, HTTPError):
-        try:
-            return int(exc.code)
-        except Exception:
-            return None
-    message = str(exc).lower()
-    if "401" in message and "unauthorized" in message:
-        return 401
-    if "403" in message and "forbidden" in message:
-        return 403
-    return None
-
-
-def is_unauthorized_http_error(exc: Exception) -> bool:
-    status_code = http_status_code_from_exception(exc)
-    if status_code in {401, 403}:
-        return True
-    message = str(exc).lower()
-    return "unauthorized" in message or "forbidden" in message
-
-
 def tv_row_to_dict(columns: list[str], row: dict[str, Any]) -> dict[str, Any]:
     values = row.get("d", [])
     mapped: dict[str, Any] = {}
@@ -4433,7 +3967,7 @@ def tradingview_scan(
     url = TRADINGVIEW_SCANNER_URL_TEMPLATE.format(market=market)
     headers = append_cookie_header({"Content-Type": "application/json"}, cookie)
     try:
-        data = external_fetch_json(url, method="POST", headers=headers, payload=payload)
+        data = ext_http.external_fetch_json(url, method="POST", headers=headers, payload=payload)
     except HTTPError as exc:
         parsed_payload: dict[str, Any] | None = None
         try:
@@ -4464,7 +3998,7 @@ def tradingview_scan(
 def tradingview_symbol_profile_html(symbol: str, cookie: str = "") -> str:
     slug = symbol.replace(":", "-").upper()
     headers = append_cookie_header({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}, cookie)
-    return external_fetch_text(TRADINGVIEW_PROFILE_URL_TEMPLATE.format(symbol_slug=slug), headers=headers)
+    return ext_http.external_fetch_text(TRADINGVIEW_PROFILE_URL_TEMPLATE.format(symbol_slug=slug), headers=headers)
 
 
 def tradingview_watchlist_id_from_input(value: str | None) -> str:
@@ -5546,7 +5080,7 @@ def sec_cik_text(value: Any) -> str:
 
 
 def sec_ticker_index() -> list[dict[str, Any]]:
-    payload = external_fetch_json(SEC_TICKERS_URL, headers={"Accept": "application/json"})
+    payload = ext_http.external_fetch_json(SEC_TICKERS_URL, headers={"Accept": "application/json"})
     rows = payload.get("data", [])
     fields = payload.get("fields", [])
     if not isinstance(rows, list) or not isinstance(fields, list):
@@ -5572,7 +5106,7 @@ def sec_lookup_cik(ticker: str | None = None, cik: str | None = None) -> tuple[s
 
 def sec_recent_filings_snapshot(ticker: str | None, cik: str | None, limit: int = 20) -> dict[str, Any]:
     cik_text, company = sec_lookup_cik(ticker=ticker, cik=cik)
-    payload = external_fetch_json(
+    payload = ext_http.external_fetch_json(
         SEC_SUBMISSIONS_URL_TEMPLATE.format(cik=cik_text),
         headers={"Accept": "application/json"},
     )
@@ -5633,7 +5167,7 @@ def fred_observations_snapshot(
         "limit": str(max(1, min(limit, 1000))),
     }
     url = f"{FRED_OBSERVATIONS_URL}?{urlencode(params)}"
-    payload = external_fetch_json(url, headers={"Accept": "application/json"})
+    payload = ext_http.external_fetch_json(url, headers={"Accept": "application/json"})
     observations = payload.get("observations", [])
     rows = []
     for item in observations if isinstance(observations, list) else []:
@@ -5661,7 +5195,7 @@ def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
     url = f"https://www.zacks.com/stock/quote/{ticker}"
     report_url = f"https://www.zacks.com/zer/report/{ticker}?rwid=Y"
     headers = append_cookie_header({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}, cookie)
-    html_text = external_fetch_text(url, headers=headers)
+    html_text = ext_http.external_fetch_text(url, headers=headers)
     quote_blocked = zacks_blocked_html(html_text)
     rank_match = re.search(r"Zacks\s*Rank\s*#\s*([1-5])\s*\(([^)]+)\)", html_text, re.IGNORECASE)
     industry_rank_match = re.search(r"Industry Rank\s*:?\s*#?\s*([0-9]+)", html_text, re.IGNORECASE)
@@ -5672,7 +5206,7 @@ def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
     report_error = ""
     if cookie or not quote_blocked:
         try:
-            report_html = external_fetch_text(report_url, headers=headers)
+            report_html = ext_http.external_fetch_text(report_url, headers=headers)
             report_blocked = zacks_blocked_html(report_html)
             report_analysis = zacks_analysis_summary_from_html(report_html, source_url=report_url)
             analysis_sources.append({"kind": "equity_report", "blocked": report_blocked, "analysis": report_analysis})
@@ -5924,7 +5458,7 @@ def fmp_analyst_recommendations_snapshot(
     if not resolved_key:
         raise ValueError("FMP API key missing. Pass api_key or set FMP_API_KEY.")
     url = f"{FMP_ANALYST_RECOMMENDATIONS_URL_TEMPLATE.format(symbol=ticker)}?apikey={resolved_key}"
-    payload = json.loads(external_fetch_text(url, headers={"Accept": "application/json"}))
+    payload = json.loads(ext_http.external_fetch_text(url, headers={"Accept": "application/json"}))
     rows_raw: list[Any]
     if isinstance(payload, list):
         rows_raw = payload
@@ -5983,7 +5517,7 @@ def polygon_analyst_insights_snapshot(
     if str(date_value or "").strip():
         params["date"] = str(date_value).strip()
     url = f"{POLYGON_ANALYST_INSIGHTS_URL}?{urlencode(params)}"
-    payload = external_fetch_json(url, headers={"Accept": "application/json"})
+    payload = ext_http.external_fetch_json(url, headers={"Accept": "application/json"})
 
     results_raw = payload.get("results", []) if isinstance(payload, dict) else []
     if not isinstance(results_raw, list):
@@ -12352,7 +11886,7 @@ class AvanzaTradingTui(App):
 
         if tool == "tv_auth_session_login_auto":
             timeout_seconds = int(arguments.get("timeout_seconds", 300))
-            return run_blocking_in_thread(
+            return utils.run_blocking_in_thread(
                 tradingview_auto_login_and_capture_session,
                 timeout_seconds=timeout_seconds,
             )
@@ -12495,7 +12029,7 @@ class AvanzaTradingTui(App):
             list_id = list_id or None
             list_name = str(arguments.get("list_name", "") or "").strip() or None
             limit = int(arguments.get("limit", TRADINGVIEW_WATCHLIST_ROW_LIMIT))
-            snapshot = run_blocking_in_thread(
+            snapshot = utils.run_blocking_in_thread(
                 tradingview_custom_watchlists_from_profile,
                 list_id=list_id,
                 list_name=list_name,
