@@ -1,15 +1,12 @@
 """Order/stop-loss ticket building, dry runs, live placement, cancel flow."""
 
 
-from avanza.constants import Condition, OrderType, StopLossPriceType, StopLossTriggerType
+from avanza.constants import Condition, OrderType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 from avanza_mcp.config import STOPLOSS_ORDER_VALID_DAYS_DEFAULT
-from avanza_mcp.market_data import order_account_id, order_stock_name
-from avanza_mcp.paper import append_paper_event, cancel_paper_order, create_paper_order, create_paper_stop_loss_order
+from avanza_mcp.core import trading as core_trading
 from avanza_mcp.records import flattened_search_hits, search_hit_label, search_hit_order_book_id
 from avanza_mcp.rendering import (
-    build_order_preview,
-    enum_value,
     holding_search_options,
     money_text,
     order_request_log_lines,
@@ -18,10 +15,8 @@ from avanza_mcp.rendering import (
     stoploss_holding_options,
 )
 from avanza_mcp.stoploss_rules import (
-    enforce_live_stoploss_order_valid_days,
     max_valid_until_date,
     normalize_stoploss_order_valid_days,
-    stoploss_triggered_order_expiry,
     validate_valid_until,
 )
 from avanza_mcp.tui.layout import selected_table_row_key
@@ -113,93 +108,38 @@ class TradingMixin:
     def switch_value(self, widget_id: str) -> bool:
         return bool(self.query_one(f"#{widget_id}", Switch).value)
 
-    def live_cancel_target(self, kind: str, item: dict[str, Any]) -> dict[str, str]:
-        identifier = str(item.get("id", "") or item.get("orderId", ""))
-        return {
-            "mode": "Live",
-            "kind": kind,
-            "id": identifier,
-            "account_id": order_account_id(item, self.selected_account_id),
-            "stock": order_stock_name(item),
-        }
 
-    def paper_cancel_target(self, item: dict[str, Any]) -> dict[str, str]:
-        request = item.get("request") if isinstance(item.get("request"), dict) else {}
-        return {
-            "mode": "Paper",
-            "kind": str(item.get("kind", "Order")),
-            "id": str(item.get("id", "")),
-            "account_id": str(request.get("account_id") or self.selected_account_id or ""),
-            "stock": str(item.get("instrument") or request.get("order_book_id") or ""),
-        }
 
-    def apply_stoploss_valid_days_safety(self, preview: dict[str, Any], *, live: bool) -> list[str]:
-        order_book_id = str(preview.get("order_book_id") or "").strip()
-        order_event = preview.get("stop_loss_order_event")
-        if not isinstance(order_event, dict):
-            return []
-        valid_days = normalize_stoploss_order_valid_days(order_event.get("valid_days"), "order_valid_days")
-        metadata = self.stoploss_metadata_for_orderbook(order_book_id) if order_book_id else {}
-        warnings = enforce_live_stoploss_order_valid_days(valid_days, metadata, live=live)
-        order_event["valid_days"] = valid_days
-        order_event["derived_expiry_if_triggered_today"] = stoploss_triggered_order_expiry(valid_days)
-        preview["warnings"] = warnings
-        return warnings
 
     def build_stop_loss_request(self) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
         selected_account_id = self.require_selected_account_id()
         order_book_id = self.input_value("instrument-select")
         if not order_book_id:
             raise ValueError("Select a portfolio holding first.")
-        valid_until = self.input_date_value("valid-until", "Stop-loss valid until")
-        trigger = StopLossTrigger(
-            type=enum_value(StopLossTriggerType, self.input_value("trigger-type")),
-            value=self.input_float_value("trigger-value", "Trigger value"),
-            valid_until=valid_until,
-            value_type=enum_value(StopLossPriceType, self.input_value("trigger-value-type")),
-            trigger_on_market_maker_quote=self.switch_value("trigger-on-market-maker-quote"),
+        return core_trading.build_stop_loss_request_from_fields(
+            {
+                "account_id": selected_account_id,
+                "order_book_id": order_book_id,
+                "valid_until": self.input_date_value("valid-until", "Stop-loss valid until"),
+                "trigger_type": self.input_value("trigger-type"),
+                "trigger_value": self.input_float_value("trigger-value", "Trigger value"),
+                "trigger_value_type": self.input_value("trigger-value-type"),
+                "trigger_on_market_maker_quote": self.switch_value("trigger-on-market-maker-quote"),
+                "order_type": self.input_value("order-type"),
+                "order_price": self.input_float_value("order-price", "Order price"),
+                "volume": self.input_float_value("volume", "Volume"),
+                "order_valid_days": self.input_int_value("order-valid-days", "Order valid days"),
+                "order_price_type": self.input_value("order-price-type"),
+                "short_selling_allowed": self.switch_value("short-selling-allowed"),
+            }
         )
-        order_event = StopLossOrderEvent(
-            type=enum_value(OrderType, self.input_value("order-type")),
-            price=self.input_float_value("order-price", "Order price"),
-            volume=self.input_float_value("volume", "Volume"),
-            valid_days=normalize_stoploss_order_valid_days(
-                self.input_int_value("order-valid-days", "Order valid days"),
-                "Order valid days",
-            ),
-            price_type=enum_value(StopLossPriceType, self.input_value("order-price-type")),
-            short_selling_allowed=self.switch_value("short-selling-allowed"),
-        )
-        preview = {
-            "account_id": selected_account_id,
-            "order_book_id": order_book_id,
-            "parent_stop_loss_id": "0",
-            "stop_loss_trigger": {
-                "type": trigger.type.value,
-                "value": trigger.value,
-                "valid_until": trigger.valid_until.isoformat(),
-                "value_type": trigger.value_type.value,
-                "trigger_on_market_maker_quote": trigger.trigger_on_market_maker_quote,
-            },
-            "stop_loss_order_event": {
-                "type": order_event.type.value,
-                "price": order_event.price,
-                "volume": order_event.volume,
-                "valid_days": order_event.valid_days,
-                "derived_expiry_if_triggered_today": stoploss_triggered_order_expiry(order_event.valid_days),
-                "price_type": order_event.price_type.value,
-                "short_selling_allowed": order_event.short_selling_allowed,
-            },
-            "warnings": [],
-        }
-        return trigger, order_event, preview
 
     def build_regular_order_request(self) -> tuple[OrderType, Condition, dict[str, Any]]:
         selected_account_id = self.require_selected_account_id()
         order_book_id = self.input_value("order-instrument-select")
         if not order_book_id:
             raise ValueError("Select a stock/order book first.")
-        return build_order_preview(
+        return core_trading.build_regular_order_request_from_fields(
             {
                 "account_id": selected_account_id,
                 "order_book_id": order_book_id,
@@ -333,31 +273,17 @@ class TradingMixin:
         target = self.pending_cancel_target
         if not target:
             raise ValueError("Select an order to cancel first.")
-        identifier = target.get("id", "")
-        if not identifier:
+        if not target.get("id", ""):
             raise ValueError("Selected order has no id.")
 
         if target.get("mode") == "Paper":
-            paper_order = cancel_paper_order(self.paper_session, identifier)
-            self.save_paper_state()
-            self.record_event("trading", "paper_order_cancel_from_tui", {"order": paper_order})
-            self.write_log(f"[green]Paper order cancelled:[/green] {identifier}")
+            self.submit_cancel(target, source="tui")
             self.close_cancel_modal()
             return
 
         if self.input_value("cancel-confirm") != "CANCEL":
             raise ValueError('Type "CANCEL" before live cancellation.')
-        account_id = target.get("account_id") or self.require_selected_account_id()
-        avanza = self.require_connection()
-        kind = target.get("kind", "")
-        if kind == "Stop-loss":
-            result = avanza.delete_stop_loss_order(account_id, identifier)
-            event_name = "live_stoploss_cancel_from_tui"
-        else:
-            result = avanza.delete_order(account_id, identifier)
-            event_name = "live_order_cancel_from_tui"
-        self.record_event("trading", event_name, {"target": target, "result": result})
-        self.write_log(f"[green]Live {kind.lower()} cancellation sent:[/green] {identifier}")
+        self.submit_cancel(target, source="tui")
         self.close_cancel_modal()
         self.refresh_stoplosses()
 
@@ -454,29 +380,7 @@ class TradingMixin:
                 self.write_log(f"[yellow]Warning:[/yellow] {warning}")
             order_book_id = self.input_value("instrument-select")
             instrument = self.holding_labels_by_order_book.get(order_book_id, order_book_id)
-            paper_order = create_paper_stop_loss_order(
-                {
-                    **preview,
-                    "account_id": preview["account_id"],
-                    "order_book_id": preview["order_book_id"],
-                    "trigger_type": preview["stop_loss_trigger"]["type"],
-                    "trigger_value": preview["stop_loss_trigger"]["value"],
-                    "trigger_value_type": preview["stop_loss_trigger"]["value_type"],
-                    "valid_until": preview["stop_loss_trigger"]["valid_until"],
-                    "order_type": preview["stop_loss_order_event"]["type"],
-                    "order_price": preview["stop_loss_order_event"]["price"],
-                    "order_price_type": preview["stop_loss_order_event"]["price_type"],
-                    "volume": preview["stop_loss_order_event"]["volume"],
-                    "order_valid_days": preview["stop_loss_order_event"]["valid_days"],
-                    "trigger_on_market_maker_quote": preview["stop_loss_trigger"]["trigger_on_market_maker_quote"],
-                    "short_selling_allowed": preview["stop_loss_order_event"]["short_selling_allowed"],
-                },
-                instrument=str(instrument),
-            )
-            self.paper_session.setdefault("orders", []).append(paper_order)
-            append_paper_event(self.paper_session, "paper_stoploss_set_from_tui", {"id": paper_order["id"], "request": paper_order["request"]})
-            self.save_paper_state()
-            self.record_event("trading", "paper_stoploss_set_from_tui", {"order": paper_order})
+            paper_order = self.submit_paper_stop_loss(preview, str(instrument), source="tui")
             self.write_log(f"[green]Paper stop-loss {action_label}:[/green] {paper_order['id']}")
             self.reset_stoploss_modal_for_new()
             self.query_one("#stoploss-modal").display = False
@@ -485,40 +389,17 @@ class TradingMixin:
         if self.input_value("place-confirm") != "PLACE":
             raise ValueError('Type "PLACE" in the confirmation field before live placement.')
 
-        avanza = self.require_connection()
         trigger, order_event, preview = self.build_stop_loss_request()
         warnings = self.apply_stoploss_valid_days_safety(preview, live=True)
         for warning in warnings:
             self.write_log(f"[yellow]Warning:[/yellow] {warning}")
-        self.write_log("[red]Placing live stop-loss request:[/red]")
-        for line in stop_loss_request_log_lines(preview):
-            self.write_log(line)
-
-        if is_edit:
-            edit_id = str(self.pending_stoploss_edit_id)
-            account_id = self.require_selected_account_id()
-            delete_result = avanza.delete_stop_loss_order(account_id, edit_id)
-            result = avanza.place_stop_loss_order(
-                parent_stop_loss_id="0",
-                account_id=account_id,
-                order_book_id=self.input_value("instrument-select"),
-                stop_loss_trigger=trigger,
-                stop_loss_order_event=order_event,
-            )
-            self.record_event(
-                "trading",
-                "live_stoploss_replace_from_tui",
-                {"stop_loss_id": edit_id, "delete_result": delete_result, "request": preview, "result": result},
-            )
-        else:
-            result = avanza.place_stop_loss_order(
-                parent_stop_loss_id="0",
-                account_id=self.require_selected_account_id(),
-                order_book_id=self.input_value("instrument-select"),
-                stop_loss_trigger=trigger,
-                stop_loss_order_event=order_event,
-            )
-            self.record_event("trading", "live_stoploss_set_from_tui", {"request": preview, "result": result})
+        result = self.submit_live_stop_loss(
+            trigger,
+            order_event,
+            preview,
+            replace_stoploss_id=str(self.pending_stoploss_edit_id) if is_edit else None,
+            source="tui",
+        )
         if isinstance(result, dict):
             status = result.get("status") or result.get("orderRequestStatus") or "response received"
             identifier = result.get("stoplossOrderId") or result.get("orderId") or ""
@@ -539,11 +420,7 @@ class TradingMixin:
         )
 
         if self.paper_mode_enabled:
-            paper_order = create_paper_order(preview, instrument=instrument)
-            self.paper_session.setdefault("orders", []).append(paper_order)
-            append_paper_event(self.paper_session, "paper_order_set_from_tui", {"id": paper_order["id"], "request": paper_order["request"]})
-            self.save_paper_state()
-            self.record_event("trading", "paper_order_set_from_tui", {"order": paper_order})
+            paper_order = self.submit_paper_order(preview, instrument, source="tui")
             self.write_log(f"[green]Paper order created:[/green] {paper_order['id']}")
             self.query_one("#order-modal").display = False
             return
@@ -551,21 +428,7 @@ class TradingMixin:
         if self.input_value("regular-order-confirm") != "PLACE":
             raise ValueError('Type "PLACE" in the confirmation field before live placement.')
 
-        avanza = self.require_connection()
-        self.write_log("[red]Placing live buy/sell order request:[/red]")
-        for line in order_request_log_lines(preview):
-            self.write_log(line)
-
-        result = avanza.place_order(
-            account_id=preview["account_id"],
-            order_book_id=preview["order_book_id"],
-            order_type=order_type,
-            price=preview["price"],
-            valid_until=date.fromisoformat(preview["valid_until"]),
-            volume=preview["volume"],
-            condition=condition,
-        )
-        self.record_event("trading", "live_order_set_from_tui", {"request": preview, "result": result})
+        result = self.submit_live_order(order_type, condition, preview, source="tui")
         if isinstance(result, dict):
             status = result.get("orderRequestStatus") or result.get("status") or "response received"
             identifier = result.get("orderId") or ""

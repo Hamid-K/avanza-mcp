@@ -804,7 +804,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 ],
             }
 
-    monkeypatch.setattr("avanza_mcp.tui.login.Avanza", FakeAvanza)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", FakeAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -1100,7 +1100,7 @@ def test_tui_login_shows_progress_while_authenticating(monkeypatch):
         def get_orders(self):
             return []
 
-    monkeypatch.setattr("avanza_mcp.tui.login.Avanza", SlowAvanza)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", SlowAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -4972,7 +4972,7 @@ def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
         def get_orders(self):
             return []
 
-    monkeypatch.setattr("avanza_mcp.tui.login.Avanza", FakeAvanza)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", FakeAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()

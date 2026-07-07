@@ -1,21 +1,12 @@
 """The Avanza trading TUI application."""
 
-import cProfile
-import io
-import pstats
-import re
 import threading
-import time
 
-from avanza import Avanza
-from avanza_mcp import config
 from avanza_mcp.config import (
     APP_NAME,
     APP_VERSION,
     DEBUG_PROFILE_TOP_DEFAULT,
-    GITHUB_RELEASE_REPO,
     LIVE_REFRESH_SECONDS,
-    LOG_CATEGORY_FILES,
     MCP_HEALTH_CHECK_SECONDS,
     ORDER_CONDITION_CHOICES,
     ORDER_TYPE_CHOICES,
@@ -26,13 +17,10 @@ from avanza_mcp.config import (
     TRIGGER_TYPE_CHOICES,
     TUI_TITLE,
 )
-from avanza_mcp.models import AccountDataSnapshot, AvanzaTenantSession
-from avanza_mcp.paper import load_paper_session, save_paper_session
 from avanza_mcp.rendering import (
     account_display_name,
     market_clock_text,
     plain_cell_value,
-    position_order_book_id,
     profit_metric_label,
     sortable_cell_value,
     trade_action_from_cell,
@@ -47,31 +35,27 @@ from avanza_mcp.tui.layout import (
     side_panel_width_after_drag,
     ticket_pane_width_after_drag,
 )
+from avanza_mcp.core.kernel import TradingKernel
+from avanza_mcp.paper import save_paper_session
 from avanza_mcp.tui.login import LoginMixin
-from avanza_mcp.tui.mcp_bridge import McpBridgeMixin
-from avanza_mcp.tui.mcp_snapshots import McpSnapshotsMixin
 from avanza_mcp.tui.refresh import RefreshMixin
 from avanza_mcp.tui.sessions import SessionsMixin
 from avanza_mcp.tui.trading import TradingMixin
-from avanza_mcp.utils import append_jsonl, create_session_log_path, nested_value, strip_markup, timestamp
-from datetime import datetime
+from avanza_mcp.utils import strip_markup, timestamp
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Select, Static, Switch
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
-if TYPE_CHECKING:
-    from avanza_mcp.mcp.server import AvanzaMcpHttpServer
 
 
 class AvanzaTradingTui(
-    McpBridgeMixin,
-    McpSnapshotsMixin,
     LoginMixin,
     SessionsMixin,
     TradingMixin,
     RefreshMixin,
+    TradingKernel,
     App,
 ):
     CSS = """
@@ -801,16 +785,7 @@ class AvanzaTradingTui(
     def __init__(self, debug: bool = False, debug_profile_top: int = DEBUG_PROFILE_TOP_DEFAULT) -> None:
         super().__init__()
         self.title = TUI_TITLE
-        self.debug_mode = bool(debug)
-        self.debug_profile_top = max(5, int(debug_profile_top))
-        self.debug_profile_depth = 0
-        self.debug_session_log_path = create_session_log_path("debug") if self.debug_mode else None
-        self.avanza: Avanza | None = None
-        self.tenant_sessions: dict[str, AvanzaTenantSession] = {}
-        self.active_session_id: str | None = None
-        self.session_label_counter = 1
-        self.accounts: list[dict[str, Any]] = []
-        self.selected_account_id: str | None = None
+        self.init_kernel_state(debug=debug, debug_profile_top=debug_profile_top, log_kind="tui")
         self.live_refresh_timer = None
         self.background_session_heartbeat_timer = None
         self.clock_timer = None
@@ -821,7 +796,6 @@ class AvanzaTradingTui(
         self.update_blink_timer = None
         self.login_progress_timer = None
         self.login_thread: threading.Thread | None = None
-        self.shutdown_event = threading.Event()
         self.login_busy = False
         self.login_spinner_index = 0
         self.login_progress_tick = 0
@@ -831,45 +805,8 @@ class AvanzaTradingTui(
         self.login_target_mode = "initial"
         self.login_target_session_id: str | None = None
         self.login_target_session_label: str | None = None
-        self.mcp_scope_original_session_id: str | None = None
-        self.mcp_scope_depth = 0
-        self.live_refresh_deferred_by_mcp_scope = False
         self.last_resize: tuple[int, int] | None = None
-        self.position_row_cache: dict[str, tuple[str, ...]] = {}
-        self.holding_volumes_by_order_book: dict[str, str] = {}
-        self.holding_labels_by_order_book: dict[str, str] = {}
-        self.order_search_labels_by_order_book: dict[str, str] = {}
         self.table_sort_state: dict[str, tuple[Any, bool]] = {}
-        self.realtime_status_by_order_book: dict[str, str] = {}
-        self.realtime_status_checked_at: dict[str, datetime] = {}
-        self.quote_payload_by_order_book: dict[str, dict[str, Any]] = {}
-        self.quote_payload_checked_at: dict[str, datetime] = {}
-        self.orderbook_metadata_by_id: dict[str, dict[str, Any]] = {}
-        self.orderbook_metadata_checked_at: dict[str, datetime] = {}
-        self.live_refresh_thread: threading.Thread | None = None
-        self.live_refresh_inflight = False
-        self.live_refresh_pending = False
-        self.live_refresh_lock = threading.Lock()
-        self.background_session_heartbeat_thread: threading.Thread | None = None
-        self.background_session_heartbeat_inflight = False
-        self.background_session_heartbeat_lock = threading.Lock()
-        self.live_refresh_auth_blocked_sessions: set[str] = set()
-        self.live_refresh_auth_last_notice_at: dict[str, float] = {}
-        self.mcp_server: "AvanzaMcpHttpServer | None" = None
-        self.mcp_thread: threading.Thread | None = None
-        self.mcp_token: str | None = None
-        self.mcp_write_enabled = False
-        self.live_trading_allowed_for_session = False
-        self.paper_mode_enabled = True
-        self.paper_session_path = config.PAPER_SESSION_FILE
-        self.paper_session = load_paper_session(self.paper_session_path)
-        self.session_log_path = create_session_log_path("tui")
-        self.latest_portfolio_data: dict[str, Any] | None = None
-        self.latest_stoploss_items: list[dict[str, Any]] = []
-        self.latest_open_order_items: list[dict[str, Any]] = []
-        self.latest_tv_lists: list[dict[str, Any]] = []
-        self.latest_tv_list_items: list[dict[str, Any]] = []
-        self.account_snapshot_cache: dict[str, AccountDataSnapshot] = {}
         self.tv_list_option_refs: dict[str, dict[str, str]] = {}
         self.session_select_updating = False
         self.account_select_updating = False
@@ -879,14 +816,6 @@ class AvanzaTradingTui(
         self.tv_lists_refresh_inflight = False
         self.tv_lists_refresh_pending_value: str | None = None
         self.tv_lists_refresh_lock = threading.Lock()
-        self.update_check_thread: threading.Thread | None = None
-        self.update_check_inflight = False
-        self.update_check_lock = threading.Lock()
-        self.update_status_repo = GITHUB_RELEASE_REPO
-        self.update_status_text = "Update: checking..."
-        self.update_status_latest = ""
-        self.update_status_outdated = False
-        self.update_status_error = ""
         self.update_status_blink_on = True
         self.portfolio_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
         self.paper_trade_targets_by_row_key: dict[str, dict[str, str]] = {}
@@ -894,7 +823,6 @@ class AvanzaTradingTui(
         self.stoploss_items_by_row_key: dict[str, dict[str, Any]] = {}
         self.pending_cancel_target: dict[str, str] | None = None
         self.pending_stoploss_edit_id: str | None = None
-        self.paper_quote_cache: dict[str, dict[str, Any]] = {}
         self.positions_pane_weight = 2
         self.activity_pane_weight = 1
         self.activity_table_weight = 3
@@ -1508,60 +1436,8 @@ class AvanzaTradingTui(
 
 
 
-    def record_event(self, category: str, event: str, details: dict[str, Any] | None = None) -> None:
-        record = {
-            "timestamp": timestamp(),
-            "category": category,
-            "event": event,
-            "details": details or {},
-        }
-        append_jsonl(self.session_log_path, record)
-        category_file = LOG_CATEGORY_FILES.get(category)
-        if category_file:
-            append_jsonl(config.LOG_DIR / category_file, record)
 
-    def debug_log(self, message: str) -> None:
-        if not self.debug_mode or self.debug_session_log_path is None:
-            return
-        append_jsonl(
-            self.debug_session_log_path,
-            {
-                "timestamp": timestamp(),
-                "kind": "debug",
-                "message": message,
-            },
-        )
 
-    def run_profiled(self, label: str, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        if not self.debug_mode or self.debug_profile_depth > 0:
-            return callback(*args, **kwargs)
-
-        profiler = cProfile.Profile()
-        started = time.perf_counter()
-        self.debug_profile_depth += 1
-        try:
-            profiler.enable()
-            return callback(*args, **kwargs)
-        finally:
-            profiler.disable()
-            elapsed = time.perf_counter() - started
-            self.debug_profile_depth = max(0, self.debug_profile_depth - 1)
-            if self.debug_session_log_path is None:
-                return
-
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "_", label)
-            prof_path = self.debug_session_log_path.with_name(f"profile-{safe_label}-{stamp}.prof")
-            profiler.dump_stats(str(prof_path))
-            self.debug_log(f"{label}: {elapsed:.3f}s -> {prof_path.name}")
-
-            stream = io.StringIO()
-            stats = pstats.Stats(profiler, stream=stream).strip_dirs().sort_stats("cumtime")
-            stats.print_stats(self.debug_profile_top)
-            for line in stream.getvalue().splitlines():
-                line = line.rstrip()
-                if line:
-                    self.debug_log(f"{label}: {line}")
 
     def write_log(self, message: str) -> None:
         stamped = f"{timestamp()} {message}"
@@ -1585,35 +1461,8 @@ class AvanzaTradingTui(
                 pass
 
 
-    def require_connection(self) -> Avanza:
-        if self.avanza is None:
-            raise RuntimeError("Log in first.")
-        return self.avanza
 
-    def require_selected_account_id(self) -> str:
-        if not self.selected_account_id:
-            raise RuntimeError("Select an account first.")
-        return self.selected_account_id
 
-    def stock_name_for_order_book(self, order_book_id: str) -> str:
-        token = str(order_book_id or "").strip()
-        if not token:
-            return ""
-        cached = str(self.holding_labels_by_order_book.get(token, "")).strip()
-        if cached:
-            return cached
-        cached = str(self.order_search_labels_by_order_book.get(token, "")).strip()
-        if cached:
-            return cached
-        data = self.latest_portfolio_data
-        if isinstance(data, dict):
-            for section in ("withOrderbook", "withoutOrderbook"):
-                for item in data.get(section, []):
-                    if not isinstance(item, dict):
-                        continue
-                    if position_order_book_id(item) == token:
-                        return str(nested_value(item, "instrument", "name") or "").strip()
-        return ""
 
 
 
@@ -1831,11 +1680,6 @@ class AvanzaTradingTui(
 
 
 
-    def account_by_id(self, account_id: str) -> dict[str, Any] | None:
-        for account in self.accounts:
-            if str(account.get("id", "")) == account_id:
-                return account
-        return None
 
     def select_account(self, account_id: str) -> None:
         account = self.account_by_id(account_id)

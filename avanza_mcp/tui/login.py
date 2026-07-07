@@ -4,7 +4,9 @@ import threading
 import time
 
 from avanza import Avanza
+
 from avanza_mcp import auth
+from avanza_mcp.core import login as core_login
 from avanza_mcp.config import LOGIN_PROGRESS_FRAMES, LOGIN_PROGRESS_ROTATE_TICKS
 from avanza_mcp.rendering import account_rows_from_overview, default_account, open_order_items
 from avanza_mcp.utils import clamp
@@ -400,42 +402,20 @@ class LoginMixin:
 
     def perform_login(self, credentials: dict[str, str], connect_stage_index: int) -> None:
         try:
-            avanza = self.run_login_stage_call("Connecting to Avanza...", connect_stage_index, Avanza, credentials)
-
-            overview = self.run_login_stage_call(
-                "Loading account overview...",
-                connect_stage_index + 1,
-                avanza.get_overview,
+            result = core_login.perform_login_headless(
+                credentials,
+                connect_stage_index=connect_stage_index,
+                run_stage=self.run_login_stage_call,
             )
-            if not isinstance(overview, dict):
-                raise RuntimeError(f"Unexpected account overview response type: {type(overview).__name__}")
-
-            portfolio = self.run_login_stage_call(
-                "Loading portfolio...",
-                connect_stage_index + 2,
-                avanza.get_accounts_positions,
-            )
-            if not isinstance(portfolio, dict):
-                raise RuntimeError(f"Unexpected portfolio response type: {type(portfolio).__name__}")
-
-            stoplosses = self.run_login_stage_call(
-                "Loading stop-losses and open orders...",
-                connect_stage_index + 3,
-                avanza.get_all_stop_losses,
-            )
-            try:
-                orders = avanza.get_orders()
-            except Exception:
-                orders = []
 
             self.call_from_thread(self.set_login_stage, "Building workspace...", connect_stage_index + 4)
             self.call_from_thread(
                 self.complete_login,
-                avanza,
-                overview,
-                portfolio,
-                stoplosses,
-                orders,
+                result.avanza,
+                result.overview,
+                result.portfolio,
+                result.stoplosses,
+                result.orders,
                 self.login_target_mode,
                 self.login_target_session_id,
                 self.login_target_session_label,
