@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from avanza_mcp.config import APP_VERSION
 from avanza_mcp.web.api.data import router as data_router
 from avanza_mcp.web.api.sessions import router as sessions_router
+from avanza_mcp.web.api.trading import router as trading_router
 from avanza_mcp.web.auth import COOKIE_NAME, WebAuth
 from avanza_mcp.web.runtime import WebRuntime
 
@@ -158,6 +159,7 @@ def create_web_app(runtime: WebRuntime) -> FastAPI:
 
     app.include_router(sessions_router)
     app.include_router(data_router)
+    app.include_router(trading_router)
 
     # ------------------------------------------------------------------ static
 

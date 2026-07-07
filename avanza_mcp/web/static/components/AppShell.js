@@ -9,12 +9,16 @@ import OpenOrdersPanel from "./OpenOrdersPanel.js";
 import ActiveTradesPanel from "./ActiveTradesPanel.js";
 import PerformanceChart from "./PerformanceChart.js";
 import ActivityLog from "./ActivityLog.js";
+import OrderTicket from "./OrderTicket.js";
+import StopLossTicket from "./StopLossTicket.js";
+import CancelDialog from "./CancelDialog.js";
 
 export default defineComponent({
   name: "AppShell",
   components: {
     TopBar, SessionLoginModal, PortfolioTable, OpenOrdersPanel,
     ActiveTradesPanel, PerformanceChart, ActivityLog,
+    OrderTicket, StopLossTicket, CancelDialog,
   },
   setup() {
     const tab = ref("dashboard");
@@ -25,17 +29,40 @@ export default defineComponent({
     function openAddSession() { reauthSessionId.value = ""; sessionModalOpen.value = true; }
     function openReauth(sessionId) { reauthSessionId.value = sessionId; sessionModalOpen.value = true; }
 
-    function onTrade() { /* order ticket lands in the trading phase */ }
-    function onCancel() { /* cancel dialog lands in the trading phase */ }
-    function onEditStopLoss() { /* stop-loss editor lands in the trading phase */ }
+    const orderTicketOpen = ref(false);
+    const orderPrefill = ref(null);
+    const stopLossOpen = ref(false);
+    const stopLossEditTarget = ref(null);
+    const cancelTarget = ref(null);
+
+    function onTrade({ side, row }) {
+      orderPrefill.value = {
+        side,
+        order_book_id: row["Order Book ID"],
+        name: row.Stock,
+        volume: side === "sell" ? row.volume : "",
+      };
+      orderTicketOpen.value = true;
+    }
+    function openOrderTicket() { orderPrefill.value = null; orderTicketOpen.value = true; }
+    function openStopLoss() { stopLossEditTarget.value = null; stopLossOpen.value = true; }
+    function onCancel({ kind, row }) { cancelTarget.value = { kind, row }; }
+    function onEditStopLoss(row) { stopLossEditTarget.value = row; stopLossOpen.value = true; }
 
     function onKey(event) {
       if (event.target.matches("input, select, textarea")) return;
       if (event.key === "r") manualRefresh();
+      else if (event.key === "o") openOrderTicket();
+      else if (event.key === "s") openStopLoss();
       else if (event.key === "p") tab.value = "paper";
       else if (event.key === "m") tab.value = "mcp";
       else if (event.key === "d") tab.value = "dashboard";
-      else if (event.key === "Escape") sessionModalOpen.value = false;
+      else if (event.key === "Escape") {
+        sessionModalOpen.value = false;
+        orderTicketOpen.value = false;
+        stopLossOpen.value = false;
+        cancelTarget.value = null;
+      }
     }
     onMounted(() => window.addEventListener("keydown", onKey));
     onUnmounted(() => window.removeEventListener("keydown", onKey));
@@ -43,6 +70,8 @@ export default defineComponent({
     return {
       store, tab, sessionModalOpen, reauthSessionId, needsFirstSession,
       openAddSession, openReauth, onTrade, onCancel, onEditStopLoss, logoutSession,
+      orderTicketOpen, orderPrefill, stopLossOpen, stopLossEditTarget, cancelTarget,
+      openOrderTicket, openStopLoss,
     };
   },
   template: `
@@ -81,6 +110,14 @@ export default defineComponent({
         </div>
       </main>
 
+      <div class="fab-row" v-if="!needsFirstSession && tab === 'dashboard'">
+        <button class="primary" @click="openOrderTicket" title="Order ticket (o)">+ Order</button>
+        <button class="warn" @click="openStopLoss" title="Stop-loss ticket (s)">+ Stop-Loss</button>
+      </div>
+
+      <OrderTicket :open="orderTicketOpen" :prefill="orderPrefill" @close="orderTicketOpen = false" />
+      <StopLossTicket :open="stopLossOpen" :editTarget="stopLossEditTarget" @close="stopLossOpen = false" />
+      <CancelDialog :target="cancelTarget" @close="cancelTarget = null" />
       <SessionLoginModal :open="sessionModalOpen" :reauthSessionId="reauthSessionId"
                          @close="sessionModalOpen = false" />
     </div>

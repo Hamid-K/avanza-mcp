@@ -169,3 +169,110 @@ def test_ws_pushes_portfolio_on_state_change(with_session, runtime):
 
 def test_market_status(with_session):
     assert "clock" in with_session.get("/api/market/status").json()
+
+
+# ------------------------------------------------------------------ trading
+
+
+def _order_body():
+    from datetime import date
+
+    return {
+        "order_book_id": "1234",
+        "order_type": "buy",
+        "price": 10.0,
+        "volume": 5,
+        "condition": "normal",
+        "valid_until": date.today().isoformat(),
+    }
+
+
+def test_order_dry_run_returns_review(with_session):
+    response = with_session.post("/api/orders/dry-run", json=_order_body())
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["review_id"]
+    assert payload["paper_mode"] is True
+    assert payload["confirm_required"] is None
+    assert payload["preview"]["order_type"] == "BUY"
+
+
+def test_order_place_paper_flow(with_session, runtime):
+    review = with_session.post("/api/orders/dry-run", json=_order_body()).json()
+    response = with_session.post("/api/orders/place", json={"review_id": review["review_id"]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "paper"
+    assert payload["order"]["id"]
+    assert runtime.kernel.paper_session["orders"][-1]["id"] == payload["order"]["id"]
+
+
+def test_order_place_rejects_stale_nonce(with_session):
+    review = with_session.post("/api/orders/dry-run", json=_order_body()).json()
+    first = with_session.post("/api/orders/place", json={"review_id": review["review_id"]})
+    assert first.status_code == 200
+    second = with_session.post("/api/orders/place", json={"review_id": review["review_id"]})
+    assert second.status_code == 409  # single-use
+
+
+def test_order_place_without_review_rejected(with_session):
+    response = with_session.post("/api/orders/place", json={"review_id": "bogus"})
+    assert response.status_code == 409
+
+
+def test_live_order_requires_typed_confirm(with_session, runtime):
+    runtime.kernel.paper_mode_enabled = False
+    review = with_session.post("/api/orders/dry-run", json=_order_body()).json()
+    assert review["confirm_required"] == "PLACE"
+    response = with_session.post("/api/orders/place", json={"review_id": review["review_id"], "confirm_text": "place"})
+    assert response.status_code == 403
+    runtime.kernel.paper_mode_enabled = True
+
+
+def test_stoploss_dry_run_and_paper_place(with_session, runtime):
+    from datetime import date, timedelta
+
+    body = {
+        "order_book_id": "1234",
+        "volume": 5,
+        "trigger_type": "follow_upwards",
+        "trigger_value": 5.0,
+        "trigger_value_type": "percentage",
+        "valid_until": (date.today() + timedelta(days=10)).isoformat(),
+        "order_type": "sell",
+        "order_price": 2.0,
+        "order_price_type": "percentage",
+        "order_valid_days": 1,
+    }
+    review = with_session.post("/api/stoplosses/dry-run", json=body)
+    assert review.status_code == 200, review.text
+    payload = review.json()
+    assert payload["preview"]["stop_loss_order_event"]["valid_days"] == 1
+    placed = with_session.post("/api/stoplosses/place", json={"review_id": payload["review_id"]})
+    assert placed.status_code == 200
+    assert placed.json()["mode"] == "paper"
+    stoplosses = with_session.get("/api/stoplosses").json()
+    assert len(stoplosses["paper_items"]) == 1
+
+
+def test_paper_cancel_flow(with_session):
+    review = with_session.post("/api/orders/dry-run", json=_order_body()).json()
+    order = with_session.post("/api/orders/place", json={"review_id": review["review_id"]}).json()["order"]
+    response = with_session.post("/api/orders/cancel", json={"kind": "paper", "id": order["id"]})
+    assert response.status_code == 200
+    assert response.json()["mode"] == "paper"
+
+
+def test_live_cancel_requires_typed_confirm(with_session):
+    response = with_session.post(
+        "/api/orders/cancel", json={"kind": "order", "id": "42", "confirm_text": "nope"}
+    )
+    assert response.status_code == 403
+
+
+def test_paper_mode_toggle(with_session, runtime):
+    response = with_session.post("/api/paper/mode", json={"enabled": False})
+    assert response.status_code == 200
+    assert runtime.kernel.paper_mode_enabled is False
+    with_session.post("/api/paper/mode", json={"enabled": True})
+    assert runtime.kernel.paper_mode_enabled is True
