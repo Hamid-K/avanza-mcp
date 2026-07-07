@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import textwrap
+import webbrowser
 
 from avanza_mcp.auth import connect
 from avanza_mcp.config import (
@@ -18,6 +19,8 @@ from avanza_mcp.config import (
     STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
     TRIGGER_TYPE_CHOICES,
     VALID_UNTIL_MAX_DAYS,
+    WEB_DEFAULT_PORT,
+    WEB_SESSION_FILE,
 )
 from avanza_mcp.market_data import merged_orderbook_metadata
 from avanza_mcp.mcp.proxy import run_mcp_stdio_proxy
@@ -50,15 +53,58 @@ from avanza_mcp.stoploss_rules import (
 )
 from pathlib import Path
 from avanza_mcp.tui.app import AvanzaTradingTui
+from avanza_mcp.uilock import acquire_ui_lock, release_ui_lock
 
 
 def cmd_tui(args: argparse.Namespace) -> None:
-    result = AvanzaTradingTui(
-        debug=bool(getattr(args, "debug", False)),
-        debug_profile_top=int(getattr(args, "debug_profile_top", DEBUG_PROFILE_TOP_DEFAULT)),
-    ).run()
+    try:
+        acquire_ui_lock("tui")
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        result = AvanzaTradingTui(
+            debug=bool(getattr(args, "debug", False)),
+            debug_profile_top=int(getattr(args, "debug_profile_top", DEBUG_PROFILE_TOP_DEFAULT)),
+        ).run()
+    finally:
+        release_ui_lock()
     if isinstance(result, dict) and bool(result.get("reload_tui")):
         os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
+def cmd_web(args: argparse.Namespace) -> None:
+    try:
+        acquire_ui_lock("web")
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        import uvicorn
+
+        from avanza_mcp.web.app import create_web_app
+        from avanza_mcp.web.runtime import WebRuntime
+
+        port = int(getattr(args, "port", WEB_DEFAULT_PORT))
+        runtime = WebRuntime(port=port, debug=bool(getattr(args, "debug", False)))
+        runtime.auth.write_session_file()
+        app = create_web_app(runtime)
+        url = runtime.auth.url
+        print(f"Avanza-MCP Web UI: {url}")
+        print(f"Login token: {runtime.auth.login_token}")
+        print(f"(also written to {WEB_SESSION_FILE.name}; keep it private)")
+        if not getattr(args, "no_browser", False):
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    finally:
+        try:
+            runtime.stop()
+        except Exception:
+            pass
+        release_ui_lock()
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -327,6 +373,36 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"How many top functions to include per profile sample in --debug mode. Default: {DEBUG_PROFILE_TOP_DEFAULT}.",
     )
     tui.set_defaults(func=cmd_tui)
+
+    web = subparsers.add_parser(
+        "web",
+        formatter_class=HELP_FORMATTER,
+        help="Launch the local Web UI (mutually exclusive with the TUI).",
+        description=textwrap.dedent(
+            """\
+            Launch the Avanza-MCP Web UI on 127.0.0.1. Prints a one-time login
+            token to the terminal; paste it into the browser login form. The
+            Web UI and the TUI are mutually exclusive - run one at a time.
+            """
+        ),
+    )
+    web.add_argument(
+        "--port",
+        type=int,
+        default=WEB_DEFAULT_PORT,
+        help=f"Port to bind on 127.0.0.1. Default: {WEB_DEFAULT_PORT}.",
+    )
+    web.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open the browser automatically.",
+    )
+    web.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging for the web kernel.",
+    )
+    web.set_defaults(func=cmd_web)
 
     mcp = subparsers.add_parser(
         "mcp",

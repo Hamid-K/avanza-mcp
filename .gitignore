@@ -33,3 +33,5 @@ INSTRUCTIONS/*
 /INSTRUCTIONS.md
 /MEMORY.md
 /WARMUP.md
+.avanza_web_session.json
+.avanza_ui.lock

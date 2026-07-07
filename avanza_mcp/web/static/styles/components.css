@@ -1,0 +1,68 @@
+/* ---------- Login gate ---------- */
+.login-gate {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(1200px 500px at 20% -10%, var(--accent-soft), transparent 60%),
+    var(--bg);
+}
+.login-card {
+  width: 380px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+  box-shadow: var(--shadow-pop);
+}
+.login-card h1 { font-size: 18px; margin-bottom: 4px; }
+.login-card .sub { color: var(--muted); font-size: var(--fs-small); margin-bottom: 20px; }
+.login-card form { display: grid; gap: 12px; }
+.login-card .error { color: var(--down); font-size: var(--fs-small); min-height: 16px; }
+.login-hint { margin-top: 16px; color: var(--faint); font-size: var(--fs-tiny); }
+.login-hint code { font-family: var(--font-mono); color: var(--muted); }
+
+/* ---------- Field groups ---------- */
+.field { display: grid; gap: 4px; }
+.field label { font-size: var(--fs-tiny); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* ---------- Badges & pills ---------- */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 8px; border-radius: 999px;
+  font-size: var(--fs-tiny); font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.badge.live { color: var(--live); border-color: var(--down-dim); }
+.badge.paper { color: var(--paper); border-color: #5c4a1d; }
+.badge.expired { color: var(--down); border-color: var(--down-dim); }
+.badge.ok { color: var(--up); border-color: var(--up-dim); }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+
+/* ---------- Toasts ---------- */
+.toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 90;
+  display: grid; gap: 8px; max-width: 420px;
+}
+.toast {
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--info);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-pop);
+}
+.toast.error { border-left-color: var(--down); }
+.toast.warning { border-left-color: var(--warn); }
+.toast.success { border-left-color: var(--up); }
+
+/* ---------- Connection banner ---------- */
+.conn-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: var(--down-dim); color: var(--text-strong);
+  text-align: center; font-size: var(--fs-small);
+  padding: 4px;
+}
