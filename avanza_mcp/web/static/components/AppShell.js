@@ -13,6 +13,9 @@ import OrderTicket from "./OrderTicket.js";
 import StopLossTicket from "./StopLossTicket.js";
 import CancelDialog from "./CancelDialog.js";
 import McpPanel from "./McpPanel.js";
+import PaperView from "./PaperView.js";
+import HistoryOverlay from "./HistoryOverlay.js";
+import TvListsOverlay from "./TvListsOverlay.js";
 
 export default defineComponent({
   name: "AppShell",
@@ -20,6 +23,7 @@ export default defineComponent({
     TopBar, SessionLoginModal, PortfolioTable, OpenOrdersPanel,
     ActiveTradesPanel, PerformanceChart, ActivityLog,
     OrderTicket, StopLossTicket, CancelDialog, McpPanel,
+    PaperView, HistoryOverlay, TvListsOverlay,
   },
   setup() {
     const tab = ref("dashboard");
@@ -35,6 +39,7 @@ export default defineComponent({
     const stopLossOpen = ref(false);
     const stopLossEditTarget = ref(null);
     const cancelTarget = ref(null);
+    const overlay = ref(""); // "" | orders | transactions | tv
 
     function onTrade({ side, row }) {
       orderPrefill.value = {
@@ -63,6 +68,7 @@ export default defineComponent({
         orderTicketOpen.value = false;
         stopLossOpen.value = false;
         cancelTarget.value = null;
+        overlay.value = "";
       }
     }
     onMounted(() => window.addEventListener("keydown", onKey));
@@ -72,7 +78,7 @@ export default defineComponent({
       store, tab, sessionModalOpen, reauthSessionId, needsFirstSession,
       openAddSession, openReauth, onTrade, onCancel, onEditStopLoss, logoutSession,
       orderTicketOpen, orderPrefill, stopLossOpen, stopLossEditTarget, cancelTarget,
-      openOrderTicket, openStopLoss,
+      openOrderTicket, openStopLoss, overlay,
     };
   },
   template: `
@@ -100,9 +106,7 @@ export default defineComponent({
       </main>
 
       <main v-else-if="tab === 'paper'" class="single-panel">
-        <div class="panel"><div class="panel-title"><h2>Paper Trading</h2></div>
-          <div class="muted" style="padding: 16px">Paper view lands in a later build phase.</div>
-        </div>
+        <PaperView />
       </main>
 
       <main v-else class="single-panel">
@@ -110,9 +114,16 @@ export default defineComponent({
       </main>
 
       <div class="fab-row" v-if="!needsFirstSession && tab === 'dashboard'">
+        <button class="ghost" @click="overlay = 'orders'">Orders history</button>
+        <button class="ghost" @click="overlay = 'transactions'">Transactions</button>
+        <button class="ghost" @click="overlay = 'tv'">TV lists</button>
         <button class="primary" @click="openOrderTicket" title="Order ticket (o)">+ Order</button>
         <button class="warn" @click="openStopLoss" title="Stop-loss ticket (s)">+ Stop-Loss</button>
       </div>
+
+      <HistoryOverlay :open="overlay === 'orders'" mode="orders" @close="overlay = ''" />
+      <HistoryOverlay :open="overlay === 'transactions'" mode="transactions" @close="overlay = ''" />
+      <TvListsOverlay :open="overlay === 'tv'" @close="overlay = ''" />
 
       <OrderTicket :open="orderTicketOpen" :prefill="orderPrefill" @close="orderTicketOpen = false" />
       <StopLossTicket :open="stopLossOpen" :editTarget="stopLossEditTarget" @close="stopLossOpen = false" />

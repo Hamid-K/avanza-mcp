@@ -366,3 +366,23 @@ def test_mcp_bridge_end_to_end_tool_call(with_session, runtime, monkeypatch, tmp
     result = body["result"]
     assert result["mcp_enabled"] is True or result.get("sessions"), result
     with_session.post("/api/mcp/bridge", json={"enabled": False})
+
+
+# ---------------------------------------------------------------------- paper
+
+
+def test_paper_state_endpoint(with_session):
+    review = with_session.post("/api/orders/dry-run", json=_order_body()).json()
+    with_session.post("/api/orders/place", json={"review_id": review["review_id"]})
+    payload = with_session.get("/api/paper/state").json()
+    assert payload["paper_mode"] is True
+    assert len(payload["orders"]) >= 1
+    assert "summary" in payload
+    assert "trades" in payload
+
+
+def test_transactions_types_filter_parses(with_session):
+    # FakeAvanza has no get_transactions_details; the endpoint must fail
+    # upstream (502), not on parameter parsing (400).
+    response = with_session.get("/api/transactions?types=BUY,SELL")
+    assert response.status_code == 502

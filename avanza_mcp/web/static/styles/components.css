@@ -214,3 +214,23 @@
 .toggle-row input { width: auto; margin-top: 3px; }
 .toggle-row.disabled { opacity: 0.55; }
 .mode-toggle { cursor: pointer; }
+
+/* ---------- Full-screen overlays ---------- */
+.overlay {
+  position: fixed; inset: var(--topbar-h) 0 0 0; z-index: 65;
+  background: var(--bg);
+  display: grid; grid-template-rows: auto 1fr;
+}
+.overlay-head {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.overlay-head h2 { font-size: var(--fs-title); margin-right: auto; }
+.overlay-filters { display: flex; align-items: center; gap: 10px; font-size: var(--fs-small); color: var(--muted); }
+.overlay-filters input, .overlay-filters select { width: auto; }
+.overlay-body { padding: 12px; overflow: auto; }
+
+/* ---------- Paper view ---------- */
+.paper-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+.summary-cards { display: flex; flex-wrap: wrap; gap: 18px; }
+.summary-cards .metric { text-align: left; }

@@ -102,13 +102,14 @@ async def stoplosses(request: Request, session_id: str | None = None):
 
 
 @router.get("/api/transactions")
-async def transactions(request: Request, from_date: str | None = None, to_date: str | None = None):
+async def transactions(request: Request, from_date: str | None = None, to_date: str | None = None, types: str = ""):
     kernel = _kernel(request)
     if kernel.avanza is None or not kernel.selected_account_id:
         return JSONResponse({"error": "no_session"}, status_code=409)
     try:
-        from avanza_mcp.records import parse_optional_iso_date
+        from avanza_mcp.records import parse_optional_iso_date, parse_transaction_types
 
+        type_list = [token.strip() for token in str(types or "").split(",") if token.strip()]
         payload = await _run(
             kernel,
             kernel.transactions_snapshot,
@@ -116,6 +117,7 @@ async def transactions(request: Request, from_date: str | None = None, to_date: 
             kernel.selected_account_id,
             transactions_from=parse_optional_iso_date(from_date, label="from_date"),
             transactions_to=parse_optional_iso_date(to_date, label="to_date"),
+            types=parse_transaction_types(type_list) if type_list else None,
         )
     except Exception as exc:
         denial = _auth_expired_response(kernel, exc)
