@@ -820,7 +820,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 ],
             }
 
-    monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
+    monkeypatch.setattr("avanza_mcp.tui.login.Avanza", FakeAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -1116,7 +1116,7 @@ def test_tui_login_shows_progress_while_authenticating(monkeypatch):
         def get_orders(self):
             return []
 
-    monkeypatch.setattr("avanza_cli.Avanza", SlowAvanza)
+    monkeypatch.setattr("avanza_mcp.tui.login.Avanza", SlowAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -4955,7 +4955,7 @@ def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
 
     monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
     monkeypatch.setattr(
-        "avanza_cli.onepassword_credentials",
+        "avanza_mcp.auth.onepassword_credentials",
         lambda item, vault=None: {
             "username": "alice",
             "password": "secret-password",
@@ -4990,7 +4990,7 @@ def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
         def get_orders(self):
             return []
 
-    monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
+    monkeypatch.setattr("avanza_mcp.tui.login.Avanza", FakeAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
