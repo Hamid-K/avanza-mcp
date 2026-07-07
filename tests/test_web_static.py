@@ -38,6 +38,15 @@ def test_index_served_with_csp(client):
     assert "default-src 'none'" in csp
     assert "script-src 'self' https://cdn.jsdelivr.net" in csp
     assert "unsafe-inline" not in csp
+    # the inline import map must be allow-listed by content hash, or the page is blank
+    assert "'sha256-" in csp
+    import base64
+    import hashlib
+
+    html = (STATIC_DIR / "index.html").read_text()
+    import_map = re.search(r'<script type="importmap">(.*?)</script>', html, re.S).group(1)
+    digest = base64.b64encode(hashlib.sha256(import_map.encode()).digest()).decode()
+    assert f"'sha256-{digest}'" in csp
     assert response.headers["x-frame-options"] == "DENY"
 
 

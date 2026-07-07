@@ -1,6 +1,9 @@
 """FastAPI application factory for the Avanza-MCP Web UI."""
 
 import asyncio
+import base64
+import hashlib
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -22,10 +25,29 @@ _PUBLIC_PATHS = {"/", "/favicon.ico", "/api/auth/login", "/api/auth/me"}
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
+def _import_map_hashes() -> str:
+    """CSP sha256 sources for the inline import map(s) in index.html.
+
+    The strict CSP blocks inline scripts; the import map is the one inline
+    script we need, so it is allow-listed by content hash. Computed from the
+    file at startup so edits to the map can never silently break the page.
+    """
+    html = (STATIC_DIR / "index.html").read_text()
+    sources = []
+    for match in re.finditer(r'<script type="importmap">(.*?)</script>', html, re.S):
+        digest = hashlib.sha256(match.group(1).encode()).digest()
+        sources.append("'sha256-" + base64.b64encode(digest).decode() + "'")
+    return " ".join(sources)
+
+
 def _csp_value(port: int) -> str:
+    # 'unsafe-eval' is required by Vue's runtime template compiler (the
+    # no-build setup compiles template strings with new Function()). Inline
+    # SCRIPT injection remains blocked: only self, the two pinned CDN files,
+    # and the hash-pinned import map may execute.
     return (
         "default-src 'none'; "
-        "script-src 'self' https://cdn.jsdelivr.net; "
+        f"script-src 'self' https://cdn.jsdelivr.net 'unsafe-eval' {_import_map_hashes()}; "
         "style-src 'self'; "
         "img-src 'self' data:; "
         f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port} https://cdn.jsdelivr.net; "

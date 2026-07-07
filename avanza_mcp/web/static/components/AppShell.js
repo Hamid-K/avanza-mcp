@@ -85,7 +85,7 @@ export default defineComponent({
     <div class="shell">
       <TopBar :tab="tab" @change-tab="tab = $event" @add-session="openAddSession" @reauth-session="openReauth" />
 
-      <main v-if="needsFirstSession" class="first-session">
+      <main v-if="needsFirstSession && tab === 'dashboard'" class="first-session">
         <div class="login-card fade-in">
           <h1>No Avanza session</h1>
           <div class="sub">Sign in to an Avanza account to load your portfolio.</div>

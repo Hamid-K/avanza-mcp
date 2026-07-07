@@ -31,11 +31,15 @@ with an SSH tunnel (`ssh -L 8787:127.0.0.1:8787 host`).
 - **CSRF double-submit.** Every mutating request must echo the session
   value in the `X-Avanza-Web-Token` header; Origin and Host are validated
   against the local bind. The WebSocket handshake validates Origin too.
-- **Strict CSP.** `default-src 'none'`; scripts/styles from self plus the
-  two pinned jsdelivr CDN files (Vue, lightweight-charts) with subresource
-  integrity hashes. No inline scripts. Offline fallback copies are
-  committed under `avanza_mcp/web/static/vendor/` — swap the import map
-  and script src in `index.html` to use them.
+- **Strict CSP.** `default-src 'none'`; scripts from self plus the two
+  pinned jsdelivr CDN files (Vue, lightweight-charts) with subresource
+  integrity hashes. The one inline script — the import map — is
+  allow-listed by its SHA-256 content hash, computed from the served file
+  at startup. `'unsafe-eval'` is granted because Vue's runtime template
+  compiler builds render functions with `new Function()` (the price of a
+  no-build setup); inline script injection remains blocked. Offline
+  fallback copies are committed under `avanza_mcp/web/static/vendor/` —
+  swap the import map and script src in `index.html` to use them.
 - **Trading gates mirror the TUI's human path.** Paper mode (default ON)
   routes tickets to the local paper ledger. Live placement requires paper
   mode off **and** the exact typed `PLACE` (cancel: `CANCEL`) validated
