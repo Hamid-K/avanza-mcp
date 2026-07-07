@@ -9,12 +9,43 @@ from avanza_mcp.web.events import EventBus
 
 
 class WebTradingKernel(TradingKernel):
+    """Kernel whose state-change hooks push serialized snapshots over the EventBus."""
+
     def __init__(self, event_bus: EventBus, debug: bool = False, debug_profile_top: int = DEBUG_PROFILE_TOP_DEFAULT) -> None:
         self.event_bus = event_bus
         self.init_kernel_state(debug=debug, debug_profile_top=debug_profile_top, log_kind="web")
 
     def on_state_changed(self, channel: str, payload: Any = None) -> None:
+        if payload is None:
+            payload = self._payload_for_channel(channel)
         self.event_bus.publish(channel, payload)
+
+    def _payload_for_channel(self, channel: str) -> Any:
+        from avanza_mcp.web import serializers
+
+        try:
+            if channel == "portfolio":
+                return serializers.portfolio_payload(self)
+            if channel == "sessions":
+                return serializers.sessions_payload(self)
+            if channel == "orders":
+                return serializers.orders_payload(self)
+            if channel == "stoplosses":
+                return serializers.stoplosses_payload(self)
+            if channel == "paper":
+                return None  # paper view pulls /api/paper/state on demand
+            if channel == "mcp_status":
+                return serializers.mcp_status_web_payload(self)
+            if channel == "update_check":
+                return {
+                    "text": self.update_status_text,
+                    "latest": self.update_status_latest,
+                    "outdated": self.update_status_outdated,
+                    "error": self.update_status_error,
+                }
+        except Exception as exc:
+            self.debug_log(f"ws payload build failed for {channel}: {exc}")
+        return None
 
     def write_log(self, message: str) -> None:
         super().write_log(message)

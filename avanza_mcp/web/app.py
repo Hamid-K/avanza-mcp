@@ -8,6 +8,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from avanza_mcp.config import APP_VERSION
+from avanza_mcp.web.api.data import router as data_router
+from avanza_mcp.web.api.sessions import router as sessions_router
 from avanza_mcp.web.auth import COOKIE_NAME, WebAuth
 from avanza_mcp.web.runtime import WebRuntime
 
@@ -153,6 +155,9 @@ def create_web_app(runtime: WebRuntime) -> FastAPI:
             pass
         finally:
             runtime.event_bus.unsubscribe(client_id)
+
+    app.include_router(sessions_router)
+    app.include_router(data_router)
 
     # ------------------------------------------------------------------ static
 

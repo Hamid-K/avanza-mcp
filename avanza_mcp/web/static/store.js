@@ -12,6 +12,8 @@ export const store = reactive({
   portfolio: null, // { rows, metrics, realtime }
   openOrders: [],
   stoplosses: [],
+  paperStoplosses: [],
+  activityLog: [],
   paper: null,
   mcp: { running: false, read_write: false, live_trading: false, url: "", proxy_command: "" },
   mcpLog: [],
@@ -60,7 +62,10 @@ export function handleWsFrame(frame) {
       if (payload) store.openOrders = payload.items || [];
       break;
     case "stoplosses":
-      if (payload) store.stoplosses = payload.items || [];
+      if (payload) {
+        store.stoplosses = payload.items || [];
+        store.paperStoplosses = payload.paper_items || [];
+      }
       break;
     case "paper":
       if (payload) store.paper = payload;
@@ -73,8 +78,12 @@ export function handleWsFrame(frame) {
       if (store.mcpLog.length > MCP_LOG_LIMIT) store.mcpLog.shift();
       break;
     case "notice":
-      if (payload && payload.severity && payload.severity !== "information") {
-        toast(payload.message, payload.severity === "error" ? "error" : "warning");
+      if (payload) {
+        store.activityLog.push(payload);
+        if (store.activityLog.length > 300) store.activityLog.shift();
+        if (payload.severity && payload.severity !== "information") {
+          toast(payload.message, payload.severity === "error" ? "error" : "warning");
+        }
       }
       break;
     case "login_progress":

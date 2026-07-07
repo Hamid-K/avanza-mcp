@@ -4,6 +4,8 @@ import { api } from "./api.js";
 import { store, dismissToast } from "./store.js";
 import { connectWs } from "./ws.js";
 import LoginView from "./components/LoginView.js";
+import AppShell from "./components/AppShell.js";
+import { hydrateAll } from "./actions.js";
 
 const Toasts = defineComponent({
   name: "Toasts",
@@ -19,25 +21,9 @@ const Toasts = defineComponent({
   `,
 });
 
-const PlaceholderShell = defineComponent({
-  name: "PlaceholderShell",
-  setup() {
-    return { store };
-  },
-  template: `
-    <div style="display:grid;place-items:center;height:100%;">
-      <div class="login-card fade-in" style="text-align:center;">
-        <h1>Authenticated</h1>
-        <div class="sub">Dashboard loads here (next build phase).</div>
-        <div class="muted">v{{ store.meta.app_version }}</div>
-      </div>
-    </div>
-  `,
-});
-
 const Root = defineComponent({
   name: "Root",
-  components: { LoginView, PlaceholderShell, Toasts },
+  components: { LoginView, AppShell, Toasts },
   setup() {
     const view = computed(() => {
       if (store.auth.checking) return "checking";
@@ -59,8 +45,8 @@ const Root = defineComponent({
     }
 
     async function afterAuth() {
-      store.meta = await api.get("/api/meta");
-      connectWs(() => afterAuth());
+      await hydrateAll();
+      connectWs(() => hydrateAll());
     }
 
     onMounted(bootstrap);
@@ -74,7 +60,7 @@ const Root = defineComponent({
       <LoginView @authenticated="afterAuth" />
     </template>
     <template v-else-if="view === 'shell'">
-      <PlaceholderShell />
+      <AppShell />
     </template>
     <Toasts />
   `,

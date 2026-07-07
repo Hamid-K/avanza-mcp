@@ -392,3 +392,47 @@ class CoreSessionsMixin:
 
     def extra_session_label(self) -> str:
         return str(self.input_value("extra-session-label") or "").strip() or self.auto_session_label([])
+
+    def logout_all_sessions_state(self) -> None:
+        """Pure teardown of every tenant session; hosts add their own UI reset."""
+        self.stop_mcp_bridge(announce=False)
+        self.tenant_sessions.clear()
+        self.active_session_id = None
+        self.avanza = None
+        self.accounts = []
+        self.selected_account_id = None
+        self.latest_portfolio_data = None
+        self.latest_stoploss_items = []
+        self.latest_open_order_items = []
+        self.account_snapshot_cache.clear()
+        self.position_row_cache = {}
+        self.holding_volumes_by_order_book = {}
+        self.holding_labels_by_order_book = {}
+        self.order_search_labels_by_order_book = {}
+        self.live_refresh_auth_blocked_sessions.clear()
+        self.live_refresh_auth_last_notice_at.clear()
+        self.record_event("app", "tenant_sessions_cleared", {})
+
+    def logout_session_state(self, session_id: str) -> None:
+        """Remove one tenant session; activates the next one or tears down fully."""
+        context = self.tenant_sessions.get(session_id)
+        if context is None:
+            raise ValueError(f"Unknown session_id: {session_id}")
+        was_active = session_id == self.active_session_id
+        self.tenant_sessions.pop(session_id, None)
+        self.live_refresh_auth_blocked_sessions.discard(session_id)
+        self.live_refresh_auth_last_notice_at.pop(session_id, None)
+        if self.mcp_scope_original_session_id == session_id:
+            self.mcp_scope_original_session_id = None
+        self.record_event(
+            "app",
+            "tenant_session_logged_out",
+            {"session_id": session_id, "label": context.label, "was_active": was_active},
+        )
+        if not self.tenant_sessions:
+            self.logout_all_sessions_state()
+            return
+        if was_active:
+            next_context = next(iter(self.tenant_sessions.values()))
+            self.active_session_id = None
+            self.load_active_state_from_tenant(next_context)
