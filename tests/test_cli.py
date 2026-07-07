@@ -522,6 +522,8 @@ def test_tui_on_unmount_with_mcp_and_missing_log_widgets(monkeypatch, tmp_path):
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
 
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
     class FakeServer:
         def __init__(self):
             self.shutdown_called = False
@@ -557,6 +559,8 @@ def test_tui_on_unmount_does_not_block_on_slow_mcp_shutdown(monkeypatch, tmp_pat
     from avanza_cli import AvanzaTradingTui
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
 
     shutdown_started = threading.Event()
     shutdown_release = threading.Event()
@@ -597,6 +601,8 @@ def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
     monkeypatch.setattr("avanza_cli.secrets.token_urlsafe", lambda _n: "token")
 
     class FakeMcpServer:
@@ -612,7 +618,7 @@ def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
         def server_close(self):
             return
 
-    monkeypatch.setattr("avanza_cli.AvanzaMcpHttpServer", FakeMcpServer)
+    monkeypatch.setattr("avanza_mcp.mcp.server.AvanzaMcpHttpServer", FakeMcpServer)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -633,6 +639,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
     monkeypatch.setattr("avanza_cli.secrets.token_urlsafe", lambda _n: "token")
 
     class FakeMcpServer:
@@ -648,7 +656,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
         def server_close(self):
             return
 
-    monkeypatch.setattr("avanza_cli.AvanzaMcpHttpServer", FakeMcpServer)
+    monkeypatch.setattr("avanza_mcp.mcp.server.AvanzaMcpHttpServer", FakeMcpServer)
 
     class FakeAvanza:
         def __init__(self, credentials):
@@ -2257,7 +2265,8 @@ def test_mcp_select_account_switches_context():
 
 
 def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
-    from avanza_cli import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, TENANT_SESSION_SCOPED_TOOLS, mcp_tools_catalog
+    from avanza_mcp.mcp.catalog import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, TENANT_SESSION_SCOPED_TOOLS
+    from avanza_mcp.mcp.server import mcp_tools_catalog
 
     raw_tools = {tool["name"]: tool for tool in MCP_TOOLS}
     scoped_tools = {tool["name"]: tool for tool in mcp_tools_catalog()}
@@ -3048,7 +3057,8 @@ def test_load_mcp_session_requires_existing_session_file(tmp_path):
 
 
 def test_mcp_session_keychain_storage_mode(monkeypatch, tmp_path):
-    from avanza_cli import load_mcp_session, remove_mcp_session_file, write_mcp_session_file
+    from avanza_mcp.mcp.proxy import load_mcp_session
+    from avanza_mcp.mcp.server import remove_mcp_session_file, write_mcp_session_file
 
     session_path = tmp_path / "mcp-session.json"
     monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "keychain")
@@ -3066,9 +3076,9 @@ def test_mcp_session_keychain_storage_mode(monkeypatch, tmp_path):
     def fake_delete(path):
         return (store.pop(str(path), None) is not None), ""
 
-    monkeypatch.setattr("avanza_cli.mcp_keychain_set_token", fake_set)
-    monkeypatch.setattr("avanza_cli.mcp_keychain_get_token", fake_get)
-    monkeypatch.setattr("avanza_cli.mcp_keychain_delete_token", fake_delete)
+    monkeypatch.setattr("avanza_mcp.mcp.server.mcp_keychain_set_token", fake_set)
+    monkeypatch.setattr("avanza_mcp.mcp.server.mcp_keychain_get_token", fake_get)
+    monkeypatch.setattr("avanza_mcp.mcp.server.mcp_keychain_delete_token", fake_delete)
 
     write_mcp_session_file(
         session_path,
@@ -3104,7 +3114,7 @@ def test_call_mcp_bridge_handles_non_json_http_error(monkeypatch):
     def fake_urlopen(_request, timeout):
         raise FakeHttpError()
 
-    monkeypatch.setattr("avanza_cli.urlopen", fake_urlopen)
+    monkeypatch.setattr("avanza_mcp.mcp.proxy.urlopen", fake_urlopen)
     payload = call_mcp_bridge({"url": "http://127.0.0.1", "token": "x"}, "avanza_status", {})
     assert payload["ok"] is False
     assert payload["error"] == "internal error"
@@ -4942,6 +4952,8 @@ def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
     from avanza_cli import AvanzaTradingTui
 
     monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
     monkeypatch.setattr(
         "avanza_cli.onepassword_credentials",
         lambda item, vault=None: {
