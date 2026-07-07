@@ -69,6 +69,12 @@ Show running app version:
 python avanza_cli.py --version
 ```
 
+Launch the browser trading console (see the Web UI section):
+
+```bash
+python avanza_cli.py web
+```
+
 Show account overview:
 
 ```bash

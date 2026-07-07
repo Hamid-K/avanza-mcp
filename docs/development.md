@@ -53,3 +53,27 @@ git diff --check
 ```
 
 Do not commit `.env`, credentials, generated caches, or local virtual environments.
+
+## Security Scanning
+
+GitHub Actions run automatically on the repository:
+
+- **CodeQL** (`.github/workflows/codeql.yml`) — static analysis of the
+  Python backend and the JavaScript frontend with the security-extended
+  query pack, on pushes/PRs to `main` and weekly.
+- **Dependency vulnerability audit** (`.github/workflows/security-audit.yml`)
+  — `pip-audit` over the exported uv lockfile plus `osv-scanner` over
+  `uv.lock` directly, on dependency changes and daily (new advisories hit
+  the daily run). OSV results land in the repository Security tab as SARIF.
+- **Dependency review** (`.github/workflows/dependency-review.yml`) — PRs
+  that introduce dependencies with known high-severity vulnerabilities fail
+  and get an explanatory comment.
+- **Dependabot** (`.github/dependabot.yml`) — weekly grouped update PRs for
+  Python packages and the workflow actions themselves; security updates are
+  enabled at the repository level.
+
+Frontend third-party code is not package-managed: the two CDN files (Vue,
+lightweight-charts) are version- and SRI-pinned in
+`avanza_mcp/web/static/index.html`, with committed fallback copies under
+`web/static/vendor/`. Bumping them means updating the URL, the integrity
+hash, and the vendor copy together.

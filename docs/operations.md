@@ -160,6 +160,18 @@ python avanza_cli.py transactions list \
   --types BUY,SELL,DIVIDEND
 ```
 
+## Web UI
+
+`python avanza_cli.py web` serves the browser trading console on
+`127.0.0.1:8787` (`--port` to change, `--no-browser` to skip auto-open).
+Paste the access token printed at startup (also in
+`.avanza_web_session.json`) into the login form, then add Avanza sessions
+from the browser. The Web UI and the TUI are mutually exclusive per
+checkout — `.avanza_ui.lock` enforces one at a time. Both manage the same
+MCP bridge and `.avanza_mcp_session.json` contract, so MCP clients work
+identically against either. Full details: `docs/web.md`.
+
+
 ## MCP Mode
 
 ### Register and run the MCP server
