@@ -28,11 +28,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: Export locked dependencies
-        run: uv export --frozen --no-dev --format requirements-txt > /tmp/locked-requirements.txt
+        run: uv export --frozen --no-dev --format requirements-txt > locked-requirements.txt
       - name: Audit against PyPI advisory + OSV databases
         uses: pypa/gh-action-pip-audit@v1.1.0
         with:
-          inputs: -r /tmp/locked-requirements.txt
+          inputs: locked-requirements.txt
 
   osv-scan:
     name: OSV scanner (lockfile)
