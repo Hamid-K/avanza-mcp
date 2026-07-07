@@ -3,15 +3,17 @@ from datetime import date, timedelta
 
 TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 
-from avanza_cli import (
+from avanza_mcp.mcp.proxy import (
     mcp_error,
     mcp_success,
     mcp_tool_response,
-    pane_weights_after_drag,
     read_mcp_message,
+    write_mcp_message,
+)
+from avanza_mcp.tui.layout import (
+    pane_weights_after_drag,
     side_panel_width_after_drag,
     ticket_pane_width_after_drag,
-    write_mcp_message,
 )
 from avanza_mcp.paper import (
     create_paper_order,
