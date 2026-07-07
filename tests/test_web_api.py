@@ -271,7 +271,7 @@ def test_live_cancel_requires_typed_confirm(with_session):
 
 
 def test_paper_mode_toggle(with_session, runtime):
-    response = with_session.post("/api/paper/mode", json={"enabled": False})
+    response = with_session.post("/api/paper/mode", json={"enabled": False, "acknowledge": True})
     assert response.status_code == 200
     assert runtime.kernel.paper_mode_enabled is False
     with_session.post("/api/paper/mode", json={"enabled": True})
@@ -386,3 +386,53 @@ def test_transactions_types_filter_parses(with_session):
     # upstream (502), not on parameter parsing (400).
     response = with_session.get("/api/transactions?types=BUY,SELL")
     assert response.status_code == 502
+
+
+def test_paper_mode_disable_requires_acknowledge(with_session, runtime):
+    """Issue #2 P1: leaving paper mode is an auditable, explicit action."""
+    response = with_session.post("/api/paper/mode", json={"enabled": False})
+    assert response.status_code == 403
+    assert runtime.kernel.paper_mode_enabled is True
+    response = with_session.post("/api/paper/mode", json={"enabled": False, "acknowledge": True})
+    assert response.status_code == 200
+    assert runtime.kernel.paper_mode_enabled is False
+    # re-enabling paper is always allowed without ceremony
+    response = with_session.post("/api/paper/mode", json={"enabled": True})
+    assert response.status_code == 200
+    assert runtime.kernel.paper_mode_enabled is True
+
+
+def test_verification_failure_surfaces_at_transport_level(with_session, runtime):
+    """Issue #2 P1: nested verification failure must not look like a clean ok."""
+    kernel = runtime.kernel
+    # the FakeAvanza portfolio holds TestStock with no stop-loss -> a real gap
+    response = kernel.handle_mcp_tool_call("avanza_verify_protection", {"account_id": "acc-1"})
+    assert response["ok"] is True  # the CALL succeeded
+    assert response["verification_ok"] is False  # ...but verification did not
+    assert response["result"]["gaps"]
+
+    class ProtectedAvanza(FakeAvanza):
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "sl-1",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "1234", "name": "TestStock"},
+                    "trigger": {"value": 5, "type": "FOLLOW_DOWNWARDS", "valueType": "percentage"},
+                    "order": {"type": "SELL", "volume": 10, "price": 99, "priceType": "percentage"},
+                }
+            ]
+
+    protected = ProtectedAvanza()
+    kernel.avanza = protected
+    kernel.account_snapshot_cache.clear()
+    kernel.latest_stoploss_items = []
+    for context in kernel.tenant_sessions.values():
+        context.avanza = protected
+        context.account_snapshots.clear()
+        context.latest_stoploss_items = []
+    response = kernel.handle_mcp_tool_call("avanza_verify_protection", {"account_id": "acc-1"})
+    assert response["ok"] is True
+    assert response["verification_ok"] is True
+    assert response["result"]["gaps"] == []

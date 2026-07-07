@@ -420,18 +420,27 @@ class CoreBridgeMixin:
         self.record_event("mcp", "tool_call", {"tool": tool, "arguments": arguments})
         try:
             result = self.execute_mcp_tool(tool, arguments)
-            self.write_mcp_log(f"[green]✓[/green] {tool}{mcp_result_log_suffix(result)}{mcp_result_log_detail(result)}")
+            verification_ok: bool | None = None
+            if isinstance(result, dict) and "ok" in result:
+                verification_ok = bool(result["ok"])
+            if verification_ok is False:
+                self.write_mcp_log(f"[yellow]⚠ {tool}: call succeeded but verification FAILED.[/yellow]")
+            else:
+                self.write_mcp_log(f"[green]✓[/green] {tool}{mcp_result_log_suffix(result)}{mcp_result_log_detail(result)}")
             self.record_event(
                 "mcp",
                 "tool_result",
-                {"tool": tool, "ok": True, "summary": summarize_mcp_result(result)},
+                {"tool": tool, "ok": True, "verification_ok": verification_ok, "summary": summarize_mcp_result(result)},
             )
-            return {
+            response = {
                 "ok": True,
                 "tool": tool,
                 "read_write": self.mcp_write_enabled,
                 "result": result,
             }
+            if verification_ok is not None:
+                response["verification_ok"] = verification_ok
+            return response
         except Exception as exc:
             self.write_mcp_log(f"[red]✗ {tool}:[/red] {exc}")
             self.record_event("mcp", "tool_error", {"tool": tool, "error": str(exc)})
@@ -1117,6 +1126,9 @@ class CoreBridgeMixin:
                 orderbook_ids=ids,
                 full_holding=bool(arguments.get("full_holding", True)),
                 exclude_eth=bool(arguments.get("exclude_eth", True)),
+                coverage_target_percent=float(arguments.get("coverage_target_percent", 100.0)),
+                exclude_orderbook_ids=[str(item) for item in (arguments.get("exclude_orderbook_ids") or [])],
+                exclude_non_stop_eligible=bool(arguments.get("exclude_non_stop_eligible", True)),
             )
 
         if tool == "avanza_realtime_quotes":

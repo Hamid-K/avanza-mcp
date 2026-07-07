@@ -259,7 +259,19 @@ async def paper_mode(request: Request):
     kernel = _kernel(request)
     body = await request.json()
     enabled = bool(body.get("enabled", True))
+    if not enabled and not bool(body.get("acknowledge", False)):
+        # Leaving paper mode arms LIVE ticket submissions; require an explicit,
+        # server-verified acknowledgement so it cannot happen by accident.
+        return JSONResponse(
+            {"error": "acknowledge_required", "detail": "Confirm that ticket submissions become LIVE orders."},
+            status_code=403,
+        )
     kernel.paper_mode_enabled = enabled
+    kernel.record_event(
+        "trading",
+        "paper_mode_toggled_from_web",
+        {"paper_mode": enabled, "acknowledged": not enabled},
+    )
     kernel.write_log(f"Paper trading mode {'enabled' if enabled else 'DISABLED — live trading ticket'} (web).")
     kernel.on_state_changed("mcp_status")
     return {"ok": True, "paper_mode": kernel.paper_mode_enabled}

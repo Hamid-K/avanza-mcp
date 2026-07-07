@@ -5,7 +5,7 @@ import re
 import time
 
 from avanza.constants import TransactionsDetailsType
-from avanza_mcp import avanza_ext
+from avanza_mcp import avanza_ext, utils
 from avanza_mcp.config import (
     ACCOUNT_READ_CACHE_SECONDS,
     KNOWN_ORDERBOOK_METADATA,
@@ -62,6 +62,7 @@ from avanza_mcp.records import (
     transaction_history_dict_row,
     transaction_matches_instrument_filters,
     transaction_order_book_id,
+    transaction_volume,
     transactions_items,
 )
 from avanza_mcp.rendering import (
@@ -1134,15 +1135,19 @@ class CoreSnapshotsMixin:
         *,
         exclude_orderbook_ids: list[str] | None = None,
         exclude_eth: bool = False,
+        coverage_target_percent: float = 100.0,
+        exclude_non_stop_eligible: bool = False,
     ) -> dict[str, Any]:
         account_id = account_id or self.require_selected_account_id()
         excludes = {str(item) for item in (exclude_orderbook_ids or [])}
+        target_fraction = max(0.0, min(float(coverage_target_percent), 100.0)) / 100.0
         _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
         stoploss_items = self.filtered_stoploss_items(avanza, account_id)
         stoplosses_by_orderbook: dict[str, list[dict[str, Any]]] = {}
         for item in stoploss_items:
             stoplosses_by_orderbook.setdefault(stop_loss_order_book_id(item), []).append(item)
         rows: list[dict[str, Any]] = []
+        skipped_non_eligible: list[dict[str, str]] = []
         for position in positions:
             orderbook_id = position_order_book_id(position)
             stock = str(nested_value(position, "instrument", "name") or "")
@@ -1150,21 +1155,33 @@ class CoreSnapshotsMixin:
                 continue
             if exclude_eth and instrument_is_eth_like(stock, orderbook_id):
                 continue
+            if exclude_non_stop_eligible:
+                instrument_type = str(nested_value(position, "instrument", "type") or "").upper()
+                if not orderbook_id or instrument_type in {"FUND", "MUTUAL_FUND", "EXCHANGE_TRADED_FUND"}:
+                    skipped_non_eligible.append({"stock": stock, "orderbook_id": orderbook_id, "instrument_type": instrument_type})
+                    continue
             summary = summarize_stop_protection(position, stoplosses_by_orderbook.get(orderbook_id, []))
-            if summary["sell_protection_gap"] <= 0 and summary["failed_stop_volume"] <= 0:
+            target_volume = summary["holding_volume"] * target_fraction
+            adjusted_gap = max(target_volume - summary["active_sell_stop_volume"], 0.0)
+            if adjusted_gap <= 0 and summary["failed_stop_volume"] <= 0:
                 continue
             rows.append(
                 {
                     "stock": stock,
                     "orderbook_id": orderbook_id,
                     **summary,
+                    "coverage_target_percent": coverage_target_percent,
+                    "target_sell_stop_volume": target_volume,
+                    "adjusted_protection_gap": adjusted_gap,
                 }
             )
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "account_id": account_id,
             "count": len(rows),
+            "coverage_target_percent": coverage_target_percent,
             "gaps": rows,
+            "skipped_non_stop_eligible": skipped_non_eligible,
         }
 
     def sold_today_buyback_state_snapshot(
@@ -1201,6 +1218,17 @@ class CoreSnapshotsMixin:
         positions_by_orderbook = {position_order_book_id(item): item for item in positions}
         stoploss_items = self.filtered_stoploss_items(avanza, account_id)
         _orders_payload, order_items = self.filtered_open_order_items(avanza, account_id)
+        # Same-day executed BUY fills per orderbook: already-completed buy-backs
+        # must be netted so they are not reported as missing again.
+        buy_fill_volume_by_orderbook: dict[str, float] = {}
+        for item in items:
+            if not transaction_matches_instrument_filters(item, account_id=account_id, side="BUY", executed_only=True):
+                continue
+            fill_orderbook = transaction_order_book_id(item)
+            if fill_orderbook:
+                buy_fill_volume_by_orderbook[fill_orderbook] = (
+                    buy_fill_volume_by_orderbook.get(fill_orderbook, 0.0) + transaction_volume(item)
+                )
         rows: list[dict[str, Any]] = []
         for sold in sold_rows:
             orderbook_id = str(sold.get("orderbook_id") or "")
@@ -1229,24 +1257,43 @@ class CoreSnapshotsMixin:
                 for item in order_items
                 if open_order_order_book_id(item) == orderbook_id
             ]
+            failed_statuses = {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
             failed_orders = [
                 row
                 for row in generated_orders
-                if str(row.get("Status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+                if str(row.get("Status", "")).upper() in failed_statuses
             ]
+            open_buy_order_volume = 0.0
+            failed_buy_order_volume = 0.0
+            for row in generated_orders:
+                if str(row.get("Side", "")).upper() != "BUY":
+                    continue
+                volume = utils.scalar_number(row.get("Volume")) or 0.0
+                if str(row.get("Status", "")).upper() in failed_statuses:
+                    failed_buy_order_volume += volume
+                else:
+                    open_buy_order_volume += volume
             current_holding = position_volume(positions_by_orderbook.get(orderbook_id, {}))
             sold_volume = float(sold.get("sold_volume") or 0.0)
             active_buyback_volume = tight_volume + deep_volume + unclassified_volume
+            filled_buyback_volume = buy_fill_volume_by_orderbook.get(orderbook_id, 0.0)
+            missing = max(
+                sold_volume - filled_buyback_volume - active_buyback_volume - open_buy_order_volume,
+                0.0,
+            )
             rows.append(
                 {
                     **sold,
                     "current_holding": current_holding,
+                    "same_day_buy_fill_volume": filled_buyback_volume,
                     "active_tight_buyback_volume": tight_volume,
                     "active_deep_buyback_volume": deep_volume,
                     "active_unclassified_buyback_volume": unclassified_volume,
+                    "open_buy_order_volume": open_buy_order_volume,
+                    "failed_buy_order_volume": failed_buy_order_volume,
                     "generated_open_orders": generated_orders,
                     "failed_raw_orders": failed_orders,
-                    "missing_buyback_volume": max(sold_volume - active_buyback_volume, 0.0),
+                    "missing_buyback_volume": missing,
                     "tight_trigger_percent_max": tight_trigger_percent_max,
                 }
             )
@@ -1325,15 +1372,21 @@ class CoreSnapshotsMixin:
         orderbook_ids: list[str] | None = None,
         full_holding: bool = True,
         exclude_eth: bool = True,
+        coverage_target_percent: float = 100.0,
+        exclude_orderbook_ids: list[str] | None = None,
+        exclude_non_stop_eligible: bool = True,
     ) -> dict[str, Any]:
         account_id = account_id or self.require_selected_account_id()
         ids = {str(item) for item in (orderbook_ids or []) if str(item)}
-        gaps = self.protection_gaps_snapshot(
+        gaps_payload = self.protection_gaps_snapshot(
             avanza,
             account_id,
-            exclude_orderbook_ids=[],
+            exclude_orderbook_ids=list(exclude_orderbook_ids or []),
             exclude_eth=exclude_eth,
-        )["gaps"]
+            coverage_target_percent=coverage_target_percent,
+            exclude_non_stop_eligible=exclude_non_stop_eligible,
+        )
+        gaps = gaps_payload["gaps"]
         if ids:
             gaps = [item for item in gaps if str(item.get("orderbook_id") or "") in ids]
         if not full_holding:
@@ -1344,6 +1397,10 @@ class CoreSnapshotsMixin:
             "orderbook_ids": sorted(ids),
             "full_holding": full_holding,
             "exclude_eth": exclude_eth,
+            "coverage_target_percent": coverage_target_percent,
+            "excluded_orderbook_ids": sorted({str(i) for i in (exclude_orderbook_ids or [])}),
+            "exclude_non_stop_eligible": exclude_non_stop_eligible,
+            "skipped_non_stop_eligible": gaps_payload.get("skipped_non_stop_eligible", []),
             "gaps": gaps,
         }
 

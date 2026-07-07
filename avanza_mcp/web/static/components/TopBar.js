@@ -71,7 +71,7 @@ export default defineComponent({
       const next = !store.meta.paper_mode;
       if (!next && !confirm("Disable paper mode? Ticket submissions become LIVE orders (typed PLACE still required).")) return;
       try {
-        const result = await api.post("/api/paper/mode", { enabled: next });
+        const result = await api.post("/api/paper/mode", { enabled: next, acknowledge: !next });
         store.meta.paper_mode = result.paper_mode;
         toast(result.paper_mode ? "Paper mode ON" : "Paper mode OFF — live tickets", result.paper_mode ? "info" : "warning");
       } catch (exc) { toast(exc.message, "error"); }

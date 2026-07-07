@@ -1663,7 +1663,11 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     acn = next(row for row in buybacks["items"] if row["orderbook_id"] == "ob-acn")
     assert acn["sold_volume"] == 4
     assert acn["active_tight_buyback_volume"] == 2
-    assert acn["missing_buyback_volume"] == 2
+    # issue #2 P1: same-day BUY fills and open BUY orders are netted now:
+    # 4 sold - 1 same-day fill - 2 active BUY stops - 2 open BUY order = 0 missing
+    assert acn["same_day_buy_fill_volume"] == 1
+    assert acn["open_buy_order_volume"] == 2
+    assert acn["missing_buyback_volume"] == 0
 
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
