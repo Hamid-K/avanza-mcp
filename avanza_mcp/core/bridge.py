@@ -1876,7 +1876,8 @@ class CoreBridgeMixin:
                 if deprecated_alias:
                     payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
                 return payload
-            delete_result = avanza.delete_stop_loss_order(preview["account_id"], stop_loss_id)
+            # Place the replacement BEFORE deleting the old stop so a failed
+            # placement can never leave the position unprotected.
             place_result = avanza.place_stop_loss_order(
                 parent_stop_loss_id=preview["parent_stop_loss_id"],
                 account_id=preview["account_id"],
@@ -1884,7 +1885,18 @@ class CoreBridgeMixin:
                 stop_loss_trigger=trigger,
                 stop_loss_order_event=order_event,
             )
-            result = {"delete": delete_result, "place": place_result}
+            try:
+                delete_result = avanza.delete_stop_loss_order(preview["account_id"], stop_loss_id)
+                protection_state = "replaced"
+            except Exception as exc:
+                delete_result = {"error": str(exc)}
+                protection_state = "duplicate_protection"
+                warnings = [
+                    *warnings,
+                    f"Replacement placed, but deleting old stop-loss {stop_loss_id} failed: {exc}. "
+                    "BOTH stops may be active — review and delete manually.",
+                ]
+            result = {"delete": delete_result, "place": place_result, "protection_state": protection_state}
             self.record_event(
                 "trading",
                 "live_stoploss_edit",

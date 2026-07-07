@@ -241,3 +241,99 @@ def test_submit_paper_order_appends_ledger(monkeypatch, tmp_path):
     assert kernel.paper_session["orders"][-1]["id"] == order["id"]
     events = [e.get("type") for e in kernel.paper_session.get("events", [])]
     assert "paper_order_set_from_test" in events
+
+
+def test_stoploss_replacement_places_before_deleting():
+    """Issue #2 P0/P1: a failed replacement must never remove existing protection."""
+    from datetime import date, timedelta
+
+    kernel = make_kernel()
+    kernel.active_session_id = "s1"
+    kernel.selected_account_id = "a1"
+    calls = []
+
+    class FakeAvanza:
+        def place_stop_loss_order(self, **kwargs):
+            calls.append("place")
+            return {"status": "SUCCESS", "stoplossOrderId": "new-1"}
+
+        def delete_stop_loss_order(self, account_id, stop_loss_id):
+            calls.append(("delete", stop_loss_id))
+            return {"deleted": True}
+
+    kernel.avanza = FakeAvanza()
+    trigger, order_event, preview = build_stop_loss_request_from_fields(
+        {
+            "account_id": "a1", "order_book_id": "123",
+            "valid_until": date.today() + timedelta(days=5),
+            "trigger_type": "follow_downwards", "trigger_value": 5.0,
+            "trigger_value_type": "percentage", "order_type": "sell",
+            "order_price": 2.0, "volume": 10, "order_valid_days": 1,
+            "order_price_type": "percentage",
+        }
+    )
+    result = kernel.submit_live_stop_loss(trigger, order_event, preview, replace_stoploss_id="old-1", source="test")
+    assert calls == ["place", ("delete", "old-1")]  # place strictly first
+    assert result["protection_state"] == "replaced"
+    assert result["replaced_stop_loss_id"] == "old-1"
+
+
+def test_stoploss_replacement_place_failure_keeps_old_stop():
+    from datetime import date, timedelta
+
+    kernel = make_kernel()
+    kernel.active_session_id = "s1"
+    kernel.selected_account_id = "a1"
+    deletes = []
+
+    class FakeAvanza:
+        def place_stop_loss_order(self, **kwargs):
+            raise RuntimeError("duplicate stop rejected")
+
+        def delete_stop_loss_order(self, account_id, stop_loss_id):
+            deletes.append(stop_loss_id)
+            return {"deleted": True}
+
+    kernel.avanza = FakeAvanza()
+    trigger, order_event, preview = build_stop_loss_request_from_fields(
+        {
+            "account_id": "a1", "order_book_id": "123",
+            "valid_until": date.today() + timedelta(days=5),
+            "trigger_type": "follow_downwards", "trigger_value": 5.0,
+            "trigger_value_type": "percentage", "order_type": "sell",
+            "order_price": 2.0, "volume": 10, "order_valid_days": 1,
+            "order_price_type": "percentage",
+        }
+    )
+    with pytest.raises(RuntimeError, match="duplicate stop rejected"):
+        kernel.submit_live_stop_loss(trigger, order_event, preview, replace_stoploss_id="old-1", source="test")
+    assert deletes == []  # old protection untouched
+
+
+def test_stoploss_replacement_delete_failure_reports_duplicate_protection():
+    from datetime import date, timedelta
+
+    kernel = make_kernel()
+    kernel.active_session_id = "s1"
+    kernel.selected_account_id = "a1"
+
+    class FakeAvanza:
+        def place_stop_loss_order(self, **kwargs):
+            return {"status": "SUCCESS", "stoplossOrderId": "new-1"}
+
+        def delete_stop_loss_order(self, account_id, stop_loss_id):
+            raise RuntimeError("delete timed out")
+
+    kernel.avanza = FakeAvanza()
+    trigger, order_event, preview = build_stop_loss_request_from_fields(
+        {
+            "account_id": "a1", "order_book_id": "123",
+            "valid_until": date.today() + timedelta(days=5),
+            "trigger_type": "follow_downwards", "trigger_value": 5.0,
+            "trigger_value_type": "percentage", "order_type": "sell",
+            "order_price": 2.0, "volume": 10, "order_valid_days": 1,
+            "order_price_type": "percentage",
+        }
+    )
+    result = kernel.submit_live_stop_loss(trigger, order_event, preview, replace_stoploss_id="old-1", source="test")
+    assert result["protection_state"] == "duplicate_protection"

@@ -176,7 +176,9 @@ class CoreTradingMixin:
 
         account_id = str(preview.get("account_id") or "").strip() or self.require_selected_account_id()
         if replace_stoploss_id:
-            delete_result = avanza.delete_stop_loss_order(account_id, replace_stoploss_id)
+            # Place the replacement BEFORE deleting the old stop so a failed
+            # placement can never leave the position unprotected. If Avanza
+            # rejects a duplicate stop, the old one is still intact.
             result = avanza.place_stop_loss_order(
                 parent_stop_loss_id="0",
                 account_id=account_id,
@@ -184,11 +186,29 @@ class CoreTradingMixin:
                 stop_loss_trigger=trigger,
                 stop_loss_order_event=order_event,
             )
+            try:
+                delete_result = avanza.delete_stop_loss_order(account_id, replace_stoploss_id)
+                protection_state = "replaced"
+            except Exception as exc:
+                delete_result = {"error": str(exc)}
+                protection_state = "duplicate_protection"
+                self.write_log(
+                    f"[yellow]Warning:[/yellow] replacement stop-loss placed, but deleting the old one "
+                    f"({replace_stoploss_id}) failed: {exc}. BOTH stops may now be active — review and delete manually."
+                )
             self.record_event(
                 "trading",
                 f"live_stoploss_replace_from_{source}",
-                {"stop_loss_id": replace_stoploss_id, "delete_result": delete_result, "request": preview, "result": result},
+                {
+                    "stop_loss_id": replace_stoploss_id,
+                    "delete_result": delete_result,
+                    "protection_state": protection_state,
+                    "request": preview,
+                    "result": result,
+                },
             )
+            if isinstance(result, dict):
+                result = {**result, "replaced_stop_loss_id": replace_stoploss_id, "protection_state": protection_state}
         else:
             result = avanza.place_stop_loss_order(
                 parent_stop_loss_id="0",
