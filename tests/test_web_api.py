@@ -312,7 +312,7 @@ def test_mcp_bridge_start_stop_writes_session_file(with_session, runtime, monkey
 def test_mcp_read_write_toggle_revokes_live(with_session, runtime, monkeypatch, tmp_path):
     monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
     with_session.post("/api/mcp/read-write", json={"enabled": True})
-    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "confirm_text": "LIVE"})
+    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "acknowledge": True})
     assert response.json()["live_trading"] is True
     assert runtime.kernel.live_mutations_allowed() is False  # paper mode still on
     runtime.kernel.paper_mode_enabled = False
@@ -325,12 +325,12 @@ def test_mcp_read_write_toggle_revokes_live(with_session, runtime, monkeypatch, 
     assert payload["live_trading"] is False  # auto-revoked
 
 
-def test_mcp_live_trading_requires_rw_and_confirm(with_session):
-    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "confirm_text": "LIVE"})
+def test_mcp_live_trading_requires_rw_and_acknowledge(with_session):
+    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "acknowledge": True})
     assert response.status_code == 409  # R/W off
     with_session.post("/api/mcp/read-write", json={"enabled": True})
-    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "confirm_text": "live"})
-    assert response.status_code == 403  # wrong confirm
+    response = with_session.post("/api/mcp/live-trading", json={"enabled": True})
+    assert response.status_code == 403  # acknowledgement checkbox not ticked
     with_session.post("/api/mcp/read-write", json={"enabled": False})
 
 

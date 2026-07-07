@@ -2,16 +2,13 @@
 import { defineComponent, ref, onMounted, computed, nextTick, watch } from "vue";
 import { api } from "../api.js";
 import { store, toast } from "../store.js";
-import ConfirmTyped from "./ConfirmTyped.js";
 
 export default defineComponent({
   name: "McpPanel",
-  components: { ConfirmTyped },
   setup() {
     const busy = ref(false);
     const error = ref("");
-    const armLiveOpen = ref(false);
-    const confirmText = ref("");
+    const armAcknowledged = ref(false);
     const logHost = ref(null);
     const status = computed(() => store.mcp);
 
@@ -34,8 +31,9 @@ export default defineComponent({
     const toggleReadWrite = () => call("/api/mcp/read-write", { enabled: !status.value.read_write });
 
     async function armLive() {
-      await call("/api/mcp/live-trading", { enabled: true, confirm_text: confirmText.value });
-      if (!error.value) { armLiveOpen.value = false; confirmText.value = ""; toast("Live trading authorized for this session", "warning"); }
+      if (!armAcknowledged.value) return;
+      await call("/api/mcp/live-trading", { enabled: true, acknowledge: true });
+      if (!error.value) { armAcknowledged.value = false; toast("Live trading authorized for this session", "warning"); }
     }
     const revokeLive = () => call("/api/mcp/live-trading", { enabled: false });
 
@@ -50,7 +48,7 @@ export default defineComponent({
     });
 
     onMounted(refreshStatus);
-    return { store, status, busy, error, armLiveOpen, confirmText, logHost,
+    return { store, status, busy, error, armAcknowledged, logHost,
              toggleBridge, toggleReadWrite, armLive, revokeLive, copy };
   },
   template: `
@@ -76,23 +74,18 @@ export default defineComponent({
             <input type="checkbox" :checked="status.live_trading" disabled>
             <div style="flex:1"><strong>Live trading authorization</strong>
               <div class="muted">Per-session arming for live MCP mutations. Requires R/W; each mutating call still needs confirm:true.</div>
-              <div style="margin-top:6px">
-                <button v-if="!status.live_trading" class="danger" :disabled="busy || !status.read_write"
-                        @click="armLiveOpen = true">Arm live trading…</button>
-                <button v-else class="warn" :disabled="busy" @click="revokeLive">Revoke</button>
+              <div v-if="!status.live_trading" class="arm-live-box" :class="{ inactive: !status.read_write }">
+                <label class="check-row arm-live-check">
+                  <input type="checkbox" v-model="armAcknowledged" :disabled="busy || !status.read_write">
+                  I understand MCP tools may place and cancel REAL orders
+                </label>
+                <button class="danger" :disabled="busy || !status.read_write || !armAcknowledged"
+                        @click="armLive">Authorize live trading</button>
+              </div>
+              <div v-else style="margin-top:6px">
+                <button class="warn" :disabled="busy" @click="revokeLive">Revoke live trading</button>
               </div>
             </div>
-          </div>
-        </div>
-        <div v-if="armLiveOpen" class="review-card fade-in">
-          <h3>Arm live trading</h3>
-          <div class="warn-text" style="font-size: var(--fs-small)">
-            MCP tools will be able to place and cancel real orders (with confirm:true per call).
-          </div>
-          <ConfirmTyped word="LIVE" @armed="confirmText = $event" />
-          <div class="modal-actions">
-            <button class="ghost" @click="armLiveOpen = false">Back</button>
-            <button class="danger" :disabled="confirmText !== 'LIVE' || busy" @click="armLive">Authorize</button>
           </div>
         </div>
         <div class="error" role="alert">{{ error }}</div>

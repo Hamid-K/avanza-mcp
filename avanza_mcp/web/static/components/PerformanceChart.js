@@ -4,15 +4,15 @@ import { api } from "../api.js";
 import { store } from "../store.js";
 
 const PERIODS = [
-  ["week", "1W"], ["month", "1M"], ["three_months", "3M"],
-  ["this_year", "YTD"], ["one_year", "1Y"], ["three_years", "3Y"],
+  ["ONE_WEEK", "1W"], ["ONE_MONTH", "1M"], ["THREE_MONTHS", "3M"],
+  ["YTD", "YTD"], ["ONE_YEAR", "1Y"], ["THREE_YEARS", "3Y"], ["SINCE_START", "All"],
 ];
 
 export default defineComponent({
   name: "PerformanceChart",
   setup() {
     const host = ref(null);
-    const period = ref("month");
+    const period = ref("ONE_MONTH");
     const loading = ref(false);
     const error = ref("");
     const summaryText = ref("");
@@ -26,12 +26,17 @@ export default defineComponent({
       error.value = "";
       try {
         const payload = await api.get(`/api/performance?period=${period.value}`);
-        const points = (payload.chart_points || payload.points || [])
-          .map((p) => ({ time: String(p.date || p.time || "").slice(0, 10), value: Number(p.value ?? p.equity ?? 0) }))
+        const points = (payload.chart_points || [])
+          .map((p) => {
+            let time = String(p.date || "").slice(0, 10);
+            if (!time && p.timestamp) time = new Date(Number(p.timestamp)).toISOString().slice(0, 10);
+            const value = p.account_value?.value ?? p.development_absolute?.value;
+            return { time, value: Number(value) };
+          })
           .filter((p) => p.time && Number.isFinite(p.value));
-        const summary = payload.summary || {};
-        if (summary.percent !== undefined && summary.percent !== null) {
-          summaryText.value = `${summary.percent >= 0 ? "+" : ""}${Number(summary.percent).toFixed(2)}%`;
+        const percent = payload.development_relative?.value;
+        if (percent !== undefined && percent !== null) {
+          summaryText.value = `${percent >= 0 ? "+" : ""}${Number(percent).toFixed(2)}%`;
         }
         draw(points);
       } catch (exc) {
@@ -41,19 +46,27 @@ export default defineComponent({
       }
     }
 
+    let lastPoints = [];
+
+    function cssVar(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
     function draw(points) {
+      lastPoints = points;
       if (!host.value || typeof LightweightCharts === "undefined") return;
       if (!chart) {
         chart = LightweightCharts.createChart(host.value, {
-          layout: { background: { color: "transparent" }, textColor: "#7d8899", fontSize: 11 },
-          grid: { vertLines: { color: "#1b2130" }, horzLines: { color: "#1b2130" } },
-          rightPriceScale: { borderColor: "#232a38" },
-          timeScale: { borderColor: "#232a38" },
+          layout: { background: { color: "transparent" }, textColor: cssVar("--muted"), fontSize: 11 },
+          grid: { vertLines: { color: cssVar("--panel-3") }, horzLines: { color: cssVar("--panel-3") } },
+          rightPriceScale: { borderColor: cssVar("--border") },
+          timeScale: { borderColor: cssVar("--border") },
           height: 200,
           autoSize: true,
         });
+        const accent = cssVar("--session-color") || "#3b82f6";
         series = chart.addAreaSeries({
-          lineColor: "#3b82f6", topColor: "rgba(59,130,246,0.25)", bottomColor: "rgba(59,130,246,0.02)",
+          lineColor: accent, topColor: accent + "40", bottomColor: accent + "05",
           lineWidth: 2, priceLineVisible: false,
         });
       }
@@ -61,13 +74,20 @@ export default defineComponent({
       chart.timeScale().fitContent();
     }
 
+    function rebuildChart() {
+      if (chart) { chart.remove(); chart = null; series = null; }
+      draw(lastPoints);
+    }
+
     onMounted(() => {
       load();
       resizeObserver = new ResizeObserver(() => chart && chart.applyOptions({}));
       if (host.value) resizeObserver.observe(host.value);
+      window.addEventListener("themechange", rebuildChart);
     });
     onUnmounted(() => {
       if (resizeObserver) resizeObserver.disconnect();
+      window.removeEventListener("themechange", rebuildChart);
       if (chart) { chart.remove(); chart = null; series = null; }
     });
     watch(period, load);

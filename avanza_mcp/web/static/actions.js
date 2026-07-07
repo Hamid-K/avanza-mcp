@@ -5,9 +5,16 @@ import { store, toast, applySessionAccent } from "./store.js";
 export async function hydrateAll() {
   store.meta = await api.get("/api/meta");
   await hydrateSessions();
+  const tasks = [hydrateMcp()];
   if (store.sessions.length) {
-    await Promise.all([hydratePortfolio(), hydrateOrders(), hydrateStoplosses()]);
+    tasks.push(hydratePortfolio(), hydrateOrders(), hydrateStoplosses());
   }
+  await Promise.all(tasks);
+}
+
+export async function hydrateMcp() {
+  store.mcp = await api.get("/api/mcp/status");
+  store.mcpLog = (await api.get("/api/mcp/log")).entries || [];
 }
 
 export async function hydrateSessions() {

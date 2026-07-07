@@ -10,9 +10,11 @@ from typing import Any
 from avanza_mcp.config import PROFIT_METRIC_MODES
 from avanza_mcp.records import position_mcp_dict, stop_loss_mcp_dict
 from avanza_mcp.rendering import (
+    account_display_name,
     account_performance_window_summary,
     account_profit_summary_from_avanza,
     amount,
+    compact_account_type,
     market_clock_text,
     open_order_mcp_dict,
     portfolio_day_summary,
@@ -26,8 +28,8 @@ def account_summary(account: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     return {
         "id": str(account.get("id", "")),
-        "name": str(account.get("name", "")),
-        "type": str(account.get("type", "") or account.get("accountType", "")),
+        "name": account_display_name(account),
+        "type": compact_account_type(account.get("type", "") or account.get("accountType", "")),
         "total_value": amount(account, "totalValue"),
         "buying_power": amount(account, "buyingPower"),
         "status": str(account.get("status", "")) or "-",

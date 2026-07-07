@@ -6,6 +6,7 @@ import { connectWs } from "./ws.js";
 import LoginView from "./components/LoginView.js";
 import AppShell from "./components/AppShell.js";
 import { hydrateAll } from "./actions.js";
+import { applyStoredTheme } from "./theme.js";
 
 const Toasts = defineComponent({
   name: "Toasts",
@@ -69,4 +70,5 @@ const Root = defineComponent({
   },
 });
 
+applyStoredTheme();
 createApp(Root).mount("#app");

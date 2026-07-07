@@ -49,9 +49,10 @@ with an SSH tunnel (`ssh -L 8787:127.0.0.1:8787 host`).
   reviewed payload, so a blind one-shot POST cannot trade and what you
   reviewed is exactly what runs.
 - **MCP gates are separate.** The MCP R/W toggle and per-session
-  live-trading authorization (typed `LIVE`) gate MCP tool calls only,
-  exactly as in the TUI; mutating MCP calls additionally need
-  `confirm: true` per call.
+  live-trading authorization (an explicit acknowledgement checkbox, enforced
+  server-side via an `acknowledge` flag and only available while R/W is on)
+  gate MCP tool calls only, exactly as in the TUI; mutating MCP calls
+  additionally need `confirm: true` per call.
 
 ## MCP from the web
 
@@ -70,7 +71,7 @@ TUI-managed MCP.
 | Data | `GET /api/accounts`, `POST /api/accounts/{id}/select`, `GET /api/portfolio`, `GET /api/orders/open`, `GET /api/stoplosses`, `GET /api/transactions?from_date&to_date&types`, `GET /api/search?q=`, `GET /api/quote/{order_book_id}`, `GET /api/performance?period=`, `GET /api/market/status`, `POST /api/refresh` |
 | Trading | `POST /api/orders/dry-run`, `POST /api/orders/place`, `POST /api/stoplosses/dry-run`, `POST /api/stoplosses/place`, `POST /api/orders/cancel`, `POST /api/paper/mode` |
 | Paper / TV | `GET /api/paper/state`, `GET /api/tv/lists?list_id=` |
-| MCP | `GET /api/mcp/status`, `GET /api/mcp/log`, `POST /api/mcp/bridge`, `POST /api/mcp/read-write`, `POST /api/mcp/live-trading` |
+| MCP | `GET /api/mcp/status`, `GET /api/mcp/log`, `POST /api/mcp/bridge`, `POST /api/mcp/read-write`, `POST /api/mcp/live-trading` (requires `acknowledge: true`) |
 | Live updates | `GET /ws` — channels: portfolio, sessions, orders, stoplosses, paper, mcp_status, mcp_log, notice, login_progress, update_check |
 
 ## Manual smoke checklist

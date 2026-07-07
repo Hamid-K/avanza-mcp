@@ -85,9 +85,9 @@ async def mcp_live_trading(request: Request):
                 {"error": "read_write_required", "detail": "Enable MCP R/W mode before authorizing live trading."},
                 status_code=409,
             )
-        if str(body.get("confirm_text", "")) != "LIVE":
+        if not bool(body.get("acknowledge", False)):
             return JSONResponse(
-                {"error": "confirm_required", "detail": 'Type "LIVE" to authorize live trading for this session.'},
+                {"error": "acknowledge_required", "detail": "Tick the acknowledgement checkbox to authorize live trading."},
                 status_code=403,
             )
 

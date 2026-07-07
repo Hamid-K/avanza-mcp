@@ -3,6 +3,7 @@ import { defineComponent, ref, computed, onMounted, onUnmounted } from "vue";
 import { store } from "../store.js";
 import { activateSession, selectAccount, manualRefresh, logoutSession } from "../actions.js";
 import { api } from "../api.js";
+import { currentTheme, toggleTheme } from "../theme.js";
 import { toast } from "../store.js";
 
 const PROFIT_ORDER = ["day", "week", "month", "year", "since_start", "total"];
@@ -54,6 +55,9 @@ export default defineComponent({
       if (value && value !== store.activeSessionId) await activateSession(value);
     }
 
+    const theme = ref(currentTheme());
+    function onToggleTheme() { theme.value = toggleTheme(); }
+
     async function togglePaperMode() {
       const next = !store.meta.paper_mode;
       if (!next && !confirm("Disable paper mode? Ticket submissions become LIVE orders (typed PLACE still required).")) return;
@@ -78,7 +82,7 @@ export default defineComponent({
     return {
       store, props, emit, profitMode, cycleProfit, fmtProfit, profitClass,
       activeSession, account, profit, clock, onSessionChange, onAccountChange, manualRefresh,
-      togglePaperMode, logoutActive,
+      togglePaperMode, logoutActive, theme, onToggleTheme,
     };
   },
   template: `
@@ -138,6 +142,9 @@ export default defineComponent({
         </button>
         <span v-if="store.meta.update?.outdated" class="badge warn-text" :title="store.meta.update.text">update</span>
         <span class="clock mono muted">{{ clock }}</span>
+        <button class="ghost" @click="onToggleTheme" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'">
+          {{ theme === "light" ? "☾" : "☀" }}
+        </button>
         <button class="ghost" @click="manualRefresh" title="Refresh now (r)">⟳</button>
         <button class="ghost" @click="logoutActive" title="Log out active session">⎋</button>
       </div>

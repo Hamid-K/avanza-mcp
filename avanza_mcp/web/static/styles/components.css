@@ -234,3 +234,22 @@
 .paper-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
 .summary-cards { display: flex; flex-wrap: wrap; gap: 18px; }
 .summary-cards .metric { text-align: left; }
+
+/* ---------- Dual console (Activity | MCP Live) ---------- */
+.console-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-width: 0; }
+.console-pane { min-width: 0; display: grid; gap: 6px; align-content: start; }
+.console-pane.mcp-pane { border-left: 2px solid var(--warn); padding-left: 10px; }
+
+/* ---------- Live-trading arming checkbox ---------- */
+.arm-live-box {
+  margin-top: 8px;
+  border: 2px dotted var(--warn);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  background: color-mix(in srgb, var(--down) 6%, transparent);
+}
+.arm-live-box.inactive { opacity: 0.5; }
+.arm-live-check { color: var(--down); font-weight: 600; }
+.arm-live-check input { accent-color: var(--down); width: 16px; height: 16px; }

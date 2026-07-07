@@ -58,3 +58,30 @@
   --t-fast: 120ms;
   --t-med: 200ms;
 }
+
+/* Light theme — toggled via <html data-theme="light">, persisted in localStorage. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f2f4f9;
+  --panel: #ffffff;
+  --panel-2: #f0f3f8;
+  --panel-3: #e5eaf3;
+  --border: #d5dbe7;
+  --border-strong: #b8c2d4;
+
+  --text: #23303f;
+  --text-strong: #0c1521;
+  --muted: #5d6b81;
+  --faint: #8d99ac;
+
+  --up: #0f9d63;
+  --up-dim: #c9ecd9;
+  --down: #d92d3f;
+  --down-dim: #f6d4d8;
+  --warn: #a86e08;
+  --info: #1f6feb;
+
+  --shadow-drawer: -12px 0 32px rgba(30, 41, 59, 0.18);
+  --shadow-pop: 0 8px 28px rgba(30, 41, 59, 0.2);
+}
