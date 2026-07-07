@@ -2,6 +2,7 @@
 import { defineComponent, ref, onMounted, computed, nextTick, watch } from "vue";
 import { api } from "../api.js";
 import { store, toast } from "../store.js";
+import { highlightLog } from "../loghl.js";
 
 export default defineComponent({
   name: "McpPanel",
@@ -49,7 +50,7 @@ export default defineComponent({
 
     onMounted(refreshStatus);
     return { store, status, busy, error, armAcknowledged, logHost,
-             toggleBridge, toggleReadWrite, armLive, revokeLive, copy };
+             toggleBridge, toggleReadWrite, armLive, revokeLive, copy, highlightLog };
   },
   template: `
     <div class="mcp-grid">
@@ -116,7 +117,7 @@ export default defineComponent({
         <div ref="logHost" class="log-scroll mono">
           <div v-if="!store.mcpLog.length" class="muted" style="padding: 8px">Tool calls and bridge events appear here.</div>
           <div v-for="(entry, i) in store.mcpLog" :key="i" class="log-line">
-            <span class="muted">{{ entry.timestamp }}</span> {{ entry.message }}
+            <span class="muted">{{ entry.timestamp }}</span> <span v-html="highlightLog(entry.message)"></span>
           </div>
         </div>
       </section>

@@ -253,3 +253,12 @@
 .arm-live-box.inactive { opacity: 0.5; }
 .arm-live-check { color: var(--down); font-weight: 600; }
 .arm-live-check input { accent-color: var(--down); width: 16px; height: 16px; }
+
+/* ---------- Log syntax highlighting ---------- */
+.lg-tool { color: var(--info); font-weight: 600; }
+.lg-num { color: var(--warn); }
+.lg-ok { color: var(--up); font-weight: 600; }
+.lg-err { color: var(--down); font-weight: 600; }
+.lg-buy { color: var(--up); font-weight: 700; }
+.lg-sell { color: var(--down); font-weight: 700; }
+.lg-url { color: var(--info); text-decoration: underline; }

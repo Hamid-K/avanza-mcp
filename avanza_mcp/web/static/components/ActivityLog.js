@@ -1,6 +1,7 @@
 // Dual console pane mirroring the TUI: app activity + live MCP interactions.
 import { defineComponent, computed, ref, watch, nextTick } from "vue";
 import { store } from "../store.js";
+import { highlightLog } from "../loghl.js";
 
 export default defineComponent({
   name: "ActivityLog",
@@ -19,7 +20,7 @@ export default defineComponent({
     watch(() => entries.value.length, follow(appHost));
     watch(() => mcpEntries.value.length, follow(mcpHost));
 
-    return { entries, mcpEntries, appHost, mcpHost };
+    return { entries, mcpEntries, appHost, mcpHost, highlightLog };
   },
   template: `
     <section class="panel log-panel">
@@ -29,7 +30,7 @@ export default defineComponent({
           <div ref="appHost" class="log-scroll mono" aria-live="polite">
             <div v-if="!entries.length" class="muted" style="padding: 8px">Session activity appears here.</div>
             <div v-for="(entry, i) in entries" :key="i" class="log-line">
-              <span class="muted">{{ entry.timestamp }}</span> {{ entry.message }}
+              <span class="muted">{{ entry.timestamp }}</span> <span v-html="highlightLog(entry.message)"></span>
             </div>
           </div>
         </div>
@@ -38,7 +39,7 @@ export default defineComponent({
           <div ref="mcpHost" class="log-scroll mono" aria-live="polite">
             <div v-if="!mcpEntries.length" class="muted" style="padding: 8px">MCP tool calls stream here when the bridge is active.</div>
             <div v-for="(entry, i) in mcpEntries" :key="i" class="log-line">
-              <span class="muted">{{ entry.timestamp }}</span> {{ entry.message }}
+              <span class="muted">{{ entry.timestamp }}</span> <span v-html="highlightLog(entry.message)"></span>
             </div>
           </div>
         </div>
