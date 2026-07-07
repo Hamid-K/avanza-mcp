@@ -8,6 +8,15 @@ import { toast } from "../store.js";
 
 const PROFIT_ORDER = ["day", "week", "month", "year", "since_start", "total"];
 
+const PROFIT_HINTS = {
+  day: "Account development over the last trading day (Avanza performance figure).",
+  week: "Account development over the last week (time-weighted, includes realized gains).",
+  month: "Account development over the last month (time-weighted, includes realized gains).",
+  year: "Account development over the last year (time-weighted, includes realized gains and dividends).",
+  since_start: "Account development since the account was opened.",
+  total: "Unrealized profit on CURRENT holdings vs their acquisition cost. Realized gains from closed trades are not included — after selling winners this resets toward zero.",
+};
+
 export default defineComponent({
   name: "TopBar",
   props: { tab: { type: String, required: true } },
@@ -80,7 +89,7 @@ export default defineComponent({
     }
 
     return {
-      store, props, emit, profitMode, cycleProfit, fmtProfit, profitClass,
+      store, props, emit, profitMode, cycleProfit, fmtProfit, profitClass, PROFIT_HINTS,
       activeSession, account, profit, clock, onSessionChange, onAccountChange, manualRefresh,
       togglePaperMode, logoutActive, theme, onToggleTheme,
     };
@@ -120,7 +129,8 @@ export default defineComponent({
       <div class="metrics">
         <div class="metric"><span class="metric-label">Total</span><span class="metric-value">{{ account.total_value || "-" }}</span></div>
         <div class="metric"><span class="metric-label">Buying</span><span class="metric-value">{{ account.buying_power || "-" }}</span></div>
-        <button class="metric metric-btn" @click="cycleProfit" :title="'Click to cycle P/L window'">
+        <button class="metric metric-btn" @click="cycleProfit"
+                :title="(PROFIT_HINTS[profitMode] || '') + ' Click to cycle.'">
           <span class="metric-label">{{ profit.label }}</span>
           <span class="metric-value" :class="profitClass(profit)">{{ fmtProfit(profit) }}</span>
         </button>

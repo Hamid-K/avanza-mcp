@@ -929,7 +929,7 @@ def profit_metric_label(mode: str) -> str:
         "month": "1M P/L",
         "year": "1Y P/L",
         "since_start": "Since Start P/L",
-        "total": "Total P/L",
+        "total": "Unrealized P/L",
     }
     return labels.get(mode, "1D P/L")
 

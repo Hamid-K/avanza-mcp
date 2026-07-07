@@ -840,7 +840,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert "Since Start P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert "+90.00 SEK" in str(app.query_one("#metric-profit-value").render())
             app.cycle_profit_metric()
-            assert "Total P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "Unrealized P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert "+100.00 SEK" in str(app.query_one("#metric-profit-value").render())
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
