@@ -35,6 +35,7 @@ version = "0.1.12"
 source = { editable = "." }
 dependencies = [
     { name = "avanza-api" },
+    { name = "rich" },
     { name = "textual" },
 ]
 
@@ -47,6 +48,7 @@ dev = [
 requires-dist = [
     { name = "avanza-api", specifier = ">=16.1.0,<17" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "rich", specifier = ">=13" },
     { name = "textual", specifier = ">=6.1,<7" },
 ]
 provides-extras = ["dev"]

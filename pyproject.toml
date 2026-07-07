@@ -13,6 +13,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
   "avanza-api>=16.1.0,<17",
+  "rich>=13",
   "textual>=6.1,<7",
 ]
 
@@ -26,6 +27,7 @@ avanza-cli = "avanza_cli:main"
 
 [tool.setuptools]
 py-modules = ["avanza_cli"]
+packages = ["avanza_mcp", "avanza_mcp.external", "avanza_mcp.mcp", "avanza_mcp.tui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
