@@ -103,6 +103,7 @@ class TradingKernel(
         self.mcp_thread: threading.Thread | None = None
         self.mcp_token: str | None = None
         self.mcp_write_enabled = False
+        self.live_trading_authorized_session_ids: set[str] = set()
         self.live_trading_allowed_for_session = False
         self.paper_mode_enabled = True
         self.paper_session_path = config.PAPER_SESSION_FILE
@@ -184,6 +185,35 @@ class TradingKernel(
     # ------------------------------------------------------------------
     # Trading gates and account selection (headless defaults).
     # ------------------------------------------------------------------
+
+    @property
+    def live_trading_allowed_for_session(self) -> bool:
+        """True when the ACTIVE tenant session has been explicitly armed for live trading.
+
+        Authorization is per session id; entering ``temporary_tenant_scope``
+        switches the active session, so MCP mutations scoped to another
+        tenant are gated on that tenant's own authorization, never on a
+        process-global flag.
+        """
+        active = str(self.active_session_id or "")
+        return bool(active) and active in self.live_trading_authorized_session_ids
+
+    @live_trading_allowed_for_session.setter
+    def live_trading_allowed_for_session(self, value: bool) -> None:
+        authorized = getattr(self, "live_trading_authorized_session_ids", None)
+        if authorized is None:
+            authorized = set()
+            self.live_trading_authorized_session_ids = authorized
+        if value:
+            active = str(self.active_session_id or "")
+            if active:
+                authorized.add(active)
+            else:
+                self.write_log("[yellow]Live-trading authorization ignored: no active session.[/yellow]")
+        else:
+            # Revoke is deliberately global: turning authorization off (or
+            # disabling R/W) disarms every session, never just the active one.
+            authorized.clear()
 
     def live_mutations_allowed(self) -> bool:
         return (

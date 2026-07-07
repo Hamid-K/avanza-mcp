@@ -56,6 +56,7 @@ def test_kernel_state_matches_tui_state(monkeypatch, tmp_path):
 
 def test_live_mutations_allowed_truth_table():
     kernel = make_kernel()
+    kernel.active_session_id = "s1"
     cases = [
         # (paper_mode, rw, live_auth) -> allowed
         (True, True, True, False),
@@ -68,6 +69,41 @@ def test_live_mutations_allowed_truth_table():
         kernel.mcp_write_enabled = rw
         kernel.live_trading_allowed_for_session = live_auth
         assert kernel.live_mutations_allowed() is expected, (paper, rw, live_auth)
+
+
+def test_live_authorization_is_scoped_to_the_armed_session():
+    """P0 regression: arming one tenant session must not arm any other."""
+    kernel = make_kernel()
+
+    class FakeAvanza:
+        pass
+
+    overview = {"accounts": [{"id": "a1", "name": "Main"}]}
+    first = kernel.register_tenant_session(FakeAvanza(), overview, None, [], [], label="One")
+    second = kernel.register_tenant_session(FakeAvanza(), overview, None, [], [], label="Two")
+    kernel.load_active_state_from_tenant(first)
+    kernel.paper_mode_enabled = False
+    kernel.mcp_write_enabled = True
+
+    kernel.live_trading_allowed_for_session = True  # arms `first` only
+    assert kernel.live_mutations_allowed() is True
+    with kernel.temporary_tenant_scope(second.session_id):
+        assert kernel.live_trading_allowed_for_session is False
+        assert kernel.live_mutations_allowed() is False
+    assert kernel.live_mutations_allowed() is True
+
+    # arming with no active session is refused
+    kernel.live_trading_authorized_session_ids.clear()
+    kernel.active_session_id = None
+    kernel.live_trading_allowed_for_session = True
+    assert kernel.live_trading_authorized_session_ids == set()
+
+    # logout drops authorization
+    kernel.load_active_state_from_tenant(first)
+    kernel.live_trading_allowed_for_session = True
+    assert first.session_id in kernel.live_trading_authorized_session_ids
+    kernel.logout_session_state(first.session_id)
+    assert first.session_id not in kernel.live_trading_authorized_session_ids
 
 
 def test_temporary_tenant_scope_restores_state_and_depth():

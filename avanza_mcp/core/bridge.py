@@ -163,6 +163,7 @@ class CoreBridgeMixin:
                 "session_id": context.session_id,
                 "label": context.label,
                 "active": context.session_id == self.active_session_id,
+                "live_trading_authorized": context.session_id in self.live_trading_authorized_session_ids,
                 "accounts_loaded": len(context.accounts),
                 "selected_account_id": context.selected_account_id,
                 "selected_account_name": (
@@ -484,11 +485,17 @@ class CoreBridgeMixin:
             if not self.mcp_write_enabled:
                 raise PermissionError("Enable MCP R/W mode in the TUI before authorizing live trading.")
             self.live_trading_allowed_for_session = True
+            if not self.live_trading_allowed_for_session:
+                raise PermissionError("No active tenant session to authorize. Log in / select a session first.")
             self.write_mcp_log("[yellow]Live mutation mode authorized for this session.[/yellow]")
-            self.record_event("mcp", "live_session_authorized", {"reason": reason})
+            self.record_event(
+                "mcp",
+                "live_session_authorized",
+                {"reason": reason, "session_id": self.active_session_id},
+            )
             return {
                 "ok": True,
-                "live_trading_allowed_for_this_session": True,
+                "live_trading_allowed_for_this_session": self.live_trading_allowed_for_session,
                 "read_write_enabled": self.mcp_write_enabled,
                 "warning": "Live mutation tools are now enabled for this active session.",
                 "reason": reason,

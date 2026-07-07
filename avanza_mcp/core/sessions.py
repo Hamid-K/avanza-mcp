@@ -411,6 +411,7 @@ class CoreSessionsMixin:
         self.order_search_labels_by_order_book = {}
         self.live_refresh_auth_blocked_sessions.clear()
         self.live_refresh_auth_last_notice_at.clear()
+        self.live_trading_authorized_session_ids.clear()
         self.record_event("app", "tenant_sessions_cleared", {})
 
     def logout_session_state(self, session_id: str) -> None:
@@ -422,6 +423,7 @@ class CoreSessionsMixin:
         self.tenant_sessions.pop(session_id, None)
         self.live_refresh_auth_blocked_sessions.discard(session_id)
         self.live_refresh_auth_last_notice_at.pop(session_id, None)
+        self.live_trading_authorized_session_ids.discard(session_id)
         if self.mcp_scope_original_session_id == session_id:
             self.mcp_scope_original_session_id = None
         self.record_event(

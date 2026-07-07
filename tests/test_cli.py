@@ -1236,6 +1236,7 @@ def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
     app.avanza = FakeAvanza()
     app.selected_account_id = "acc-1"
     app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
     app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
 
     dry_run = app.execute_mcp_tool(
@@ -1421,6 +1422,7 @@ def test_mcp_capabilities_and_live_session_authorization():
         app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
 
     app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
     auth = app.execute_mcp_tool(
         "avanza_live_session_authorize",
         {"acknowledge": True, "reason": "unit test authorization"},
@@ -1759,6 +1761,7 @@ def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
     app.avanza = FakeAvanza()
     app.selected_account_id = "acc-1"
     app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
     app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
 
     placed = app.execute_mcp_tool(
