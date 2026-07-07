@@ -176,6 +176,41 @@ async def quote(order_book_id: str, request: Request):
     return {"order_book_id": order_book_id, "quote": payload}
 
 
+def _cash_events_for_window(kernel, account_id: str, from_date) -> list[dict[str, Any]]:
+    """Deposits/withdrawals inside the chart window, for marker overlays."""
+    from avanza.constants import TransactionsDetailsType
+
+    from avanza_mcp.records import (
+        transaction_amount,
+        transaction_matches_instrument_filters,
+        transaction_trade_date,
+        transactions_items,
+    )
+
+    payload = kernel.avanza.get_transactions_details(
+        transaction_details_types=[TransactionsDetailsType.DEPOSIT, TransactionsDetailsType.WITHDRAW],
+        transactions_from=from_date,
+        transactions_to=None,
+        max_elements=1000,
+    )
+    items, _first = transactions_items(payload)
+    events: list[dict[str, Any]] = []
+    for item in items:
+        if not transaction_matches_instrument_filters(item, account_id=account_id, executed_only=False):
+            continue
+        event_type = str(item.get("type", "")).upper()
+        if event_type not in {"DEPOSIT", "WITHDRAW"}:
+            continue
+        events.append(
+            {
+                "date": transaction_trade_date(item),
+                "type": event_type,
+                "amount": transaction_amount(item),
+            }
+        )
+    return events
+
+
 @router.get("/api/performance")
 async def performance(request: Request, period: str = "month", account_id: str | None = None):
     kernel = _kernel(request)
@@ -191,6 +226,20 @@ async def performance(request: Request, period: str = "month", account_id: str |
         if denial is not None:
             return denial
         return JSONResponse({"error": "upstream_failed", "detail": str(exc)}, status_code=502)
+
+    payload["cash_events"] = []
+    chart_points = payload.get("chart_points") or []
+    first_date = next((p["date"] for p in chart_points if p.get("date")), "")
+    if first_date:
+        from avanza_mcp.records import parse_optional_iso_date
+
+        try:
+            window_start = parse_optional_iso_date(first_date, label="chart start")
+            if window_start is not None:
+                payload["cash_events"] = await _run(kernel, _cash_events_for_window, kernel, target_account, window_start)
+        except Exception:
+            # cash-event overlay is an enhancement; never fail the chart for it
+            payload["cash_events"] = []
     return payload
 
 

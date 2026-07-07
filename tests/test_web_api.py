@@ -436,3 +436,80 @@ def test_verification_failure_surfaces_at_transport_level(with_session, runtime)
     assert response["ok"] is True
     assert response["verification_ok"] is True
     assert response["result"]["gaps"] == []
+
+
+def test_performance_includes_pl_series_and_cash_events(with_session, runtime):
+    """The chart must expose P/L (SEK + %), balance, and deposit/withdraw events."""
+    import time as _time
+
+    day_ms = 86_400_000
+    now_ms = int(_time.time() * 1000)
+    days = [now_ms - (4 - i) * day_ms for i in range(5)]
+
+    class ChartAvanza(FakeAvanza):
+        def get_account_performance_chart_data(self, account_ids, period):
+            return {
+                "absoluteSeries": [{"timestamp": ts, "value": (i - 2) * 1000.0, "unit": "SEK"} for i, ts in enumerate(days)],
+                "relativeSeries": [{"timestamp": ts, "value": (i - 2) * 0.5, "unit": "%"} for i, ts in enumerate(days)],
+                "valueSeries": [{"timestamp": ts, "value": 900000.0 + i * 1000, "unit": "SEK"} for i, ts in enumerate(days)],
+            }
+
+        def get_transactions_details(self, **kwargs):
+            from datetime import date, timedelta
+
+            yesterday = (date.today() - timedelta(days=1)).isoformat()
+            return {
+                "transactions": [
+                    {"tradeDate": yesterday, "type": "DEPOSIT", "account": {"id": "acc-1", "name": "Main"},
+                     "description": "Insättning", "amount": {"value": 25000.0, "unit": "SEK"}},
+                    {"tradeDate": yesterday, "type": "WITHDRAW", "account": {"id": "acc-1", "name": "Main"},
+                     "description": "Uttag", "amount": {"value": -5000.0, "unit": "SEK"}},
+                    {"tradeDate": yesterday, "type": "DEPOSIT", "account": {"id": "acc-other", "name": "Other"},
+                     "description": "Wrong account", "amount": {"value": 999.0, "unit": "SEK"}},
+                ]
+            }
+
+    kernel = runtime.kernel
+    chart_avanza = ChartAvanza()
+    kernel.avanza = chart_avanza
+    for context in kernel.tenant_sessions.values():
+        context.avanza = chart_avanza
+
+    payload = with_session.get("/api/performance?period=ONE_MONTH").json()
+    points = payload["chart_points"]
+    assert len(points) == 5
+    assert points[0]["development_absolute"]["value"] == -2000.0
+    assert points[0]["development_relative"]["value"] == -1.0
+    assert points[0]["account_value"]["value"] == 900000.0
+    # cash events: filtered to the requested account, typed, numeric amounts
+    events = payload["cash_events"]
+    assert {e["type"] for e in events} == {"DEPOSIT", "WITHDRAW"}
+    assert len(events) == 2
+    deposit = next(e for e in events if e["type"] == "DEPOSIT")
+    assert deposit["amount"] == 25000.0
+    assert deposit["date"]
+
+
+def test_performance_cash_events_failure_never_breaks_chart(with_session, runtime):
+    import time as _time
+
+    class ChartOnlyAvanza(FakeAvanza):
+        def get_account_performance_chart_data(self, account_ids, period):
+            return {
+                "absoluteSeries": [{"timestamp": int(_time.time() * 1000), "value": 100.0, "unit": "SEK"}],
+                "relativeSeries": [],
+                "valueSeries": [],
+            }
+        # no get_transactions_details -> cash-event fetch raises internally
+
+    kernel = runtime.kernel
+    chart_avanza = ChartOnlyAvanza()
+    kernel.avanza = chart_avanza
+    for context in kernel.tenant_sessions.values():
+        context.avanza = chart_avanza
+
+    response = with_session.get("/api/performance?period=ONE_WEEK")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cash_events"] == []
+    assert payload["chart_points"]

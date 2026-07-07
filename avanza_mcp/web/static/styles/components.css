@@ -262,3 +262,15 @@
 .lg-buy { color: var(--up); font-weight: 700; }
 .lg-sell { color: var(--down); font-weight: 700; }
 .lg-url { color: var(--info); text-decoration: underline; }
+
+/* ---------- Performance chart legend ---------- */
+.chart-legend {
+  display: flex; flex-wrap: wrap; gap: 16px;
+  font-size: var(--fs-small);
+  padding: 0 2px;
+}
+.chart-legend .legend-dash { color: var(--faint); letter-spacing: -1px; }
+.pill-divider {
+  width: 1px; align-self: stretch; margin: 2px 4px;
+  background: var(--border);
+}
