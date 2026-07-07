@@ -276,3 +276,93 @@ def test_paper_mode_toggle(with_session, runtime):
     assert runtime.kernel.paper_mode_enabled is False
     with_session.post("/api/paper/mode", json={"enabled": True})
     assert runtime.kernel.paper_mode_enabled is True
+
+
+# ---------------------------------------------------------------------- mcp
+
+
+def test_mcp_status_initial(with_session):
+    payload = with_session.get("/api/mcp/status").json()
+    assert payload["running"] is False
+    assert payload["read_write"] is False
+    assert payload["live_trading"] is False
+    assert payload["proxy_command"].endswith("mcp")
+
+
+def test_mcp_bridge_start_stop_writes_session_file(with_session, runtime, monkeypatch, tmp_path):
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    response = with_session.post("/api/mcp/bridge", json={"enabled": True})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["running"] is True
+    assert payload["url"].startswith("http://127.0.0.1:")
+    assert payload["token"]
+    assert (tmp_path / "mcp-session.json").exists()
+    import json
+
+    session_file = json.loads((tmp_path / "mcp-session.json").read_text())
+    assert session_file["token"] == payload["token"]
+    assert session_file["read_write"] is False
+
+    response = with_session.post("/api/mcp/bridge", json={"enabled": False})
+    assert response.json()["running"] is False
+    assert not (tmp_path / "mcp-session.json").exists()
+
+
+def test_mcp_read_write_toggle_revokes_live(with_session, runtime, monkeypatch, tmp_path):
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    with_session.post("/api/mcp/read-write", json={"enabled": True})
+    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "confirm_text": "LIVE"})
+    assert response.json()["live_trading"] is True
+    assert runtime.kernel.live_mutations_allowed() is False  # paper mode still on
+    runtime.kernel.paper_mode_enabled = False
+    assert runtime.kernel.live_mutations_allowed() is True
+    runtime.kernel.paper_mode_enabled = True
+
+    response = with_session.post("/api/mcp/read-write", json={"enabled": False})
+    payload = response.json()
+    assert payload["read_write"] is False
+    assert payload["live_trading"] is False  # auto-revoked
+
+
+def test_mcp_live_trading_requires_rw_and_confirm(with_session):
+    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "confirm_text": "LIVE"})
+    assert response.status_code == 409  # R/W off
+    with_session.post("/api/mcp/read-write", json={"enabled": True})
+    response = with_session.post("/api/mcp/live-trading", json={"enabled": True, "confirm_text": "live"})
+    assert response.status_code == 403  # wrong confirm
+    with_session.post("/api/mcp/read-write", json={"enabled": False})
+
+
+def test_mcp_bridge_requires_session(authed):
+    response = authed.post("/api/mcp/bridge", json={"enabled": True})
+    assert response.status_code == 409
+
+
+def test_mcp_log_endpoint(with_session):
+    with_session.post("/api/mcp/read-write", json={"enabled": True})
+    entries = with_session.get("/api/mcp/log").json()["entries"]
+    assert any("read/write" in e["message"] for e in entries)
+    with_session.post("/api/mcp/read-write", json={"enabled": False})
+
+
+def test_mcp_bridge_end_to_end_tool_call(with_session, runtime, monkeypatch, tmp_path):
+    """A real MCP client hit: web-managed bridge dispatches through the kernel."""
+    import json
+    from urllib.request import Request, urlopen
+
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    payload = with_session.post("/api/mcp/bridge", json={"enabled": True}).json()
+    request = Request(
+        payload["url"] + "/call",
+        data=json.dumps({"tool": "avanza_status", "arguments": {}}).encode(),
+        headers={"Authorization": f"Bearer {payload['token']}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        body = json.loads(response.read())
+    assert body["ok"] is True
+    assert body["tool"] == "avanza_status"
+    result = body["result"]
+    assert result["mcp_enabled"] is True or result.get("sessions"), result
+    with_session.post("/api/mcp/bridge", json={"enabled": False})

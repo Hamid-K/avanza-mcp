@@ -135,6 +135,15 @@ class TradingKernel(
     def write_mcp_log(self, message: str) -> None:
         self.record_event("mcp", "console", {"message": strip_markup(message)})
 
+    def call_from_thread(self, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Headless marshaling seam: serialize cross-thread calls via the state lock.
+
+        The TUI inherits textual.App.call_from_thread instead (UI-thread dispatch);
+        the MCP bridge handler relies on this method on whichever host owns it.
+        """
+        with self.state_lock:
+            return callback(*args, **kwargs)
+
     def safe_call_from_thread(self, callback: Callable[..., Any], *args: Any) -> bool:
         if self.shutdown_event.is_set():
             return False

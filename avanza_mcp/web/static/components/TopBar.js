@@ -1,7 +1,9 @@
 // Session/account switchers, metric cards, clock, mode badges, tab nav.
 import { defineComponent, ref, computed, onMounted, onUnmounted } from "vue";
 import { store } from "../store.js";
-import { activateSession, selectAccount, manualRefresh } from "../actions.js";
+import { activateSession, selectAccount, manualRefresh, logoutSession } from "../actions.js";
+import { api } from "../api.js";
+import { toast } from "../store.js";
 
 const PROFIT_ORDER = ["day", "week", "month", "year", "since_start", "total"];
 
@@ -52,6 +54,22 @@ export default defineComponent({
       if (value && value !== store.activeSessionId) await activateSession(value);
     }
 
+    async function togglePaperMode() {
+      const next = !store.meta.paper_mode;
+      if (!next && !confirm("Disable paper mode? Ticket submissions become LIVE orders (typed PLACE still required).")) return;
+      try {
+        const result = await api.post("/api/paper/mode", { enabled: next });
+        store.meta.paper_mode = result.paper_mode;
+        toast(result.paper_mode ? "Paper mode ON" : "Paper mode OFF — live tickets", result.paper_mode ? "info" : "warning");
+      } catch (exc) { toast(exc.message, "error"); }
+    }
+
+    async function logoutActive() {
+      if (!store.activeSessionId) return;
+      if (!confirm("Log out the active session?")) return;
+      try { await logoutSession(store.activeSessionId); } catch (exc) { toast(exc.message, "error"); }
+    }
+
     async function onAccountChange(event) {
       const value = event.target.value;
       if (value && value !== store.portfolio?.account_id) await selectAccount(value);
@@ -60,6 +78,7 @@ export default defineComponent({
     return {
       store, props, emit, profitMode, cycleProfit, fmtProfit, profitClass,
       activeSession, account, profit, clock, onSessionChange, onAccountChange, manualRefresh,
+      togglePaperMode, logoutActive,
     };
   },
   template: `
@@ -113,12 +132,14 @@ export default defineComponent({
       </nav>
 
       <div class="topbar-right">
-        <span class="badge" :class="store.meta.paper_mode ? 'paper' : 'live'">
+        <button class="badge mode-toggle" :class="store.meta.paper_mode ? 'paper' : 'live'"
+                @click="togglePaperMode" :title="store.meta.paper_mode ? 'Paper mode on — click for LIVE' : 'LIVE tickets — click for paper'">
           {{ store.meta.paper_mode ? "PAPER" : "LIVE" }}
-        </span>
+        </button>
         <span v-if="store.meta.update?.outdated" class="badge warn-text" :title="store.meta.update.text">update</span>
         <span class="clock mono muted">{{ clock }}</span>
         <button class="ghost" @click="manualRefresh" title="Refresh now (r)">⟳</button>
+        <button class="ghost" @click="logoutActive" title="Log out active session">⎋</button>
       </div>
     </header>
   `,

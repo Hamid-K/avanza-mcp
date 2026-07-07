@@ -782,6 +782,10 @@ class AvanzaTradingTui(
         ("p", "refresh_portfolio", "Refresh Portfolio"),
     ]
 
+    # TradingKernel precedes App in the MRO; pin textual's UI-thread dispatch
+    # so the kernel's lock-based headless fallback never shadows it here.
+    call_from_thread = App.call_from_thread
+
     def __init__(self, debug: bool = False, debug_profile_top: int = DEBUG_PROFILE_TOP_DEFAULT) -> None:
         super().__init__()
         self.title = TUI_TITLE

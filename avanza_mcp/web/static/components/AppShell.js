@@ -12,13 +12,14 @@ import ActivityLog from "./ActivityLog.js";
 import OrderTicket from "./OrderTicket.js";
 import StopLossTicket from "./StopLossTicket.js";
 import CancelDialog from "./CancelDialog.js";
+import McpPanel from "./McpPanel.js";
 
 export default defineComponent({
   name: "AppShell",
   components: {
     TopBar, SessionLoginModal, PortfolioTable, OpenOrdersPanel,
     ActiveTradesPanel, PerformanceChart, ActivityLog,
-    OrderTicket, StopLossTicket, CancelDialog,
+    OrderTicket, StopLossTicket, CancelDialog, McpPanel,
   },
   setup() {
     const tab = ref("dashboard");
@@ -105,9 +106,7 @@ export default defineComponent({
       </main>
 
       <main v-else class="single-panel">
-        <div class="panel"><div class="panel-title"><h2>MCP</h2></div>
-          <div class="muted" style="padding: 16px">MCP management lands in a later build phase.</div>
-        </div>
+        <McpPanel />
       </main>
 
       <div class="fab-row" v-if="!needsFirstSession && tab === 'dashboard'">

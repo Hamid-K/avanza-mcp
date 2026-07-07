@@ -204,3 +204,13 @@
   position: fixed; right: 18px; bottom: 18px; z-index: 60;
   display: flex; gap: 8px;
 }
+
+/* ---------- MCP panel ---------- */
+.mcp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
+.mcp-log-panel { grid-column: 1 / -1; }
+.mcp-log-panel .log-scroll { max-height: 320px; }
+.mcp-controls { display: grid; gap: 12px; }
+.toggle-row { display: flex; gap: 10px; align-items: flex-start; font-size: var(--fs-small); }
+.toggle-row input { width: auto; margin-top: 3px; }
+.toggle-row.disabled { opacity: 0.55; }
+.mode-toggle { cursor: pointer; }

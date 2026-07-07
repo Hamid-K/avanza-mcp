@@ -1,5 +1,6 @@
 """Web-hosted trading kernel: seams mapped to the WebSocket event bus."""
 
+from collections import deque
 from typing import Any
 
 from avanza_mcp.config import DEBUG_PROFILE_TOP_DEFAULT
@@ -13,6 +14,7 @@ class WebTradingKernel(TradingKernel):
 
     def __init__(self, event_bus: EventBus, debug: bool = False, debug_profile_top: int = DEBUG_PROFILE_TOP_DEFAULT) -> None:
         self.event_bus = event_bus
+        self.web_mcp_log: deque = deque(maxlen=500)
         self.init_kernel_state(debug=debug, debug_profile_top=debug_profile_top, log_kind="web")
 
     def on_state_changed(self, channel: str, payload: Any = None) -> None:
@@ -53,7 +55,9 @@ class WebTradingKernel(TradingKernel):
 
     def write_mcp_log(self, message: str) -> None:
         super().write_mcp_log(message)
-        self.event_bus.publish("mcp_log", {"message": strip_markup(message), "timestamp": timestamp()})
+        entry = {"message": strip_markup(message), "timestamp": timestamp()}
+        self.web_mcp_log.append(entry)
+        self.event_bus.publish("mcp_log", entry)
 
     def notify_user(self, message: str, severity: str = "information") -> None:
         super().write_log(message)
