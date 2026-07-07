@@ -4,12 +4,21 @@ This project is intentionally small and explicit.
 
 ## Surfaces
 
-- `avanza_cli.py` is the single user-facing entry point: a thin shim over the `avanza_mcp` package. It provides scriptable console subcommands and the Textual terminal UI via `python avanza_cli.py tui`.
+- `avanza_cli.py` is the single user-facing entry point: a thin shim over the `avanza_mcp` package. It provides scriptable console subcommands, the Textual terminal UI via `python avanza_cli.py tui`, and the Web UI via `python avanza_cli.py web` (the two UIs are mutually exclusive per checkout, enforced by `.avanza_ui.lock`).
 - `python avanza_cli.py mcp` is a stdio MCP proxy. It does not authenticate to Avanza itself; it forwards MCP tool calls to the localhost bridge started by the authenticated TUI.
 
 ## Package layout
 
 The implementation lives in the `avanza_mcp` package:
+
+- `core/` — the UI-agnostic **trading kernel** (`TradingKernel`): tenant
+  sessions, caches, MCP bridge lifecycle and tool dispatch, snapshot
+  providers, trading submission bodies, and refresh workers. Both front-ends
+  are views over this kernel; `avanza_mcp.core` never imports `textual`
+  (guard-tested). Hosts customize via seams (`write_log`, `write_mcp_log`,
+  `on_state_changed`, `call_from_thread`, ...).
+- `web/` — the FastAPI Web UI: token/cookie/CSRF auth, REST + WebSocket API
+  over the kernel, and the no-build Vue 3 frontend under `web/static/`.
 
 - `config.py` — constants, session/log file paths, choice tables, external URLs
 - `models.py`, `utils.py`, `auth.py`, `stoploss_rules.py` — shared dataclasses, generic helpers, credentials/1Password/connect, stop-loss validation rules

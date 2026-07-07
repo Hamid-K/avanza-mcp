@@ -187,6 +187,30 @@ After login, the largest account by total value is selected by default. The top 
 
 Multi-session mode: use **Login extra account** to add more authenticated Avanza sessions without leaving TUI. The session selector lets you switch tenant context quickly; account drop-down and all tables follow the selected session. Background refresh keeps inactive tenant/account snapshots warm without visibly switching the active TUI context.
 
+## Web UI
+
+Run the browser-based trading console from the same script:
+
+```bash
+python avanza_cli.py web            # 127.0.0.1:8787, opens the browser
+python avanza_cli.py web --port 9000 --no-browser
+```
+
+The Web UI has feature parity with the TUI — portfolio with live 5-second
+updates, order and stop-loss tickets (dry-run → review → typed `PLACE`),
+guarded cancellations, multi-tenant session switching with re-auth, MCP
+bridge management (bridge/R-W/live-authorization toggles, token and proxy
+command, streaming tool log), a dedicated Paper trading workspace,
+TradingView lists, performance charting, and orders/transactions history.
+It binds `127.0.0.1` only and is protected by a startup access token,
+cookie session, CSRF header, and a strict CSP (self + two pinned CDN files
+with SRI). See `docs/web.md` for the full security model, endpoint table,
+and smoke checklist.
+
+The Web UI and the TUI are mutually exclusive: one at a time per checkout
+(enforced via `.avanza_ui.lock`). Both manage the same MCP bridge contract,
+so `python avanza_cli.py mcp` works identically against either.
+
 ## MCP Server Registration & Run
 
 This project exposes MCP through `python avanza_cli.py mcp` (stdio transport).

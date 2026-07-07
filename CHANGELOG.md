@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 - 2026-07-07
+
+- Restructured the 16.7k-line `avanza_cli.py` monolith into the `avanza_mcp` package (config, domain modules, external integrations, MCP server, TUI); the root file is now a thin shim and all documented invocations keep working.
+- Extracted a UI-agnostic trading kernel (`avanza_mcp/core`): tenant sessions, caches, MCP bridge + tool dispatch, snapshot providers, trading submission bodies, and refresh workers shared by every front-end.
+- Added a full Web UI (`python avanza_cli.py web`): dark single-page trading console with portfolio + live WebSocket updates, order/stop-loss tickets (dry-run → single-use review nonce → typed PLACE), guarded cancellations, multi-tenant sessions with re-auth, MCP management (bridge/R-W/live-arming, token + proxy command, streaming log), a dedicated Paper workspace, TradingView lists, performance charts, and orders/transactions history.
+- Web security: 127.0.0.1-only bind, startup access token → HttpOnly SameSite=Strict cookie, double-submit CSRF header, Origin validation, strict CSP with SRI-pinned CDN assets (offline vendor fallbacks committed).
+- The TUI and Web UI are mutually exclusive per checkout via a pid lock; both manage the same MCP bridge and session-file contract.
+- New dependencies: fastapi, uvicorn, websockets, rich (previously transitive).
+
 ## 0.1.12 - 2026-07-02
 
 - Optimized TradingView pre-open batch snapshots to use one scanner request for normal multi-symbol calls, with per-symbol fallback/error isolation only for missing rows.
