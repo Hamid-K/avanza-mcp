@@ -66,6 +66,7 @@ from avanza_mcp.records import (
     transactions_items,
 )
 from avanza_mcp.rendering import (
+    fund_order_items,
     account_rows_from_overview,
     first_known_realtime_status,
     lookup_realtime_status,
@@ -972,6 +973,7 @@ class CoreSnapshotsMixin:
             require_raw=include_raw,
         )
         orders = [open_order_mcp_dict(item) for item in filtered_items]
+        fund_orders = fund_order_items(data) if isinstance(data, dict) else []
         if compact:
             orders = [
                 {
@@ -990,6 +992,8 @@ class CoreSnapshotsMixin:
         snapshot: dict[str, Any] = {
             "account_id": account_id or None,
             "orders": orders,
+            "fund_orders": payload_to_json_safe(fund_orders),
+            "fund_order_count": len(fund_orders),
         }
         if include_raw:
             snapshot["raw"] = payload_to_json_safe(data)
@@ -1047,15 +1051,26 @@ class CoreSnapshotsMixin:
                 }
                 for row in rows
             ]
-        return {
+        truncation_risk = len(items) >= max_elements
+        response = {
             "account_id": account_id or None,
             "executed_only": executed_only,
             "types": [item.value for item in transaction_types],
             "transactions_from": transactions_from.isoformat() if transactions_from else None,
             "transactions_to": transactions_to.isoformat() if transactions_to else None,
             "first_available_date": first_date,
+            "max_elements": max_elements,
+            "fetched_count": len(items),
+            "returned_count": len(rows),
+            "truncation_risk": truncation_risk,
             "transactions": rows,
         }
+        if truncation_risk:
+            response["warning"] = (
+                f"Fetched count reached max_elements={max_elements}; older transactions may be "
+                "missing. Re-run with a higher max_elements or a narrower date range."
+            )
+        return response
 
     def instrument_state_snapshot(
         self,

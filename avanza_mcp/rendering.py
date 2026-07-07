@@ -175,7 +175,7 @@ def format_order_request(preview: dict[str, Any]) -> list[str]:
         f"Order book: {preview['order_book_id']}",
         f"Side: {preview['order_type']}",
         f"Volume: {preview['volume']}",
-        f"Price: {preview['price']} SEK",
+        f"Price: {preview['price']}{' ' + str(preview['currency']) if preview.get('currency') else ''}",
         f"Condition: {preview['condition']}",
         f"Valid until: {preview['valid_until']}",
     ]
@@ -474,6 +474,32 @@ def open_order_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
         "order_book_id": order_book_id,
         "side": side or "",
     }
+
+
+def fund_order_items(payload: Any) -> list[dict[str, Any]]:
+    """Collect fund orders, which live outside the equity open-order buckets.
+
+    Fund orders cannot be normalized into the equity order shape (no
+    orderbook trading semantics) but hiding them entirely understates open
+    order exposure, so they are surfaced as their own collection.
+    """
+    if not isinstance(payload, dict):
+        return []
+    collected: list[dict[str, Any]] = []
+    for key in ("fundOrders", "fund_orders"):
+        entries = payload.get(key)
+        if isinstance(entries, list):
+            collected.extend(item for item in entries if isinstance(item, dict))
+    accounts = payload.get("accounts")
+    if isinstance(accounts, list):
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            for key in ("fundOrders", "fund_orders"):
+                entries = account.get(key)
+                if isinstance(entries, list):
+                    collected.extend(item for item in entries if isinstance(item, dict))
+    return collected
 
 
 def open_order_items(payload: Any) -> list[dict[str, Any]]:

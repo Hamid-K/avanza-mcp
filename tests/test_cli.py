@@ -394,18 +394,18 @@ def test_tui_mounts_headless():
             assert app.query_one("#open-tv-lists-overlay") is not None
             assert app.query_one("#tv-lists-select") is not None
             assert isinstance(app.query_one("#paper-mode-toggle"), Button)
-            assert app.query_one("#paper-mode-label").renderable == "Paper"
+            assert str(app.query_one("#paper-mode-label").render()) == "Paper"
             assert isinstance(app.query_one("#mcp-toggle"), Button)
-            assert app.query_one("#mcp-label").renderable == "MCP"
+            assert str(app.query_one("#mcp-label").render()) == "MCP"
             assert isinstance(app.query_one("#mcp-write-toggle"), Button)
-            assert app.query_one("#mcp-write-label").renderable == "Live R/W"
+            assert str(app.query_one("#mcp-write-label").render()) == "Live R/W"
             assert app.query_one("#mcp-log") is not None
             assert app.query_one("#order-ticket-resizer") is not None
             assert app.query_one("#stoploss-ticket-resizer") is not None
             assert app.query_one("#activity-resizer") is not None
             assert app.query_one("#order-valid-days", Input).value == str(STOPLOSS_ORDER_VALID_DAYS_DEFAULT)
             resizer = app.query_one("#pane-resizer")
-            assert resizer.renderable == "─"
+            assert str(resizer.render()) == "─"
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-table", DataTable).cursor_type == "cell"
             assert app.query_one("#active-trades-table", DataTable).cursor_type == "cell"
@@ -4933,7 +4933,7 @@ def test_tui_refresh_selected_session_opens_reauth_modal():
 
             assert app.query_one("#extra-login-modal").display is True
             assert app.login_target_session_id == session.session_id
-            assert "Refresh selected session login" in str(app.query_one("#extra-login-title", Static).renderable)
+            assert "Refresh selected session login" in str(app.query_one("#extra-login-title", Static).render())
             assert app.query_one("#extra-session-label", Input).value == "Session One"
 
     asyncio.run(run_app())
