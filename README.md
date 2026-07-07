@@ -36,6 +36,34 @@ The current TOTP code is passed to `avanza-api` as `totpToken`, which is the fie
 
 
 
+## Quick Start
+
+```bash
+# 1. Install uv (once), then dependencies
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+
+# 2a. Run the terminal UI ...
+uv run python avanza_cli.py tui
+
+# 2b. ... or the browser UI (prints a one-time access token — paste it
+#     into the login form that opens; then sign in to Avanza from there)
+uv run python avanza_cli.py web
+
+# 2c. ... or scriptable console commands
+uv run python avanza_cli.py accounts
+uv run python avanza_cli.py portfolio summary
+```
+
+Log in with your Avanza username, password, and current TOTP code (or via
+the 1Password CLI). **Paper trading mode is on by default** — order and
+stop-loss tickets go to a local paper ledger until you explicitly switch to
+live mode. The TUI and Web UI are mutually exclusive: run one at a time.
+
+To expose the MCP tools to an agent: log in (TUI or Web), enable the MCP
+toggle, then register `python avanza_cli.py mcp` in your MCP client — see
+"MCP Server Registration & Run" below.
+
 ## Setup
 
 ```bash
