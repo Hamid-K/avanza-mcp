@@ -24,26 +24,25 @@ from avanza.constants import OrderType, StopLossPriceType, TimePeriod
 from rich.text import Text
 
 from avanza_cli import (
-    APP_VERSION,
-    STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
     build_parser,
-    build_stop_loss_preview,
     call_mcp_bridge,
-    connect,
-    enum_value,
     load_mcp_session,
-    max_valid_until_date,
-    onepassword_credentials,
-    parse_date,
-    parse_price_type,
-    prompt_credentials,
     read_mcp_message,
     restore_table_row_selection,
     selected_table_row_key,
-    position_state_row_with_quote,
-    trade_action_badge,
     write_mcp_message,
 )
+from avanza_mcp.auth import connect, onepassword_credentials, prompt_credentials
+from avanza_mcp.config import APP_VERSION, STOPLOSS_ORDER_VALID_DAYS_DEFAULT
+from avanza_mcp.rendering import (
+    build_stop_loss_preview,
+    enum_value,
+    parse_date,
+    parse_price_type,
+    position_state_row_with_quote,
+    trade_action_badge,
+)
+from avanza_mcp.stoploss_rules import max_valid_until_date
 
 
 @pytest.fixture(autouse=True)
@@ -1277,7 +1276,7 @@ def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
 
 
 def test_open_order_items_infers_side_from_buy_sell_buckets():
-    from avanza_cli import open_order_items, open_order_side_value
+    from avanza_mcp.rendering import open_order_items, open_order_side_value
 
     payload = {
         "buyOrders": [
@@ -1392,7 +1391,8 @@ def test_mcp_open_orders_include_ids_side_and_raw_shapes():
 
 
 def test_mcp_capabilities_and_live_session_authorization():
-    from avanza_cli import AvanzaTradingTui, account_rows_from_overview
+    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.rendering import account_rows_from_overview
 
     class FakeAvanza:
         def get_overview(self):
@@ -4271,12 +4271,12 @@ def test_avanza_tv_preopen_portfolio_bundle_merges_read_only_state(monkeypatch):
 
 
 def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
-    from avanza_cli import (
-        clear_tradingview_session,
-        load_tradingview_session,
-        save_tradingview_session,
-        tradingview_session_status,
-    )
+    from avanza_mcp.external.tradingview_session import (
+    clear_tradingview_session,
+    load_tradingview_session,
+    save_tradingview_session,
+    tradingview_session_status,
+)
 
     session_path = tmp_path / ".avanza_tradingview_session.json"
     monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", session_path)
@@ -4301,12 +4301,12 @@ def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
 
 
 def test_tradingview_session_keychain_storage_mode(monkeypatch, tmp_path):
-    from avanza_cli import (
-        clear_tradingview_session,
-        load_tradingview_session,
-        save_tradingview_session,
-        tradingview_session_status,
-    )
+    from avanza_mcp.external.tradingview_session import (
+    clear_tradingview_session,
+    load_tradingview_session,
+    save_tradingview_session,
+    tradingview_session_status,
+)
 
     session_path = tmp_path / ".avanza_tradingview_session.json"
     monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", session_path)
@@ -5048,7 +5048,7 @@ def test_onepassword_credentials_reads_item_and_otp(monkeypatch):
 
 
 def test_render_accounts_overview_outputs_human_table(capsys):
-    from avanza_cli import render_accounts_overview
+    from avanza_mcp.rendering import render_accounts_overview
 
     render_accounts_overview(
         {

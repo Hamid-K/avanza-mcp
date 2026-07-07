@@ -249,3 +249,37 @@ def scalar_number(value: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def nested_value(data: dict[str, Any], *path: str) -> Any:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key, "")
+    return current
+
+
+def value_number(data: dict[str, Any], *path: str) -> float | None:
+    value = nested_value(data, *path)
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def first_value_number(data: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> float | None:
+    for path in paths:
+        candidate = value_number(data, *path)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def first_unit_text(data: dict[str, Any], paths: tuple[tuple[str, ...], ...], default: str = "SEK") -> str:
+    for path in paths:
+        unit_value = nested_value(data, *path, "unit")
+        if unit_value:
+            return str(unit_value)
+    return default
