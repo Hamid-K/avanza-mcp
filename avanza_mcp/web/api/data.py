@@ -137,7 +137,31 @@ async def transactions(request: Request, from_date: str | None = None, to_date: 
             types=type_list if type_list else None,
             executed_only=executed_only,
         )
+        kernel.record_event(
+            "app",
+            "web_transactions_loaded",
+            {
+                "account_id": payload.get("account_id"),
+                "from": payload.get("transactions_from"),
+                "to": payload.get("transactions_to"),
+                "types": payload.get("types"),
+                "executed_only": payload.get("executed_only"),
+                "fetched_count": payload.get("fetched_count"),
+                "returned_count": payload.get("returned_count"),
+            },
+        )
     except Exception as exc:
+        kernel.record_event(
+            "app",
+            "web_transactions_failed",
+            {
+                "account_id": kernel.selected_account_id,
+                "from": from_date,
+                "to": to_date,
+                "types": type_list if "type_list" in locals() else [],
+                "error": str(exc),
+            },
+        )
         denial = _auth_expired_response(kernel, exc)
         if denial is not None:
             return denial

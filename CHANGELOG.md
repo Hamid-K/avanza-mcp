@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 - 2026-07-08
+
+- Disabled browser caching for all local Web UI static assets to avoid stale Vue modules after Web UI updates.
+- Added compact Web transaction load/failure events to the app/session logs with account, date range, type filters, and fetched/returned row counts.
+
 ## 0.2.4 - 2026-07-08
 
 - Fixed Web Transactions filtering so non-order transaction rows such as dividends, deposits, withdrawals, and unknown/service rows are not discarded after being fetched.

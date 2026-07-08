@@ -91,6 +91,13 @@ def test_api_responses_not_cached(client):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_static_responses_not_cached(client):
+    response = client.get("/")
+    assert response.headers["cache-control"] == "no-store"
+    response = client.get("/static/app.js")
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_dashboard_actions_are_in_toolbar_not_floating():
     app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
     topbar = (STATIC_DIR / "components" / "TopBar.js").read_text()

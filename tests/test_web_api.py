@@ -630,6 +630,26 @@ def test_transactions_panel_includes_non_order_rows_and_account_name_payloads(wi
     assert payload["transactions"][0]["Type"] == "DIVIDEND"
     assert payload["transactions"][0]["Account"] == "Main"
     assert payload["transactions"][0]["Description"] == "Dividend payment"
+    assert runtime.kernel.session_log_path.read_text().count("web_transactions_loaded") == 1
+    assert '"fetched_count": 2' in runtime.kernel.session_log_path.read_text()
+    assert '"returned_count": 1' in runtime.kernel.session_log_path.read_text()
+
+
+def test_transactions_failure_is_logged(with_session, runtime):
+    class TransactionAvanza(FakeAvanza):
+        def get_transactions_details(self, **kwargs):
+            raise RuntimeError("boom")
+
+    avanza = TransactionAvanza()
+    runtime.kernel.avanza = avanza
+    for context in runtime.kernel.tenant_sessions.values():
+        context.avanza = avanza
+
+    response = with_session.get("/api/transactions?types=BUY,SELL")
+    assert response.status_code == 502
+    log_text = runtime.kernel.session_log_path.read_text()
+    assert "web_transactions_failed" in log_text
+    assert "boom" in log_text
 
 
 def test_paper_mode_disable_requires_acknowledge(with_session, runtime):

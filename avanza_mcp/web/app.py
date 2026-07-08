@@ -79,9 +79,8 @@ def create_web_app(runtime: WebRuntime) -> FastAPI:
                 return JSONResponse({"error": "origin_rejected"}, status_code=403)
 
         response: Response = await call_next(request)
-        if is_api:
-            response.headers["Cache-Control"] = "no-store"
-        else:
+        response.headers["Cache-Control"] = "no-store"
+        if not is_api:
             response.headers["Content-Security-Policy"] = csp
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
