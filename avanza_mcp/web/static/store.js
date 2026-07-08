@@ -7,6 +7,7 @@ export const store = reactive({
   wsState: "disconnected", // disconnected | connecting | connected
   sessions: [],
   activeSessionId: null,
+  contextRevision: 0,
   accounts: [],
   selectedAccountId: null,
   portfolio: null, // { rows, metrics, realtime }
@@ -41,6 +42,10 @@ export function applySessionAccent() {
   if (active && active.color) {
     document.documentElement.style.setProperty("--session-color", active.color);
   }
+}
+
+export function bumpContextRevision() {
+  store.contextRevision += 1;
 }
 
 const MCP_LOG_LIMIT = 500;

@@ -1,6 +1,7 @@
 // TradingView custom lists overlay: 15s auto-refresh while open.
 import { defineComponent, ref, watch, onUnmounted } from "vue";
 import { api } from "../api.js";
+import { store } from "../store.js";
 import DataTable from "./DataTable.js";
 
 const REFRESH_MS = 15000;
@@ -56,6 +57,7 @@ export default defineComponent({
       if (isOpen) { load(); schedule(); } else { clearInterval(timer); }
     });
     watch(selected, () => { if (props.open) load(); });
+    watch(() => store.contextRevision, () => { if (props.open) load(); });
     onUnmounted(() => clearInterval(timer));
 
     return { props, emit, lists, selected, rows, loading, error, notice, columns, load };

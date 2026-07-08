@@ -1,6 +1,7 @@
 // Research candidates overlay: source-ranked read-only stock ideas.
 import { defineComponent, ref, watch } from "vue";
 import { api } from "../api.js";
+import { store } from "../store.js";
 import DataTable from "./DataTable.js";
 
 function fmtNumber(value) {
@@ -79,6 +80,7 @@ export default defineComponent({
     }
 
     watch(() => props.open, (isOpen) => { if (isOpen) load(); });
+    watch(() => store.contextRevision, () => { if (props.open) load(); });
 
     return {
       props, emit, rows, warnings, sources, disclaimer, asOf, loading, error,

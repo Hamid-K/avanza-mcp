@@ -74,6 +74,9 @@ export default defineComponent({
     watch(() => props.open, (isOpen) => {
       if (isOpen) hydrateStoplosses();
     });
+    watch(() => store.contextRevision, () => {
+      if (props.open) hydrateStoplosses();
+    });
 
     return { props, emit, columns, rows, hydrateStoplosses };
   },

@@ -1,6 +1,6 @@
 // REST hydration + commands. WS keeps the store fresh afterwards.
 import { api } from "./api.js";
-import { store, toast, applySessionAccent } from "./store.js";
+import { store, toast, applySessionAccent, bumpContextRevision } from "./store.js";
 
 export async function hydrateAll() {
   store.meta = await api.get("/api/meta");
@@ -44,6 +44,7 @@ export async function addSession(body) {
   store.activeSessionId = result.active_session_id;
   applySessionAccent();
   await hydrateAll();
+  bumpContextRevision();
   return result;
 }
 
@@ -53,6 +54,7 @@ export async function activateSession(sessionId) {
   store.activeSessionId = result.active_session_id;
   applySessionAccent();
   await Promise.all([hydratePortfolio(), hydrateOrders(), hydrateStoplosses()]);
+  bumpContextRevision();
 }
 
 export async function logoutSession(sessionId) {
@@ -67,11 +69,13 @@ export async function logoutSession(sessionId) {
     store.openOrders = [];
     store.stoplosses = [];
   }
+  bumpContextRevision();
 }
 
 export async function selectAccount(accountId) {
   await api.post(`/api/accounts/${encodeURIComponent(accountId)}/select`);
   await Promise.all([hydratePortfolio(), hydrateOrders(), hydrateStoplosses()]);
+  bumpContextRevision();
 }
 
 export async function manualRefresh() {

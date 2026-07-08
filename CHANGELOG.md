@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8 - 2026-07-08
+
+- Reload active Web overlay panels after session or account dropdown changes so Orders, Transactions, Stop-Losses, TradingView lists, and Research candidates reflect the newly selected context.
+
 ## 0.2.7 - 2026-07-08
 
 - Added a visible Web Transactions `P/L SEK` column backed by Avanza's transaction result field, with gain/loss coloring for realized trade damage checks.

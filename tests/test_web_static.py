@@ -250,3 +250,23 @@ def test_account_selection_hydrates_orders_and_stoplosses():
     assert "hydratePortfolio()" in body
     assert "hydrateOrders()" in body
     assert "hydrateStoplosses()" in body
+    assert "bumpContextRevision()" in body
+
+
+def test_active_overlay_reloads_after_account_or_session_context_change():
+    store = (STATIC_DIR / "store.js").read_text()
+    actions = (STATIC_DIR / "actions.js").read_text()
+    history = (STATIC_DIR / "components" / "HistoryOverlay.js").read_text()
+    stoplosses = (STATIC_DIR / "components" / "StopLossesOverlay.js").read_text()
+    tv = (STATIC_DIR / "components" / "TvListsOverlay.js").read_text()
+    recommendations = (STATIC_DIR / "components" / "RecommendationsOverlay.js").read_text()
+
+    assert "contextRevision: 0" in store
+    assert "export function bumpContextRevision()" in store
+    assert "bumpContextRevision" in actions
+    assert "watch(() => store.contextRevision" in history
+    assert "if (props.open) load()" in history
+    assert "watch(() => store.contextRevision" in stoplosses
+    assert "if (props.open) hydrateStoplosses()" in stoplosses
+    assert "watch(() => store.contextRevision" in tv
+    assert "watch(() => store.contextRevision" in recommendations

@@ -1,6 +1,7 @@
 // Full-screen overlay for orders history / transactions (shared shell).
 import { defineComponent, ref, watch } from "vue";
 import { api } from "../api.js";
+import { store } from "../store.js";
 import DataTable from "./DataTable.js";
 
 const ALL_TRANSACTION_TYPES = "DIVIDEND,BUY,SELL,WITHDRAW,DEPOSIT,UNKNOWN";
@@ -121,6 +122,9 @@ export default defineComponent({
         if (!toDate.value) toDate.value = range.to;
         load();
       }
+    });
+    watch(() => store.contextRevision, () => {
+      if (props.open) load();
     });
 
     return { props, emit, rows, loading, error, fromDate, toDate, load, orderCols, txCols };
