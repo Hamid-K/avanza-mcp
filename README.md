@@ -235,7 +235,8 @@ updates, order and stop-loss tickets (dry-run → review → typed `PLACE`),
 guarded cancellations, multi-tenant session switching with re-auth, MCP
 bridge management (bridge/R-W/live-authorization controls, token and proxy
 command, streaming tool log), a dedicated Paper trading workspace,
-TradingView lists, performance charting, and orders/transactions history.
+TradingView lists, source-ranked research candidates, performance charting,
+and orders/transactions history.
 The dashboard keeps view and trade actions in a second top-toolbar row;
 Activity and MCP Live logs sit under Ongoing Orders, scroll independently,
 and the main/side, portfolio/order/log, and Activity/MCP splits can be
@@ -391,6 +392,7 @@ Canonical naming note:
   3. wait for auto-capture confirmation, then run `tv_auth_session_status`,
   4. use `tv_auth_*` tools with no repeated cookie input.
 - The TUI `TradingView Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
+- The Web UI `Research candidates` view uses `/api/recommendations/stocks` to assemble a bounded, read-only candidate list from TradingView movers/technicals and Zacks rank/analysis summaries. It is research input only, not an order instruction.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - If Codex or another agent does not expose `tv_*` tools as direct native calls, keep using the registered `avanza_cli` MCP server and call the tools through the local stdio/TUI bridge. The bridge command remains `python avanza_cli.py mcp`; it forwards to the authenticated TUI localhost session.
 - Pre-open workflow:

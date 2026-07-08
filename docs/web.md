@@ -4,8 +4,8 @@
 feature parity to the TUI: portfolio, order/stop-loss tickets with dry-run
 and typed confirmation, cancel flows, multi-tenant Avanza sessions with
 re-authentication, MCP bridge management, paper trading (including a
-dedicated Paper workspace), TradingView lists, and orders/transactions
-history.
+dedicated Paper workspace), TradingView lists, source-ranked research
+candidates, and orders/transactions history.
 
 The Web UI and the TUI are **mutually exclusive**: both acquire
 `.avanza_ui.lock` at startup and refuse to start while the other is
@@ -27,12 +27,18 @@ with an SSH tunnel (`ssh -L 8787:127.0.0.1:8787 host`).
 
 The dashboard uses a two-row top toolbar: account/session state and metrics
 on the first row, then workspace tabs plus Orders, Transactions,
-TradingView lists, Order, and Stop-Loss actions on the second row. Ongoing
+TradingView lists, Research candidates, Order, and Stop-Loss actions on the second row. Ongoing
 Orders owns the lower activity area: Activity and MCP Live logs are directly
 below it, independently scrollable, and only auto-follow new lines while
 already scrolled to the bottom. The main/side split, portfolio/order/log
 split, and Activity/MCP Live split are drag-resizable and persisted in the
 browser's local storage.
+
+`Research candidates` is read-only. It calls
+`/api/recommendations/stocks` and assembles a bounded candidate list from
+TradingView movers/technicals and Zacks rank/analysis summaries, with
+optional FMP analyst-history enrichment when `FMP_API_KEY` is configured.
+Use it as research input for review; it never authorizes or places orders.
 
 ## Security model
 

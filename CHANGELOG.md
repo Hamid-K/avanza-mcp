@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-07-08
+
+- Added a Web UI `Research candidates` overlay next to TradingView lists. It assembles read-only source-ranked stock candidates from TradingView movers/technicals and Zacks rank/analysis summaries, with optional FMP analyst history when `FMP_API_KEY` is configured.
+- Added `/api/recommendations/stocks`, a bounded research aggregation endpoint with per-symbol source errors, source provenance, transparent scores, and a clear research-only disclaimer.
+- Added Web API/static tests covering research candidate aggregation and toolbar/overlay wiring.
+
 ## 0.2.1 - 2026-07-08
 
 - Fixed Web UI completed-order history filtering so `BUY,SELL` transaction filters are parsed once and sent to Avanza with valid enum values.

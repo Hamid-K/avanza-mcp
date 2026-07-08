@@ -130,6 +130,23 @@ def test_tradingview_overlay_displays_fallback_notice_and_rows():
     assert ".notice" in css
 
 
+def test_research_candidates_overlay_is_wired_to_toolbar_and_api():
+    topbar = (STATIC_DIR / "components" / "TopBar.js").read_text()
+    app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
+    overlay = (STATIC_DIR / "components" / "RecommendationsOverlay.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    assert "Research candidates" in topbar
+    assert "open-overlay', 'recommendations'" in topbar
+    assert "RecommendationsOverlay" in app_shell
+    assert "overlay === 'recommendations'" in app_shell
+    assert "/api/recommendations/stocks" in overlay
+    assert "source-ranked" in overlay
+    assert "Research input only" in overlay
+    assert ".research-summary" in css
+    assert ".score-pill" in css
+
+
 def test_activity_log_lives_under_ongoing_orders_and_scrolls_independently():
     app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
     activity = (STATIC_DIR / "components" / "ActivityLog.js").read_text()

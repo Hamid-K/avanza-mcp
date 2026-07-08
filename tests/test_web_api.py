@@ -458,6 +458,74 @@ def test_tv_lists_falls_back_to_public_scanner(with_session, runtime, monkeypatc
     assert calls[1][0] == "tv_scrape_heatmap"
 
 
+def test_recommendations_endpoint_aggregates_tv_and_zacks(with_session, runtime, monkeypatch):
+    calls = []
+
+    def fake_execute(tool, arguments):
+        calls.append((tool, arguments))
+        if tool == "tv_scrape_heatmap":
+            return {
+                "source": "tradingview-scanner",
+                "rows": [
+                    {
+                        "name": "AAPL",
+                        "description": "Apple Inc",
+                        "exchange": "NASDAQ",
+                        "close": 280.14,
+                        "change": 3.24,
+                        "change_abs": 8.79,
+                        "volume": 1_234_567,
+                        "relative_volume_10d_calc": 2.1,
+                        "sector": "Technology",
+                    },
+                    {
+                        "name": "MSFT",
+                        "description": "Microsoft Corp",
+                        "exchange": "NASDAQ",
+                        "close": 500.0,
+                        "change": 0.4,
+                        "volume": 900_000,
+                        "relative_volume_10d_calc": 1.0,
+                        "sector": "Technology",
+                    },
+                ],
+            }
+        if tool == "tv_scrape_symbol_analytics":
+            symbol = arguments["symbol"]
+            return {
+                "technicals": {
+                    "overall_label": "Strong Buy" if symbol == "AAPL" else "Neutral",
+                    "overall_score": 0.9 if symbol == "AAPL" else 0.0,
+                },
+                "analytics": {"sector": "Technology", "industry": "Consumer Electronics"},
+            }
+        if tool == "zacks_scrape_symbol":
+            symbol = arguments["symbol"]
+            if symbol == "MSFT":
+                raise RuntimeError("blocked")
+            return {
+                "rank": {"value": 1, "label": "Strong Buy"},
+                "earnings_esp": "+2.5%",
+                "analysis_summary": {"summary": "Visible Zacks summary text."},
+            }
+        raise AssertionError(tool)
+
+    monkeypatch.setattr(runtime.kernel, "execute_mcp_tool", fake_execute)
+    response = with_session.get("/api/recommendations/stocks?limit=2&enrich_limit=2")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["mode"] == "research_candidates"
+    assert "TradingView heatmap" in payload["sources"]
+    assert "Zacks" in payload["sources"]
+    assert payload["disclaimer"].startswith("Research candidates only")
+    assert payload["rows"][0]["symbol"] == "AAPL"
+    assert payload["rows"][0]["tv_rating"] == "Strong Buy"
+    assert payload["rows"][0]["zacks_rank"] == "#1 Strong Buy"
+    assert payload["rows"][0]["source_count"] >= 3
+    assert any(error["source"] == "Zacks" and error["symbol"] == "MSFT" for error in payload["source_errors"])
+    assert calls[0][0] == "tv_scrape_heatmap"
+
+
 def test_transactions_types_filter_parses(with_session, runtime):
     class TransactionAvanza(FakeAvanza):
         def __init__(self):
