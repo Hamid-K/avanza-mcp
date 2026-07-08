@@ -117,6 +117,19 @@ def test_history_overlay_normalizes_api_transaction_rows():
     assert 'params.set("types", ALL_TRANSACTION_TYPES)' in history
 
 
+def test_tradingview_overlay_displays_fallback_notice_and_rows():
+    tv_overlay = (STATIC_DIR / "components" / "TvListsOverlay.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    assert "notice" in tv_overlay
+    assert "payload.warning" in tv_overlay
+    assert "selected_list" in tv_overlay
+    assert "knownSelected" in tv_overlay
+    assert "No TradingView symbols available" in tv_overlay
+    assert "TradingView session may be missing" not in tv_overlay
+    assert ".notice" in css
+
+
 def test_activity_log_lives_under_ongoing_orders_and_scrolls_independently():
     app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
     activity = (STATIC_DIR / "components" / "ActivityLog.js").read_text()

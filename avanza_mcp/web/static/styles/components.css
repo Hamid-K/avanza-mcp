@@ -195,6 +195,14 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .tab-row button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .progress-line { min-height: 18px; font-size: var(--fs-small); color: var(--muted); display: flex; gap: 8px; align-items: center; }
 .error { color: var(--down); font-size: var(--fs-small); min-height: 16px; }
+.notice {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 7px 10px;
+  font-size: var(--fs-small);
+}
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {

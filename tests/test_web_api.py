@@ -417,6 +417,47 @@ def test_paper_state_endpoint(with_session):
     assert "trades" in payload
 
 
+def test_tv_lists_falls_back_to_public_scanner(with_session, runtime, monkeypatch):
+    calls = []
+
+    def fake_execute(tool, arguments):
+        calls.append((tool, arguments))
+        if tool == "tv_auth_custom_lists":
+            raise RuntimeError("Playwright is required for TradingView custom list scraping.")
+        if tool == "tv_scrape_heatmap":
+            return {
+                "source": "tradingview-scanner",
+                "rows": [
+                    {
+                        "name": "AAPL",
+                        "description": "Apple Inc",
+                        "exchange": "NASDAQ",
+                        "close": 280.14,
+                        "change": 3.24,
+                        "change_abs": 8.79,
+                        "volume": 123456,
+                        "update_mode": "delayed_streaming_900",
+                    }
+                ],
+            }
+        raise AssertionError(tool)
+
+    monkeypatch.setattr(runtime.kernel, "execute_mcp_tool", fake_execute)
+    response = with_session.get("/api/tv/lists?limit=5")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["fallback"] is True
+    assert payload["selected_list"]["id"] == "public-heatmap"
+    assert payload["rows"][0]["symbol"] == "AAPL"
+    assert payload["rows"][0]["symbol_full"] == "NASDAQ:AAPL"
+    assert payload["rows"][0]["last"] == 280.14
+    assert payload["rows"][0]["change"] == 8.79
+    assert payload["rows"][0]["change_percent"] == 3.24
+    assert payload["rows"][0]["market_state"] == "delayed_streaming_900"
+    assert calls[0][0] == "tv_auth_custom_lists"
+    assert calls[1][0] == "tv_scrape_heatmap"
+
+
 def test_transactions_types_filter_parses(with_session, runtime):
     class TransactionAvanza(FakeAvanza):
         def __init__(self):

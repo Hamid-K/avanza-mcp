@@ -1,6 +1,7 @@
 """Paper-trading state and TradingView list endpoints."""
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -12,6 +13,68 @@ router = APIRouter()
 
 def _kernel(request: Request):
     return request.app.state.runtime.kernel
+
+
+def _tv_first_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _normalize_tv_row(row: dict[str, Any]) -> dict[str, Any]:
+    symbol = _tv_first_value(row, "symbol", "name")
+    exchange = _tv_first_value(row, "exchange")
+    symbol_full = _tv_first_value(row, "symbol_full")
+    if not symbol_full and exchange and symbol:
+        symbol_full = f"{exchange}:{symbol}"
+    return {
+        **row,
+        "symbol": symbol,
+        "symbol_full": symbol_full,
+        "name": _tv_first_value(row, "description", "name", "symbol"),
+        "last": _tv_first_value(row, "last", "close", "premarket_close", "postmarket_close"),
+        "change": _tv_first_value(row, "change_abs", "change"),
+        "change_percent": _tv_first_value(row, "change_percent", "change"),
+        "volume": _tv_first_value(row, "volume"),
+        "market_state": _tv_first_value(row, "market_state", "market_status", "update_mode"),
+        "source": _tv_first_value(row, "source") or "tradingview",
+    }
+
+
+def _normalize_tv_lists_payload(payload: Any, *, fallback_reason: str = "") -> dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    rows = payload.get("rows") or payload.get("items") or payload.get("symbols") or []
+    normalized_rows = [_normalize_tv_row(row) for row in rows if isinstance(row, dict)]
+    lists = payload.get("lists") or payload.get("watchlists") or []
+    lists = [item for item in lists if isinstance(item, dict)]
+    if not lists:
+        lists = [
+            {
+                "id": "public-heatmap",
+                "list_id": "public-heatmap",
+                "name": "Public TradingView movers",
+                "title": "Public TradingView movers",
+                "count": len(normalized_rows),
+            }
+        ]
+    selected = payload.get("selected_list") if isinstance(payload.get("selected_list"), dict) else None
+    selected = selected or lists[0]
+    result = {
+        **payload,
+        "lists": lists,
+        "items": normalized_rows,
+        "rows": normalized_rows,
+        "selected_list": selected,
+        "fallback": bool(fallback_reason),
+        "fallback_reason": fallback_reason,
+    }
+    if fallback_reason:
+        result["warning"] = f"Showing public TradingView scanner data because authenticated custom lists are unavailable: {fallback_reason}"
+        result["mode"] = "public_scanner_fallback"
+        result["source"] = payload.get("source") or "tradingview-scanner"
+    return result
 
 
 @router.get("/api/paper/state")
@@ -47,11 +110,23 @@ async def tv_lists(request: Request, list_id: str = "", limit: int = 200):
     kernel = _kernel(request)
 
     def work():
-        with kernel.state_lock:
-            arguments = {"limit": int(limit)}
-            if list_id:
-                arguments["list_id"] = list_id
-            return kernel.execute_mcp_tool("tv_auth_custom_lists", arguments)
+        bounded_limit = max(1, min(int(limit), 200))
+        arguments = {"limit": bounded_limit}
+        if list_id and list_id != "public-heatmap":
+            arguments["list_id"] = list_id
+        try:
+            return _normalize_tv_lists_payload(kernel.execute_mcp_tool("tv_auth_custom_lists", arguments))
+        except Exception as custom_exc:
+            fallback = kernel.execute_mcp_tool(
+                "tv_scrape_heatmap",
+                {
+                    "limit": bounded_limit,
+                    "sort_by": "change",
+                    "include_premarket": True,
+                    "exclude_otc": True,
+                },
+            )
+            return _normalize_tv_lists_payload(fallback, fallback_reason=str(custom_exc))
 
     try:
         return await asyncio.to_thread(work)
