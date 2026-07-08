@@ -107,6 +107,9 @@ def test_history_overlay_normalizes_api_transaction_rows():
     history = (STATIC_DIR / "components" / "HistoryOverlay.js").read_text()
 
     assert "function normalizeHistoryRow" in history
+    assert "function defaultDateRange" in history
+    assert "fromDate.value = range.from" in history
+    assert "toDate.value = range.to" in history
     assert '"Trade Date"' in history
     assert '"Account"' in history
     assert '"Type"' in history

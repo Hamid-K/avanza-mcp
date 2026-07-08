@@ -1,7 +1,9 @@
 """Read-only data endpoints: accounts, portfolio, orders, history, search, quotes."""
 
 import asyncio
+import calendar
 from contextlib import nullcontext
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -38,6 +40,16 @@ def _auth_expired_response(kernel, exc: Exception) -> JSONResponse | None:
         kernel.mark_tenant_session_auth_expired(session_id, exc)
         return JSONResponse({"error": "auth_expired", "session_id": session_id}, status_code=401)
     return None
+
+
+def _one_month_ago(today: date) -> date:
+    month = today.month - 1
+    year = today.year
+    if month == 0:
+        month = 12
+        year -= 1
+    day = min(today.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
 
 
 async def _run(kernel, fn, *args, **kwargs):
@@ -110,13 +122,16 @@ async def transactions(request: Request, from_date: str | None = None, to_date: 
         from avanza_mcp.records import parse_optional_iso_date
 
         type_list = [token.strip() for token in str(types or "").split(",") if token.strip()]
+        today = date.today()
+        parsed_from = parse_optional_iso_date(from_date, label="from_date") or _one_month_ago(today)
+        parsed_to = parse_optional_iso_date(to_date, label="to_date") or today
         payload = await _run(
             kernel,
             kernel.transactions_snapshot,
             kernel.avanza,
             kernel.selected_account_id,
-            transactions_from=parse_optional_iso_date(from_date, label="from_date"),
-            transactions_to=parse_optional_iso_date(to_date, label="to_date"),
+            transactions_from=parsed_from,
+            transactions_to=parsed_to,
             types=type_list if type_list else None,
         )
     except Exception as exc:

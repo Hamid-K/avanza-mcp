@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 
 pytest.importorskip("fastapi")
 
@@ -559,6 +560,33 @@ def test_transactions_types_filter_parses(with_session, runtime):
     assert payload["types"] == ["BUY", "SELL"]
     assert payload["transactions"][0]["Stock"] == "TestStock"
     assert [item.value for item in avanza.calls[-1]["transaction_details_types"]] == ["BUY", "SELL"]
+
+
+def test_transactions_default_to_past_month(with_session, runtime):
+    from avanza_mcp.web.api.data import _one_month_ago
+
+    class TransactionAvanza(FakeAvanza):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def get_transactions_details(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"transactions": []}
+
+    avanza = TransactionAvanza()
+    runtime.kernel.avanza = avanza
+    for context in runtime.kernel.tenant_sessions.values():
+        context.avanza = avanza
+
+    today = date.today()
+    response = with_session.get("/api/transactions?types=BUY,SELL")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["transactions_from"] == _one_month_ago(today).isoformat()
+    assert payload["transactions_to"] == today.isoformat()
+    assert avanza.calls[-1]["transactions_from"] == _one_month_ago(today)
+    assert avanza.calls[-1]["transactions_to"] == today
 
 
 def test_paper_mode_disable_requires_acknowledge(with_session, runtime):

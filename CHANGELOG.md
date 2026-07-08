@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3 - 2026-07-08
+
+- Fixed the Web Transactions/Completed Orders overlay so blank date fields default to the past calendar month, both in the visible date inputs and in `/api/transactions` backend calls.
+
 ## 0.2.2 - 2026-07-08
 
 - Added a Web UI `Research candidates` overlay next to TradingView lists. It assembles read-only source-ranked stock candidates from TradingView movers/technicals and Zacks rank/analysis summaries, with optional FMP analyst history when `FMP_API_KEY` is configured.

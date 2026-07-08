@@ -5,6 +5,23 @@ import DataTable from "./DataTable.js";
 
 const ALL_TRANSACTION_TYPES = "DIVIDEND,BUY,SELL,WITHDRAW,DEPOSIT,UNKNOWN";
 
+function isoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function defaultDateRange() {
+  const today = new Date();
+  let year = today.getFullYear();
+  let month = today.getMonth() - 1;
+  if (month < 0) {
+    month = 11;
+    year -= 1;
+  }
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const from = new Date(year, month, Math.min(today.getDate(), lastDay));
+  return { from: isoDate(from), to: isoDate(today) };
+}
+
 function firstValue(row, keys, fallback = "") {
   for (const key of keys) {
     const value = row?.[key];
@@ -71,6 +88,11 @@ export default defineComponent({
       loading.value = true; error.value = "";
       try {
         const params = new URLSearchParams();
+        if (!fromDate.value || !toDate.value) {
+          const range = defaultDateRange();
+          if (!fromDate.value) fromDate.value = range.from;
+          if (!toDate.value) toDate.value = range.to;
+        }
         if (fromDate.value) params.set("from_date", fromDate.value);
         if (toDate.value) params.set("to_date", toDate.value);
         if (props.mode === "orders") params.set("types", "BUY,SELL");
@@ -83,7 +105,14 @@ export default defineComponent({
       } finally { loading.value = false; }
     }
 
-    watch(() => props.open, (isOpen) => { if (isOpen) load(); });
+    watch(() => props.open, (isOpen) => {
+      if (isOpen) {
+        const range = defaultDateRange();
+        if (!fromDate.value) fromDate.value = range.from;
+        if (!toDate.value) toDate.value = range.to;
+        load();
+      }
+    });
 
     return { props, emit, rows, loading, error, fromDate, toDate, load, orderCols, txCols };
   },
