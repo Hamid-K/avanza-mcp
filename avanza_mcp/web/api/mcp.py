@@ -87,7 +87,7 @@ async def mcp_live_trading(request: Request):
             )
         if not bool(body.get("acknowledge", False)):
             return JSONResponse(
-                {"error": "acknowledge_required", "detail": "Tick the acknowledgement checkbox to authorize live trading."},
+                {"error": "acknowledge_required", "detail": "Confirm live trading authorization."},
                 status_code=403,
             )
 

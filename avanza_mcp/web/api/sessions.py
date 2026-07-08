@@ -63,6 +63,8 @@ def _apply_login_result(kernel: Any, result: LoginResult, *, refresh_session_id:
         kernel.position_row_cache = {}
     kernel.on_state_changed("sessions")
     kernel.on_state_changed("portfolio")
+    kernel.on_state_changed("orders")
+    kernel.on_state_changed("stoplosses")
     kernel.write_log(f"Web login completed for session {context.label} ({context.session_id}).")
     return context.session_id
 

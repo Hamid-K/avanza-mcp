@@ -477,17 +477,24 @@ def parse_transaction_types(values: Any) -> list[TransactionsDetailsType]:
     if values in (None, "", []):
         return [TransactionsDetailsType.BUY, TransactionsDetailsType.SELL]
 
-    raw_values: list[str]
+    raw_values: list[Any]
     if isinstance(values, str):
         raw_values = [chunk.strip() for chunk in values.split(",") if chunk.strip()]
     elif isinstance(values, (list, tuple, set)):
-        raw_values = [str(value).strip() for value in values if str(value).strip()]
+        raw_values = [value for value in values if str(value).strip()]
     else:
         raise ValueError("transaction types must be a comma-separated string or a list.")
 
     if not raw_values:
         return [TransactionsDetailsType.BUY, TransactionsDetailsType.SELL]
-    return [enum_value(TransactionsDetailsType, value) for value in raw_values]
+
+    parsed: list[TransactionsDetailsType] = []
+    for value in raw_values:
+        if isinstance(value, TransactionsDetailsType):
+            parsed.append(value)
+        else:
+            parsed.append(enum_value(TransactionsDetailsType, str(value).strip()))
+    return parsed
 
 
 def transactions_items(payload: Any) -> tuple[list[dict[str, Any]], str | None]:

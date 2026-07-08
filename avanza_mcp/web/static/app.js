@@ -1,6 +1,6 @@
 // App entry: token gate, then the trading shell (Phase 3+).
 import { createApp, defineComponent, computed, onMounted } from "vue";
-import { api } from "./api.js";
+import { api, setCsrfToken } from "./api.js";
 import { store, dismissToast } from "./store.js";
 import { connectWs } from "./ws.js";
 import LoginView from "./components/LoginView.js";
@@ -35,6 +35,7 @@ const Root = defineComponent({
       try {
         const me = await api.get("/api/auth/me");
         store.auth.authenticated = !!me.authenticated;
+        if (me.csrf_token) setCsrfToken(me.csrf_token);
       } catch {
         store.auth.authenticated = false;
       } finally {

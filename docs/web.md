@@ -23,6 +23,17 @@ At startup the server prints a one-time access token (also written to
 form. The server only ever binds `127.0.0.1`; reach it from another machine
 with an SSH tunnel (`ssh -L 8787:127.0.0.1:8787 host`).
 
+## Dashboard layout
+
+The dashboard uses a two-row top toolbar: account/session state and metrics
+on the first row, then workspace tabs plus Orders, Transactions,
+TradingView lists, Order, and Stop-Loss actions on the second row. Ongoing
+Orders owns the lower activity area: Activity and MCP Live logs are directly
+below it, independently scrollable, and only auto-follow new lines while
+already scrolled to the bottom. The main/side split, portfolio/order/log
+split, and Activity/MCP Live split are drag-resizable and persisted in the
+browser's local storage.
+
 ## Security model
 
 - **Access token → cookie session.** The startup token is exchanged once
@@ -49,10 +60,11 @@ with an SSH tunnel (`ssh -L 8787:127.0.0.1:8787 host`).
   reviewed payload, so a blind one-shot POST cannot trade and what you
   reviewed is exactly what runs.
 - **MCP gates are separate.** The MCP R/W toggle and per-session
-  live-trading authorization (an explicit acknowledgement checkbox, enforced
-  server-side via an `acknowledge` flag and only available while R/W is on)
-  gate MCP tool calls only, exactly as in the TUI; mutating MCP calls
-  additionally need `confirm: true` per call.
+  live-trading authorization gate MCP tool calls only. Live authorization is
+  a compact warning/action strip in the UI, but is still enforced
+  server-side via an `acknowledge` flag and is only available while R/W is
+  on. Authorizing live MCP trading also turns paper mode off; mutating MCP
+  calls additionally need `confirm: true` per call.
 
 ## MCP from the web
 

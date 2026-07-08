@@ -20,7 +20,7 @@ const PROFIT_HINTS = {
 export default defineComponent({
   name: "TopBar",
   props: { tab: { type: String, required: true } },
-  emits: ["change-tab", "add-session", "reauth-session", "logout-session"],
+  emits: ["change-tab", "add-session", "reauth-session", "logout-session", "open-order", "open-stoploss", "open-overlay"],
   setup(props, { emit }) {
     const profitMode = ref("day");
     const clock = ref("");
@@ -69,7 +69,6 @@ export default defineComponent({
 
     async function togglePaperMode() {
       const next = !store.meta.paper_mode;
-      if (!next && !confirm("Disable paper mode? Ticket submissions become LIVE orders (typed PLACE still required).")) return;
       try {
         const result = await api.post("/api/paper/mode", { enabled: next, acknowledge: !next });
         store.meta.paper_mode = result.paper_mode;
@@ -96,67 +95,80 @@ export default defineComponent({
   },
   template: `
     <header class="topbar">
-      <div class="brand">
-        <span class="dot" :style="{ background: activeSession?.color || 'var(--accent)' }"></span>
-        <strong>Avanza-MCP</strong>
-        <span class="muted mono">v{{ store.meta.app_version }}</span>
+      <div class="topbar-main">
+        <div class="brand">
+          <span class="dot" :style="{ background: activeSession?.color || 'var(--accent)' }"></span>
+          <strong>Avanza-MCP</strong>
+          <span class="muted mono">v{{ store.meta.app_version }}</span>
+        </div>
+
+        <div class="switchers">
+          <label class="switcher">
+            <span>Session</span>
+            <select :value="store.activeSessionId || ''" @change="onSessionChange">
+              <option v-for="s in store.sessions" :key="s.session_id" :value="s.session_id">
+                {{ s.label }}{{ s.auth_valid ? "" : " [EXPIRED]" }}
+              </option>
+              <option value="__add__">+ Add session…</option>
+            </select>
+          </label>
+          <label class="switcher">
+            <span>Account</span>
+            <select :value="store.portfolio?.account_id || ''" @change="onAccountChange">
+              <option v-for="a in (activeSession?.accounts || [])" :key="a.id" :value="a.id">
+                {{ a.name }} [{{ a.type }}]
+              </option>
+            </select>
+          </label>
+          <span v-if="activeSession && !activeSession.auth_valid" class="badge expired"
+                role="button" tabindex="0" @click="emit('reauth-session', activeSession.session_id)">
+            EXPIRED — re-auth
+          </span>
+        </div>
+
+        <div class="metrics">
+          <div class="metric"><span class="metric-label">Total</span><span class="metric-value">{{ account.total_value || "-" }}</span></div>
+          <div class="metric"><span class="metric-label">Buying</span><span class="metric-value">{{ account.buying_power || "-" }}</span></div>
+          <button class="metric metric-btn" @click="cycleProfit"
+                  :title="(PROFIT_HINTS[profitMode] || '') + ' Click to cycle.'">
+            <span class="metric-label">{{ profit.label }}</span>
+            <span class="metric-value" :class="profitClass(profit)">{{ fmtProfit(profit) }}</span>
+          </button>
+          <div class="metric"><span class="metric-label">Status</span><span class="metric-value">{{ account.status || "-" }}</span></div>
+        </div>
+
+        <div class="topbar-right">
+          <span v-if="store.meta.update?.outdated" class="badge warn-text" :title="store.meta.update.text">update</span>
+          <span class="clock mono muted">{{ clock }}</span>
+          <button class="ghost icon-btn" @click="onToggleTheme" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'">
+            {{ theme === "light" ? "☾" : "☀" }}
+          </button>
+          <button class="ghost icon-btn" @click="manualRefresh" title="Refresh now (r)">⟳</button>
+          <button class="ghost icon-btn" @click="logoutActive" title="Log out active session">⎋</button>
+        </div>
       </div>
 
-      <div class="switchers">
-        <label class="switcher">
-          <span>Session</span>
-          <select :value="store.activeSessionId || ''" @change="onSessionChange">
-            <option v-for="s in store.sessions" :key="s.session_id" :value="s.session_id">
-              {{ s.label }}{{ s.auth_valid ? "" : " [EXPIRED]" }}
-            </option>
-            <option value="__add__">+ Add session…</option>
-          </select>
-        </label>
-        <label class="switcher">
-          <span>Account</span>
-          <select :value="store.portfolio?.account_id || ''" @change="onAccountChange">
-            <option v-for="a in (activeSession?.accounts || [])" :key="a.id" :value="a.id">
-              {{ a.name }} [{{ a.type }}]
-            </option>
-          </select>
-        </label>
-        <span v-if="activeSession && !activeSession.auth_valid" class="badge expired"
-              role="button" tabindex="0" @click="emit('reauth-session', activeSession.session_id)">
-          EXPIRED — re-auth
-        </span>
-      </div>
-
-      <div class="metrics">
-        <div class="metric"><span class="metric-label">Total</span><span class="metric-value">{{ account.total_value || "-" }}</span></div>
-        <div class="metric"><span class="metric-label">Buying</span><span class="metric-value">{{ account.buying_power || "-" }}</span></div>
-        <button class="metric metric-btn" @click="cycleProfit"
-                :title="(PROFIT_HINTS[profitMode] || '') + ' Click to cycle.'">
-          <span class="metric-label">{{ profit.label }}</span>
-          <span class="metric-value" :class="profitClass(profit)">{{ fmtProfit(profit) }}</span>
-        </button>
-        <div class="metric"><span class="metric-label">Status</span><span class="metric-value">{{ account.status || "-" }}</span></div>
-      </div>
-
-      <nav class="tabs" role="tablist">
-        <button v-for="t in ['dashboard', 'paper', 'mcp']" :key="t"
-                role="tab" :aria-selected="props.tab === t"
-                :class="{ active: props.tab === t }" @click="emit('change-tab', t)">
-          {{ t === 'mcp' ? 'MCP' : t.charAt(0).toUpperCase() + t.slice(1) }}
-        </button>
-      </nav>
-
-      <div class="topbar-right">
+      <div class="topbar-tools">
+        <nav class="tabs" role="tablist">
+          <button v-for="t in ['dashboard', 'paper', 'mcp']" :key="t"
+                  role="tab" :aria-selected="props.tab === t"
+                  :class="{ active: props.tab === t }" @click="emit('change-tab', t)">
+            {{ t === 'mcp' ? 'MCP' : t.charAt(0).toUpperCase() + t.slice(1) }}
+          </button>
+        </nav>
+        <div class="toolbar-group">
+          <button class="ghost" @click="emit('open-overlay', 'orders')">Orders</button>
+          <button class="ghost" @click="emit('open-overlay', 'transactions')">Transactions</button>
+          <button class="ghost" @click="emit('open-overlay', 'tv')">TradingView lists</button>
+        </div>
+        <div class="toolbar-group trade-toolbar">
+          <button class="primary" @click="emit('open-order')" title="Order ticket (o)">+ Order</button>
+          <button class="warn" @click="emit('open-stoploss')" title="Stop-loss ticket (s)">+ Stop-Loss</button>
+        </div>
         <button class="badge mode-toggle" :class="store.meta.paper_mode ? 'paper' : 'live'"
-                @click="togglePaperMode" :title="store.meta.paper_mode ? 'Paper mode on — click for LIVE' : 'LIVE tickets — click for paper'">
+                @click="togglePaperMode" :title="store.meta.paper_mode ? 'Paper mode on — click for LIVE ticket mode' : 'LIVE tickets — click for paper mode'">
           {{ store.meta.paper_mode ? "PAPER" : "LIVE" }}
         </button>
-        <span v-if="store.meta.update?.outdated" class="badge warn-text" :title="store.meta.update.text">update</span>
-        <span class="clock mono muted">{{ clock }}</span>
-        <button class="ghost" @click="onToggleTheme" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'">
-          {{ theme === "light" ? "☾" : "☀" }}
-        </button>
-        <button class="ghost" @click="manualRefresh" title="Refresh now (r)">⟳</button>
-        <button class="ghost" @click="logoutActive" title="Log out active session">⎋</button>
       </div>
     </header>
   `,

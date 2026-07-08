@@ -233,9 +233,13 @@ python avanza_cli.py web --port 9000 --no-browser
 The Web UI has feature parity with the TUI — portfolio with live 5-second
 updates, order and stop-loss tickets (dry-run → review → typed `PLACE`),
 guarded cancellations, multi-tenant session switching with re-auth, MCP
-bridge management (bridge/R-W/live-authorization toggles, token and proxy
+bridge management (bridge/R-W/live-authorization controls, token and proxy
 command, streaming tool log), a dedicated Paper trading workspace,
 TradingView lists, performance charting, and orders/transactions history.
+The dashboard keeps view and trade actions in a second top-toolbar row;
+Activity and MCP Live logs sit under Ongoing Orders, scroll independently,
+and the main/side, portfolio/order/log, and Activity/MCP splits can be
+drag-resized and are remembered locally.
 It binds `127.0.0.1` only and is protected by a startup access token,
 cookie session, CSRF header, and a strict CSP (self + two pinned CDN files
 with SRI). See `docs/web.md` for the full security model, endpoint table,

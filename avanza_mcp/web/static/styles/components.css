@@ -70,10 +70,13 @@
 /* ---------- App shell layout ---------- */
 .shell { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
 .topbar {
-  display: flex; align-items: center; gap: 18px;
-  height: var(--topbar-h); padding: 0 14px;
+  display: grid; grid-template-rows: 1fr auto; gap: 8px;
+  min-height: var(--topbar-h); padding: 8px 14px;
   background: var(--panel); border-bottom: 1px solid var(--border);
-  white-space: nowrap; overflow-x: auto;
+  white-space: nowrap; overflow: hidden;
+}
+.topbar-main, .topbar-tools {
+  display: flex; align-items: center; gap: 14px; min-width: 0;
 }
 .brand { display: flex; align-items: center; gap: 8px; font-size: var(--fs-title); }
 .switchers { display: flex; align-items: center; gap: 10px; }
@@ -90,19 +93,39 @@
 .tabs button.active { background: var(--accent); color: #fff; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
 .clock { font-size: var(--fs-tiny); }
+.toolbar-group { display: flex; align-items: center; gap: 6px; }
+.trade-toolbar { margin-left: auto; }
+.icon-btn { width: 30px; padding-left: 0; padding-right: 0; text-align: center; }
 
 .dashboard-grid {
-  display: grid; grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr);
-  gap: 10px; padding: 10px; min-height: 0; overflow: auto;
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) 8px minmax(280px, var(--side-pane-width, 360px));
+  gap: 0; padding: 10px; min-height: 0; overflow: hidden;
 }
-.col-main, .col-side { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.col-main, .col-side { display: grid; gap: 10px; min-width: 0; min-height: 0; }
+.dashboard-stack {
+  grid-template-rows:
+    minmax(220px, var(--portfolio-pane-height, 420px))
+    8px
+    minmax(120px, var(--ongoing-pane-height, 210px))
+    8px
+    minmax(150px, 1fr);
+}
+.col-side { grid-template-rows: minmax(260px, 1fr) minmax(200px, 0.7fr); padding-left: 10px; }
 .single-panel { padding: 10px; overflow: auto; }
 .first-session { display: grid; place-items: center; }
 
 .panel {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 10px; min-width: 0;
-  display: grid; gap: 8px; align-content: start;
+  display: grid; gap: 8px; align-content: start; min-height: 0;
+}
+.dashboard-grid > .col-main > .panel,
+.dashboard-grid > .col-side > .panel,
+.dashboard-grid .log-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow: hidden;
 }
 .panel-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .panel-title h2 { font-size: var(--fs-base); }
@@ -117,9 +140,40 @@
 .chart-host { min-height: 200px; }
 .chart-host.dim { opacity: 0.5; }
 
-.log-panel { max-height: 260px; }
-.log-scroll { overflow-y: auto; max-height: 200px; font-size: var(--fs-tiny); }
+.log-panel { min-height: 0; }
+.log-scroll {
+  overflow: auto; min-height: 0; max-height: none;
+  font-size: var(--fs-tiny); overscroll-behavior: contain;
+}
 .log-line { padding: 1px 4px; border-bottom: 1px solid var(--panel-2); }
+
+.resize-bar {
+  position: relative;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+}
+.resize-bar::after {
+  content: "";
+  position: absolute;
+  background: var(--border-strong);
+  border-radius: 999px;
+  opacity: 0.75;
+}
+.resize-bar.horizontal { cursor: row-resize; }
+.resize-bar.horizontal::after {
+  left: 45%; right: 45%; top: 3px; height: 2px;
+}
+.resize-bar.vertical { cursor: col-resize; }
+.resize-bar.vertical::after {
+  top: 45%; bottom: 45%; left: 3px; width: 2px;
+}
+.resize-bar:hover::after,
+body.is-resizing .resize-bar::after {
+  background: var(--accent);
+  opacity: 1;
+}
+body.is-resizing { cursor: col-resize; user-select: none; }
 
 /* ---------- Modals ---------- */
 .modal-backdrop {
@@ -200,11 +254,6 @@
 .check-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-small); color: var(--muted); }
 .check-row input { width: auto; }
 
-.fab-row {
-  position: fixed; right: 18px; bottom: 18px; z-index: 60;
-  display: flex; gap: 8px;
-}
-
 /* ---------- MCP panel ---------- */
 .mcp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-content: start; }
 .mcp-log-panel { grid-column: 1 / -1; }
@@ -236,23 +285,32 @@
 .summary-cards .metric { text-align: left; }
 
 /* ---------- Dual console (Activity | MCP Live) ---------- */
-.console-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-width: 0; }
-.console-pane { min-width: 0; display: grid; gap: 6px; align-content: start; }
+.console-row {
+  display: grid;
+  grid-template-columns: minmax(180px, var(--activity-log-width, 50%)) 8px minmax(180px, 1fr);
+  gap: 10px; min-width: 0; min-height: 0; height: 100%;
+}
+.console-pane {
+  min-width: 0; min-height: 0;
+  display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 6px;
+}
 .console-pane.mcp-pane { border-left: 2px solid var(--warn); padding-left: 10px; }
+.console-splitter { margin: 0 -5px; }
 
-/* ---------- Live-trading arming checkbox ---------- */
-.arm-live-box {
-  margin-top: 8px;
+/* ---------- Live-trading authorization ---------- */
+.live-auth-strip {
   border: 2px dotted var(--warn);
   border-radius: var(--radius);
-  padding: 10px;
-  display: grid;
-  gap: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   background: color-mix(in srgb, var(--down) 6%, transparent);
 }
-.arm-live-box.inactive { opacity: 0.5; }
-.arm-live-check { color: var(--down); font-weight: 600; }
-.arm-live-check input { accent-color: var(--down); width: 16px; height: 16px; }
+.live-auth-strip.inactive { opacity: 0.55; }
+.live-auth-strip.armed { border-color: var(--up); background: color-mix(in srgb, var(--up) 8%, transparent); }
+button.compact { width: max-content; white-space: nowrap; padding: 4px 10px; }
 
 /* ---------- Log syntax highlighting ---------- */
 .lg-tool { color: var(--info); font-weight: 600; }

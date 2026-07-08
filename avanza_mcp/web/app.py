@@ -132,7 +132,11 @@ def create_web_app(runtime: WebRuntime) -> FastAPI:
 
     @app.get("/api/auth/me")
     async def auth_me(request: Request):
-        return {"authenticated": auth.cookie_ok(request.cookies.get(COOKIE_NAME))}
+        authenticated = auth.cookie_ok(request.cookies.get(COOKIE_NAME))
+        payload = {"authenticated": authenticated}
+        if authenticated:
+            payload["csrf_token"] = auth.session_value
+        return payload
 
     # ------------------------------------------------------------------ meta
 

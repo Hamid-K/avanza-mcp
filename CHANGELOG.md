@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 - 2026-07-08
+
+- Fixed Web UI completed-order history filtering so `BUY,SELL` transaction filters are parsed once and sent to Avanza with valid enum values.
+- Restored Web UI CSRF tokens after authenticated page reloads via `/api/auth/me`, so mutating requests do not fail after refresh.
+- Improved Web UI live data freshness: login, account switching, and live refresh now update portfolio, ongoing orders, and stop-loss panes together.
+- Reworked the Web dashboard layout:
+  - moved Activity and MCP Live logs directly under Ongoing Orders,
+  - moved Orders, Transactions, TradingView lists, Order, and Stop-Loss actions into a second top-toolbar row,
+  - removed the fixed bottom-right floating action row,
+  - added persisted splitters for main/side panes, portfolio/ongoing/log panes, and Activity/MCP Live logs.
+- Simplified Web MCP live authorization into a compact warning strip and removed duplicate tick boxes; authorizing live MCP trading now also disables paper mode.
+- Removed the browser confirmation popup when toggling paper mode in the Web UI.
+- Added focused Web API/static regression tests for transaction filters, CSRF reload recovery, stale order/stop-loss refreshes, toolbar placement, log scrolling, and live authorization UX.
+
 ## 0.2.0 - 2026-07-07
 
 - Restructured the 16.7k-line `avanza_cli.py` monolith into the `avanza_mcp` package (config, domain modules, external integrations, MCP server, TUI); the root file is now a thin shim and all documented invocations keep working.

@@ -240,4 +240,6 @@ class CoreRefreshMixin:
         if self.debug_mode:
             self.debug_log(f"refresh_selected_account_live(background): {elapsed:.3f}s")
         self.on_state_changed("portfolio")
+        self.on_state_changed("orders")
+        self.on_state_changed("stoplosses")
         self._finish_live_refresh_cycle()

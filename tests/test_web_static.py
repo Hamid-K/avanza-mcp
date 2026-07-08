@@ -89,3 +89,65 @@ def test_vendor_fallbacks_committed():
 def test_api_responses_not_cached(client):
     response = client.get("/api/auth/me")
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_dashboard_actions_are_in_toolbar_not_floating():
+    app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
+    topbar = (STATIC_DIR / "components" / "TopBar.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    assert "fab-row" not in app_shell
+    assert ".fab-row" not in css
+    assert "open-overlay" in topbar
+    assert "TradingView lists" in topbar
+    assert "+ Stop-Loss" in topbar
+
+
+def test_activity_log_lives_under_ongoing_orders_and_scrolls_independently():
+    app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
+    activity = (STATIC_DIR / "components" / "ActivityLog.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    assert app_shell.index("<OpenOrdersPanel") < app_shell.index("<ActivityLog")
+    assert "appHost" in activity and "mcpHost" in activity
+    assert "shouldFollow" in activity
+    assert "startConsoleResize" in activity
+    assert ".log-scroll" in css and "overflow: auto" in css
+    assert "--activity-log-width" in css
+
+
+def test_paper_toggle_has_no_browser_confirm_and_live_auth_is_single_action():
+    topbar = (STATIC_DIR / "components" / "TopBar.js").read_text()
+    mcp_panel = (STATIC_DIR / "components" / "McpPanel.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    assert 'confirm("Disable paper mode?' not in topbar
+    assert "armAcknowledged" not in mcp_panel
+    assert "arm-live-check" not in mcp_panel
+    assert "live-auth-strip" in mcp_panel
+    assert 'api.post("/api/paper/mode", { enabled: false, acknowledge: true })' in mcp_panel
+    assert ".live-auth-strip" in css
+
+
+def test_dashboard_splitters_are_persisted():
+    app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    for key in ("sideWidth", "portfolioHeight", "ongoingHeight"):
+        assert key in app_shell
+    assert "avanza.web.layout.${key}" in app_shell
+    assert "startResize('side'" in app_shell
+    assert "startResize('portfolio'" in app_shell
+    assert "startResize('ongoing'" in app_shell
+    assert ".resize-bar.vertical" in css
+    assert ".resize-bar.horizontal" in css
+
+
+def test_account_selection_hydrates_orders_and_stoplosses():
+    actions = (STATIC_DIR / "actions.js").read_text()
+    select_account = re.search(r"export async function selectAccount\(accountId\) \{(?P<body>.*?)\n\}", actions, re.S)
+    assert select_account, "selectAccount action not found"
+    body = select_account.group("body")
+    assert "hydratePortfolio()" in body
+    assert "hydrateOrders()" in body
+    assert "hydrateStoplosses()" in body

@@ -71,7 +71,7 @@ export async function logoutSession(sessionId) {
 
 export async function selectAccount(accountId) {
   await api.post(`/api/accounts/${encodeURIComponent(accountId)}/select`);
-  await hydratePortfolio();
+  await Promise.all([hydratePortfolio(), hydrateOrders(), hydrateStoplosses()]);
 }
 
 export async function manualRefresh() {

@@ -9,7 +9,6 @@ export default defineComponent({
   setup() {
     const busy = ref(false);
     const error = ref("");
-    const armAcknowledged = ref(false);
     const logHost = ref(null);
     const status = computed(() => store.mcp);
 
@@ -32,9 +31,23 @@ export default defineComponent({
     const toggleReadWrite = () => call("/api/mcp/read-write", { enabled: !status.value.read_write });
 
     async function armLive() {
-      if (!armAcknowledged.value) return;
-      await call("/api/mcp/live-trading", { enabled: true, acknowledge: true });
-      if (!error.value) { armAcknowledged.value = false; toast("Live trading authorized for this session", "warning"); }
+      busy.value = true; error.value = "";
+      try {
+        store.mcp = await api.post("/api/mcp/live-trading", { enabled: true, acknowledge: true });
+        if (store.meta.paper_mode) {
+          try {
+            const paper = await api.post("/api/paper/mode", { enabled: false, acknowledge: true });
+            store.meta.paper_mode = paper.paper_mode;
+          } catch (exc) {
+            try { store.mcp = await api.post("/api/mcp/live-trading", { enabled: false }); } catch {}
+            throw new Error(`Live authorization revoked because paper mode could not be disabled: ${exc.message}`);
+          }
+        }
+        await refreshStatus();
+        toast("Live trading authorized; paper mode is OFF", "warning");
+      } catch (exc) {
+        error.value = exc.payload?.detail || exc.message;
+      } finally { busy.value = false; }
     }
     const revokeLive = () => call("/api/mcp/live-trading", { enabled: false });
 
@@ -49,7 +62,7 @@ export default defineComponent({
     });
 
     onMounted(refreshStatus);
-    return { store, status, busy, error, armAcknowledged, logHost,
+    return { store, status, busy, error, logHost,
              toggleBridge, toggleReadWrite, armLive, revokeLive, copy, highlightLog };
   },
   template: `
@@ -71,22 +84,21 @@ export default defineComponent({
               <div class="muted">Allow MCP tools to request mutations. Disabling revokes live-trading authorization.</div>
             </div>
           </label>
-          <div class="toggle-row" :class="{ disabled: !status.read_write }">
-            <input type="checkbox" :checked="status.live_trading" disabled>
-            <div style="flex:1"><strong>Live trading authorization</strong>
-              <div class="muted">Per-session arming for live MCP mutations. Requires R/W; each mutating call still needs confirm:true.</div>
-              <div v-if="!status.live_trading" class="arm-live-box" :class="{ inactive: !status.read_write }">
-                <label class="check-row arm-live-check">
-                  <input type="checkbox" v-model="armAcknowledged" :disabled="busy || !status.read_write">
-                  I understand MCP tools may place and cancel REAL orders
-                </label>
-                <button class="danger" :disabled="busy || !status.read_write || !armAcknowledged"
-                        @click="armLive">Authorize live trading</button>
-              </div>
-              <div v-else style="margin-top:6px">
-                <button class="warn" :disabled="busy" @click="revokeLive">Revoke live trading</button>
+          <div class="live-auth-strip" :class="{ inactive: !status.read_write, armed: status.live_trading }">
+            <div>
+              <strong>Live Trading authorization</strong>
+              <div class="muted">
+                Per-session arming for REAL MCP mutations. Requires R/W; each mutating call still needs confirm:true.
+                Authorizing also turns paper mode OFF.
               </div>
             </div>
+            <button v-if="!status.live_trading" class="danger compact"
+                    :disabled="busy || !status.read_write" @click="armLive">
+              Authorize live trading
+            </button>
+            <button v-else class="warn compact" :disabled="busy" @click="revokeLive">
+              Revoke
+            </button>
           </div>
         </div>
         <div class="error" role="alert">{{ error }}</div>

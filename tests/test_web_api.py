@@ -94,6 +94,20 @@ def test_session_login_registers_tenant(with_session, runtime):
     assert runtime.kernel.selected_account_id == "acc-1"  # largest account auto-selected
 
 
+def test_auth_me_restores_csrf_for_authenticated_reload(client, runtime):
+    login = client.post("/api/auth/login", json={"token": runtime.auth.login_token})
+    assert login.status_code == 200
+    original = login.json()["csrf_token"]
+    client.headers.pop("X-Avanza-Web-Token", None)
+
+    me = client.get("/api/auth/me").json()
+    assert me == {"authenticated": True, "csrf_token": original}
+
+    client.headers["X-Avanza-Web-Token"] = me["csrf_token"]
+    response = client.post("/api/paper/mode", json={"enabled": True})
+    assert response.status_code == 200
+
+
 def test_session_login_requires_credentials(authed, monkeypatch):
     monkeypatch.setattr("avanza_mcp.core.login.Avanza", FakeAvanza)
     response = authed.post("/api/sessions", json={"mode": "credentials", "username": "", "password": ""})
@@ -165,6 +179,28 @@ def test_ws_pushes_portfolio_on_state_change(with_session, runtime):
         frame = ws.receive_json()
         assert frame["type"] == "portfolio"
         assert frame["payload"]["rows"][0]["Stock"] == "TestStock"
+
+
+def test_live_refresh_pushes_orders_and_stoplosses(with_session, runtime):
+    csrf = with_session.headers["X-Avanza-Web-Token"]
+    headers = {"host": "127.0.0.1:8787", "cookie": f"avanza_web_auth={csrf}"}
+    with with_session.websocket_connect("/ws", headers=headers) as ws:
+        assert ws.receive_json()["type"] == "hello"
+        runtime.kernel._apply_live_refresh_payload(
+            runtime.kernel.latest_portfolio_data or FakeAvanza().get_accounts_positions(),
+            {},
+            {},
+            [],
+            [],
+            0.01,
+            runtime.kernel.active_session_id,
+        )
+        frame_types = set()
+        for _ in range(8):
+            frame_types.add(ws.receive_json()["type"])
+            if {"portfolio", "orders", "stoplosses"}.issubset(frame_types):
+                break
+        assert {"portfolio", "orders", "stoplosses"}.issubset(frame_types)
 
 
 def test_market_status(with_session):
@@ -330,7 +366,7 @@ def test_mcp_live_trading_requires_rw_and_acknowledge(with_session):
     assert response.status_code == 409  # R/W off
     with_session.post("/api/mcp/read-write", json={"enabled": True})
     response = with_session.post("/api/mcp/live-trading", json={"enabled": True})
-    assert response.status_code == 403  # acknowledgement checkbox not ticked
+    assert response.status_code == 403  # server-side acknowledgement missing
     with_session.post("/api/mcp/read-write", json={"enabled": False})
 
 
@@ -381,11 +417,39 @@ def test_paper_state_endpoint(with_session):
     assert "trades" in payload
 
 
-def test_transactions_types_filter_parses(with_session):
-    # FakeAvanza has no get_transactions_details; the endpoint must fail
-    # upstream (502), not on parameter parsing (400).
+def test_transactions_types_filter_parses(with_session, runtime):
+    class TransactionAvanza(FakeAvanza):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def get_transactions_details(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "transactions": [
+                    {
+                        "tradeDate": "2026-01-02",
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "type": "BUY",
+                        "orderbook": {"id": "1234", "name": "TestStock"},
+                        "volume": {"value": 10},
+                        "priceInTransactionCurrency": {"value": 10.0, "unit": "SEK"},
+                        "amount": {"value": -100.0, "unit": "SEK"},
+                    }
+                ]
+            }
+
+    avanza = TransactionAvanza()
+    runtime.kernel.avanza = avanza
+    for context in runtime.kernel.tenant_sessions.values():
+        context.avanza = avanza
+
     response = with_session.get("/api/transactions?types=BUY,SELL")
-    assert response.status_code == 502
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["types"] == ["BUY", "SELL"]
+    assert payload["transactions"][0]["Stock"] == "TestStock"
+    assert [item.value for item in avanza.calls[-1]["transaction_details_types"]] == ["BUY", "SELL"]
 
 
 def test_paper_mode_disable_requires_acknowledge(with_session, runtime):
