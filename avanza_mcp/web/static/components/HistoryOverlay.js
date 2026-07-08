@@ -30,9 +30,16 @@ function firstValue(row, keys, fallback = "") {
   return fallback;
 }
 
+function signClass(value) {
+  const number = parseFloat(String(value ?? "").replace(/[^\d.-]/g, ""));
+  if (Number.isNaN(number) || number === 0) return "";
+  return number > 0 ? "up" : "down";
+}
+
 function normalizeHistoryRow(row) {
   const stock = firstValue(row, ["stock", "Stock"]);
   const description = firstValue(row, ["description", "Description"], stock);
+  const result = firstValue(row, ["pl_sek", "P/L SEK", "profit_loss_sek", "result", "Result"]);
   return {
     ...row,
     trade_date: firstValue(row, ["trade_date", "Trade Date", "date", "Date"]),
@@ -44,7 +51,8 @@ function normalizeHistoryRow(row) {
     volume: firstValue(row, ["volume", "Volume"]),
     price: firstValue(row, ["price", "Price"]),
     amount: firstValue(row, ["amount", "Amount"]),
-    result: firstValue(row, ["result", "Result"]),
+    result,
+    pl_sek: result,
     isin: firstValue(row, ["isin", "ISIN"]),
   };
 }
@@ -81,6 +89,7 @@ export default defineComponent({
       { key: "volume", label: "Qty", numeric: true },
       { key: "price", label: "Price", numeric: true },
       { key: "amount", label: "Amount", numeric: true },
+      { key: "pl_sek", label: "P/L SEK", numeric: true, cellClass: (r) => signClass(r.pl_sek) },
       { key: "isin", label: "ISIN" },
     ];
 

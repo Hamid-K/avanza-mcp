@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7 - 2026-07-08
+
+- Added a visible Web Transactions `P/L SEK` column backed by Avanza's transaction result field, with gain/loss coloring for realized trade damage checks.
+
 ## 0.2.6 - 2026-07-08
 
 - Added a full-page Web `Stop-Losses` overlay for configured live and paper stop-losses, with refresh, edit, and guarded cancel actions.

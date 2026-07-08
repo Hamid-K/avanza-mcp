@@ -545,6 +545,7 @@ def test_transactions_types_filter_parses(with_session, runtime):
                         "volume": {"value": 10},
                         "priceInTransactionCurrency": {"value": 10.0, "unit": "SEK"},
                         "amount": {"value": -100.0, "unit": "SEK"},
+                        "result": {"value": -12.5, "unit": "SEK"},
                     }
                 ]
             }
@@ -559,6 +560,8 @@ def test_transactions_types_filter_parses(with_session, runtime):
     payload = response.json()
     assert payload["types"] == ["BUY", "SELL"]
     assert payload["transactions"][0]["Stock"] == "TestStock"
+    assert payload["transactions"][0]["Result"] == "-12.5 SEK"
+    assert payload["transactions"][0]["P/L SEK"] == "-12.5 SEK"
     assert [item.value for item in avanza.calls[-1]["transaction_details_types"]] == ["BUY", "SELL"]
 
 

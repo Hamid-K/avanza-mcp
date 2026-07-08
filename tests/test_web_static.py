@@ -123,6 +123,9 @@ def test_history_overlay_normalizes_api_transaction_rows():
     assert '"Description"' in history
     assert '"Stock"' in history
     assert '"Amount"' in history
+    assert '"P/L SEK"' in history
+    assert "pl_sek" in history
+    assert "signClass" in history
     assert "ALL_TRANSACTION_TYPES" in history
     assert 'params.set("types", ALL_TRANSACTION_TYPES)' in history
 

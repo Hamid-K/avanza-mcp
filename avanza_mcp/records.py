@@ -604,6 +604,7 @@ def transaction_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
 
 def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
     orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
+    result = amount(item, "result")
     return {
         "Trade Date": str(item.get("tradeDate") or item.get("date") or ""),
         "Account": transaction_account_name(item),
@@ -613,7 +614,8 @@ def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
         "Price": amount(item, "priceInTransactionCurrency") or amount(item, "priceInTradedCurrency"),
         "Amount": amount(item, "amount"),
         "Commission": amount(item, "commission"),
-        "Result": amount(item, "result"),
+        "Result": result,
+        "P/L SEK": result,
         "ISIN": str(item.get("isin") or orderbook.get("isin") or ""),
         "Description": str(item.get("description") or ""),
     }
