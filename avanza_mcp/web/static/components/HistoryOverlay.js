@@ -1,10 +1,12 @@
 // Full-screen overlay for orders history / transactions (shared shell).
-import { defineComponent, ref, watch } from "vue";
+import { defineComponent, ref, watch, onUnmounted } from "vue";
 import { api } from "../api.js";
 import { store } from "../store.js";
 import DataTable from "./DataTable.js";
 
 const ALL_TRANSACTION_TYPES = "DIVIDEND,BUY,SELL,WITHDRAW,DEPOSIT,UNKNOWN";
+const REFRESH_MS = 10000;
+const PUSH_DEBOUNCE_MS = 300;
 
 function isoDate(date) {
   return date.toISOString().slice(0, 10);
@@ -72,6 +74,10 @@ export default defineComponent({
     const error = ref("");
     const fromDate = ref("");
     const toDate = ref("");
+    const lastLoaded = ref("");
+    let intervalTimer = 0;
+    let debounceTimer = 0;
+    let reloadQueued = false;
 
     const orderCols = [
       { key: "trade_date", label: "Date" },
@@ -95,6 +101,10 @@ export default defineComponent({
     ];
 
     async function load() {
+      if (loading.value) {
+        reloadQueued = true;
+        return;
+      }
       loading.value = true; error.value = "";
       try {
         const params = new URLSearchParams();
@@ -109,10 +119,38 @@ export default defineComponent({
         else params.set("types", ALL_TRANSACTION_TYPES);
         const payload = await api.get(`/api/transactions?${params}`);
         rows.value = (payload.transactions || payload.items || []).map(normalizeHistoryRow);
+        lastLoaded.value = new Date().toLocaleTimeString();
       } catch (exc) {
         error.value = exc.payload?.detail || exc.message;
         rows.value = [];
-      } finally { loading.value = false; }
+      } finally {
+        loading.value = false;
+        if (reloadQueued && props.open) {
+          reloadQueued = false;
+          scheduleReload();
+        }
+      }
+    }
+
+    function scheduleInterval() {
+      clearInterval(intervalTimer);
+      intervalTimer = setInterval(() => {
+        if (props.open) load();
+      }, REFRESH_MS);
+    }
+
+    function scheduleReload() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (props.open) load();
+      }, PUSH_DEBOUNCE_MS);
+    }
+
+    function stopRefresh() {
+      clearInterval(intervalTimer);
+      clearTimeout(debounceTimer);
+      intervalTimer = 0;
+      debounceTimer = 0;
     }
 
     watch(() => props.open, (isOpen) => {
@@ -121,19 +159,30 @@ export default defineComponent({
         if (!fromDate.value) fromDate.value = range.from;
         if (!toDate.value) toDate.value = range.to;
         load();
+        scheduleInterval();
+      } else {
+        stopRefresh();
       }
     });
     watch(() => store.contextRevision, () => {
-      if (props.open) load();
+      if (props.open) scheduleReload();
     });
+    watch(() => store.historyRevision, () => {
+      if (props.open) scheduleReload();
+    });
+    onUnmounted(stopRefresh);
 
-    return { props, emit, rows, loading, error, fromDate, toDate, load, orderCols, txCols };
+    return { props, emit, rows, loading, error, fromDate, toDate, lastLoaded, load, orderCols, txCols };
   },
   template: `
     <div v-if="props.open" class="overlay fade-in" role="dialog" aria-modal="true">
       <div class="overlay-head">
-        <h2>{{ props.mode === "orders" ? "Completed Orders" : "Transactions" }}</h2>
+        <h2>
+          {{ props.mode === "orders" ? "Completed Orders" : "Transactions" }}
+          <span class="muted" style="font-weight:400">(live + 10s fallback)</span>
+        </h2>
         <div class="overlay-filters">
+          <span v-if="lastLoaded" class="muted">Updated {{ lastLoaded }}</span>
           <label>From <input type="date" v-model="fromDate"></label>
           <label>To <input type="date" v-model="toDate"></label>
           <button @click="load" :disabled="loading">Apply</button>

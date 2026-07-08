@@ -8,6 +8,7 @@ export const store = reactive({
   sessions: [],
   activeSessionId: null,
   contextRevision: 0,
+  historyRevision: 0,
   accounts: [],
   selectedAccountId: null,
   portfolio: null, // { rows, metrics, realtime }
@@ -48,6 +49,10 @@ export function bumpContextRevision() {
   store.contextRevision += 1;
 }
 
+export function bumpHistoryRevision() {
+  store.historyRevision += 1;
+}
+
 const MCP_LOG_LIMIT = 500;
 
 export function handleWsFrame(frame) {
@@ -55,6 +60,7 @@ export function handleWsFrame(frame) {
   switch (type) {
     case "portfolio":
       if (payload) store.portfolio = payload;
+      bumpHistoryRevision();
       break;
     case "sessions":
       if (payload && payload.sessions) {
@@ -65,12 +71,14 @@ export function handleWsFrame(frame) {
       break;
     case "orders":
       if (payload) store.openOrders = payload.items || [];
+      bumpHistoryRevision();
       break;
     case "stoplosses":
       if (payload) {
         store.stoplosses = payload.items || [];
         store.paperStoplosses = payload.paper_items || [];
       }
+      bumpHistoryRevision();
       break;
     case "paper":
       if (payload) store.paper = payload;

@@ -115,6 +115,10 @@ def test_history_overlay_normalizes_api_transaction_rows():
 
     assert "function normalizeHistoryRow" in history
     assert "function defaultDateRange" in history
+    assert "REFRESH_MS = 10000" in history
+    assert "PUSH_DEBOUNCE_MS" in history
+    assert "scheduleInterval()" in history
+    assert "watch(() => store.historyRevision" in history
     assert "fromDate.value = range.from" in history
     assert "toDate.value = range.to" in history
     assert '"Trade Date"' in history
@@ -270,3 +274,15 @@ def test_active_overlay_reloads_after_account_or_session_context_change():
     assert "if (props.open) hydrateStoplosses()" in stoplosses
     assert "watch(() => store.contextRevision" in tv
     assert "watch(() => store.contextRevision" in recommendations
+
+
+def test_websocket_order_frames_trigger_history_overlay_refresh_revision():
+    store = (STATIC_DIR / "store.js").read_text()
+
+    assert "historyRevision: 0" in store
+    assert "export function bumpHistoryRevision()" in store
+    for frame_type in ('case "portfolio":', 'case "orders":', 'case "stoplosses":'):
+        start = store.index(frame_type)
+        end = store.index("break;", start)
+        block = store[start:end]
+        assert "bumpHistoryRevision()" in block

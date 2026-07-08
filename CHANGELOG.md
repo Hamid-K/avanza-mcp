@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9 - 2026-07-08
+
+- Added live-refresh behavior to Web Completed Orders and Transactions overlays: they reload after relevant WebSocket order/portfolio/stop-loss updates and poll every 10 seconds while open as a fallback.
+
 ## 0.2.8 - 2026-07-08
 
 - Reload active Web overlay panels after session or account dropdown changes so Orders, Transactions, Stop-Losses, TradingView lists, and Research candidates reflect the newly selected context.
