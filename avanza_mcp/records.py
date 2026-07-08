@@ -8,7 +8,6 @@ from avanza.constants import TransactionsDetailsType
 from avanza_mcp import utils
 from avanza_mcp.market_data import (
     display_symbol,
-    order_account_id,
     infer_currency_from_metadata,
     iso_from_any_timestamp,
     market_quote_first_text,
@@ -515,9 +514,42 @@ def transactions_items(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
     return [item for item in raw_items if isinstance(item, dict)], first_date
 
 
-def transaction_matches_filters(item: dict[str, Any], account_id: str | None, executed_only: bool) -> bool:
-    if account_id and order_account_id(item, None) != account_id:
-        return False
+def transaction_account_id(item: dict[str, Any]) -> str:
+    account = item.get("account")
+    account_data = account if isinstance(account, dict) else {}
+    return str(
+        account_data.get("id")
+        or account_data.get("accountId")
+        or item.get("accountId")
+        or item.get("account_id")
+        or item.get("accountNumber")
+        or ""
+    )
+
+
+def transaction_account_name(item: dict[str, Any]) -> str:
+    account = item.get("account")
+    if isinstance(account, dict):
+        return str(account.get("name") or account.get("accountName") or "")
+    if isinstance(account, str):
+        return account
+    return str(item.get("accountName") or item.get("account_name") or "")
+
+
+def transaction_matches_filters(
+    item: dict[str, Any],
+    account_id: str | None,
+    executed_only: bool,
+    account_name: str | None = None,
+) -> bool:
+    if account_id:
+        item_account_id = transaction_account_id(item)
+        if item_account_id and item_account_id != account_id:
+            return False
+        item_account_name = transaction_account_name(item)
+        if not item_account_id and item_account_name and account_name:
+            if compact_filter_text(item_account_name) != compact_filter_text(account_name):
+                return False
     if not executed_only:
         return True
     return str(item.get("type", "")).upper() in {"BUY", "SELL"}
@@ -574,7 +606,7 @@ def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
     orderbook = item.get("orderbook") if isinstance(item.get("orderbook"), dict) else {}
     return {
         "Trade Date": str(item.get("tradeDate") or item.get("date") or ""),
-        "Account": str(nested_value(item, "account", "name") or ""),
+        "Account": transaction_account_name(item),
         "Stock": str(item.get("instrumentName") or orderbook.get("name") or item.get("description") or ""),
         "Type": str(item.get("type", "")).upper(),
         "Volume": amount(item, "volume"),
@@ -805,13 +837,14 @@ def transaction_matches_instrument_filters(
     item: dict[str, Any],
     *,
     account_id: str | None = None,
+    account_name: str | None = None,
     orderbook_id: str | None = None,
     instrument_name: str | None = None,
     side: str | None = None,
     status: str | None = None,
     executed_only: bool = True,
 ) -> bool:
-    if not transaction_matches_filters(item, account_id, executed_only):
+    if not transaction_matches_filters(item, account_id, executed_only, account_name=account_name):
         return False
     if orderbook_id and transaction_order_book_id(item) != str(orderbook_id):
         return False

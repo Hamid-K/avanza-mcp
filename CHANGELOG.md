@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4 - 2026-07-08
+
+- Fixed Web Transactions filtering so non-order transaction rows such as dividends, deposits, withdrawals, and unknown/service rows are not discarded after being fetched.
+- Hardened transaction account matching for Avanza payloads that provide `accountName` or top-level account fields instead of nested `account.id`.
+
 ## 0.2.3 - 2026-07-08
 
 - Fixed the Web Transactions/Completed Orders overlay so blank date fields default to the past calendar month, both in the visible date inputs and in `/api/transactions` backend calls.

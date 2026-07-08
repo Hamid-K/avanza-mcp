@@ -589,6 +589,49 @@ def test_transactions_default_to_past_month(with_session, runtime):
     assert avanza.calls[-1]["transactions_to"] == today
 
 
+def test_transactions_panel_includes_non_order_rows_and_account_name_payloads(with_session, runtime):
+    class TransactionAvanza(FakeAvanza):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def get_transactions_details(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "transactions": [
+                    {
+                        "tradeDate": "2026-01-03",
+                        "accountName": "Main",
+                        "type": "DIVIDEND",
+                        "description": "Dividend payment",
+                        "amount": {"value": 42.0, "unit": "SEK"},
+                    },
+                    {
+                        "tradeDate": "2026-01-03",
+                        "accountName": "Other",
+                        "type": "DEPOSIT",
+                        "description": "Other account deposit",
+                        "amount": {"value": 100.0, "unit": "SEK"},
+                    },
+                ]
+            }
+
+    avanza = TransactionAvanza()
+    runtime.kernel.avanza = avanza
+    for context in runtime.kernel.tenant_sessions.values():
+        context.avanza = avanza
+
+    response = with_session.get("/api/transactions?types=DIVIDEND,BUY,SELL,WITHDRAW,DEPOSIT,UNKNOWN")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["executed_only"] is False
+    assert payload["fetched_count"] == 2
+    assert payload["returned_count"] == 1
+    assert payload["transactions"][0]["Type"] == "DIVIDEND"
+    assert payload["transactions"][0]["Account"] == "Main"
+    assert payload["transactions"][0]["Description"] == "Dividend payment"
+
+
 def test_paper_mode_disable_requires_acknowledge(with_session, runtime):
     """Issue #2 P1: leaving paper mode is an auditable, explicit action."""
     response = with_session.post("/api/paper/mode", json={"enabled": False})

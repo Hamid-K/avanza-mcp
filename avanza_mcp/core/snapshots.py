@@ -1017,6 +1017,8 @@ class CoreSnapshotsMixin:
         compact: bool = False,
     ) -> dict[str, Any]:
         transaction_types = parse_transaction_types(types)
+        account = self.account_by_id(account_id) if account_id else None
+        account_name = str((account or {}).get("name") or "")
         payload = avanza.get_transactions_details(
             transaction_details_types=transaction_types,
             transactions_from=transactions_from,
@@ -1031,6 +1033,7 @@ class CoreSnapshotsMixin:
             if transaction_matches_instrument_filters(
                 item,
                 account_id=account_id or None,
+                account_name=account_name or None,
                 orderbook_id=orderbook_id,
                 instrument_name=instrument_name,
                 side=side,

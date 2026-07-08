@@ -122,6 +122,8 @@ async def transactions(request: Request, from_date: str | None = None, to_date: 
         from avanza_mcp.records import parse_optional_iso_date
 
         type_list = [token.strip() for token in str(types or "").split(",") if token.strip()]
+        type_names = {token.upper() for token in type_list}
+        executed_only = not type_names or type_names <= {"BUY", "SELL"}
         today = date.today()
         parsed_from = parse_optional_iso_date(from_date, label="from_date") or _one_month_ago(today)
         parsed_to = parse_optional_iso_date(to_date, label="to_date") or today
@@ -133,6 +135,7 @@ async def transactions(request: Request, from_date: str | None = None, to_date: 
             transactions_from=parsed_from,
             transactions_to=parsed_to,
             types=type_list if type_list else None,
+            executed_only=executed_only,
         )
     except Exception as exc:
         denial = _auth_expired_response(kernel, exc)
