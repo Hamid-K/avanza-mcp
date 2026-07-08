@@ -12,6 +12,7 @@
   - added persisted splitters for main/side panes, portfolio/ongoing/log panes, and Activity/MCP Live logs.
 - Simplified Web MCP live authorization into a compact warning strip and removed duplicate tick boxes; authorizing live MCP trading now also disables paper mode.
 - Removed the browser confirmation popup when toggling paper mode in the Web UI.
+- Fixed Web Transactions/Completed Orders table rendering so API rows with title-case fields display real dates, accounts, types, descriptions, and amounts instead of blank `-` cells; Transactions now requests all Avanza transaction categories.
 - Added focused Web API/static regression tests for transaction filters, CSRF reload recovery, stale order/stop-loss refreshes, toolbar placement, log scrolling, and live authorization UX.
 
 ## 0.2.0 - 2026-07-07

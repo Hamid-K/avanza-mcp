@@ -3,6 +3,35 @@ import { defineComponent, ref, watch } from "vue";
 import { api } from "../api.js";
 import DataTable from "./DataTable.js";
 
+const ALL_TRANSACTION_TYPES = "DIVIDEND,BUY,SELL,WITHDRAW,DEPOSIT,UNKNOWN";
+
+function firstValue(row, keys, fallback = "") {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
+  return fallback;
+}
+
+function normalizeHistoryRow(row) {
+  const stock = firstValue(row, ["stock", "Stock"]);
+  const description = firstValue(row, ["description", "Description"], stock);
+  return {
+    ...row,
+    trade_date: firstValue(row, ["trade_date", "Trade Date", "date", "Date"]),
+    account_name: firstValue(row, ["account_name", "Account", "account"]),
+    side: firstValue(row, ["side", "Side", "type", "Type"]),
+    stock,
+    type: firstValue(row, ["type", "Type"]),
+    description,
+    volume: firstValue(row, ["volume", "Volume"]),
+    price: firstValue(row, ["price", "Price"]),
+    amount: firstValue(row, ["amount", "Amount"]),
+    result: firstValue(row, ["result", "Result"]),
+    isin: firstValue(row, ["isin", "ISIN"]),
+  };
+}
+
 export default defineComponent({
   name: "HistoryOverlay",
   components: { DataTable },
@@ -45,8 +74,9 @@ export default defineComponent({
         if (fromDate.value) params.set("from_date", fromDate.value);
         if (toDate.value) params.set("to_date", toDate.value);
         if (props.mode === "orders") params.set("types", "BUY,SELL");
+        else params.set("types", ALL_TRANSACTION_TYPES);
         const payload = await api.get(`/api/transactions?${params}`);
-        rows.value = payload.transactions || payload.items || [];
+        rows.value = (payload.transactions || payload.items || []).map(normalizeHistoryRow);
       } catch (exc) {
         error.value = exc.payload?.detail || exc.message;
         rows.value = [];

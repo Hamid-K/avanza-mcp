@@ -103,6 +103,20 @@ def test_dashboard_actions_are_in_toolbar_not_floating():
     assert "+ Stop-Loss" in topbar
 
 
+def test_history_overlay_normalizes_api_transaction_rows():
+    history = (STATIC_DIR / "components" / "HistoryOverlay.js").read_text()
+
+    assert "function normalizeHistoryRow" in history
+    assert '"Trade Date"' in history
+    assert '"Account"' in history
+    assert '"Type"' in history
+    assert '"Description"' in history
+    assert '"Stock"' in history
+    assert '"Amount"' in history
+    assert "ALL_TRANSACTION_TYPES" in history
+    assert 'params.set("types", ALL_TRANSACTION_TYPES)' in history
+
+
 def test_activity_log_lives_under_ongoing_orders_and_scrolls_independently():
     app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
     activity = (STATIC_DIR / "components" / "ActivityLog.js").read_text()
