@@ -157,6 +157,48 @@ def test_research_candidates_overlay_is_wired_to_toolbar_and_api():
     assert ".score-pill" in css
 
 
+def test_stoplosses_overlay_is_wired_to_toolbar_and_actions():
+    topbar = (STATIC_DIR / "components" / "TopBar.js").read_text()
+    app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
+    overlay = (STATIC_DIR / "components" / "StopLossesOverlay.js").read_text()
+
+    assert "Stop-Losses" in topbar
+    assert "open-overlay', 'stoplosses'" in topbar
+    assert "StopLossesOverlay" in app_shell
+    assert "overlay === 'stoplosses'" in app_shell
+    assert '@cancel="onCancel"' in app_shell
+    assert '@edit="onEditStopLoss"' in app_shell
+    assert "Configured Stop-Losses" in overlay
+    assert "hydrateStoplosses" in overlay
+    assert "store.stoplosses" in overlay
+    assert "store.paperStoplosses" in overlay
+    assert "emit('edit', row)" in overlay
+    assert "kind: row.mode === 'Paper' ? 'paper' : 'stoploss'" in overlay
+
+
+def test_session_login_remembers_onepassword_profiles_without_passwords():
+    modal = (STATIC_DIR / "components" / "SessionLoginModal.js").read_text()
+    css = (STATIC_DIR / "styles" / "components.css").read_text()
+
+    assert "PROFILE_STORAGE_KEY" in modal
+    assert "avanza.web.onePasswordProfiles.v1" in modal
+    assert "localStorage.setItem(PROFILE_STORAGE_KEY" in modal
+    assert "Saved 1Password profile" in modal
+    assert "Sign in saved" in modal
+    assert "forgetSelectedProfile" in modal
+    assert "rememberCurrentProfile" in modal
+    assert "Only the 1Password item name, vault, and display label are stored locally." in modal
+    save_start = modal.index("function saveProfiles")
+    save_end = modal.index("function newProfileId")
+    save_block = modal[save_start:save_end]
+    assert "op_item" in save_block
+    assert "op_vault" in save_block
+    assert "password" not in save_block.lower()
+    assert "totp" not in save_block.lower()
+    assert ".profile-picker" in css
+    assert ".form-hint" in css
+
+
 def test_activity_log_lives_under_ongoing_orders_and_scrolls_independently():
     app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()
     activity = (STATIC_DIR / "components" / "ActivityLog.js").read_text()

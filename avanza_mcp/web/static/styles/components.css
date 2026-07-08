@@ -193,6 +193,13 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .tab-row { display: flex; gap: 4px; }
 .tab-row button { flex: 1; color: var(--muted); }
 .tab-row button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.profile-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: end;
+}
+.form-hint { color: var(--faint); font-size: var(--fs-tiny); margin-top: -4px; }
 .progress-line { min-height: 18px; font-size: var(--fs-small); color: var(--muted); display: flex; gap: 8px; align-items: center; }
 .error { color: var(--down); font-size: var(--fs-small); min-height: 16px; }
 .notice {

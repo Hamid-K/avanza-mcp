@@ -236,7 +236,12 @@ guarded cancellations, multi-tenant session switching with re-auth, MCP
 bridge management (bridge/R-W/live-authorization controls, token and proxy
 command, streaming tool log), a dedicated Paper trading workspace,
 TradingView lists, source-ranked research candidates, performance charting,
-and orders/transactions history.
+orders/transactions history, and a full-page configured stop-loss view
+beside the compact dashboard stop-loss pane.
+When using 1Password CLI login, the Web UI can remember browser-local
+profiles containing only the 1Password item name, optional vault, and display
+label, so future primary or extra-session logins can pull credentials from
+1Password without retyping the item name.
 The dashboard keeps view and trade actions in a second top-toolbar row;
 Activity and MCP Live logs sit under Ongoing Orders, scroll independently,
 and the main/side, portfolio/order/log, and Activity/MCP splits can be

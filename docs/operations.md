@@ -178,6 +178,13 @@ rank/analysis summaries, with optional FMP enrichment when `FMP_API_KEY` is
 configured. Treat it as research input only; it never authorizes or places
 orders.
 
+The Web UI also has a full-page `Stop-Losses` view next to Orders and
+Transactions. It lists configured live and paper stop-losses with account,
+stock, trigger, order, validity, edit, and guarded cancellation actions. The
+login modal can remember 1Password CLI profiles for primary and extra-session
+logins; it stores only the 1Password item name, optional vault, and display
+label in browser local storage, never the Avanza password or TOTP.
+
 
 ## MCP Mode
 

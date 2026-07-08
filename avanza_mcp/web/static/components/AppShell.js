@@ -17,6 +17,7 @@ import PaperView from "./PaperView.js";
 import HistoryOverlay from "./HistoryOverlay.js";
 import TvListsOverlay from "./TvListsOverlay.js";
 import RecommendationsOverlay from "./RecommendationsOverlay.js";
+import StopLossesOverlay from "./StopLossesOverlay.js";
 
 export default defineComponent({
   name: "AppShell",
@@ -24,7 +25,7 @@ export default defineComponent({
     TopBar, SessionLoginModal, PortfolioTable, OpenOrdersPanel,
     ActiveTradesPanel, PerformanceChart, ActivityLog,
     OrderTicket, StopLossTicket, CancelDialog, McpPanel,
-    PaperView, HistoryOverlay, TvListsOverlay, RecommendationsOverlay,
+    PaperView, HistoryOverlay, TvListsOverlay, RecommendationsOverlay, StopLossesOverlay,
   },
   setup() {
     const tab = ref("dashboard");
@@ -105,7 +106,7 @@ export default defineComponent({
     const stopLossOpen = ref(false);
     const stopLossEditTarget = ref(null);
     const cancelTarget = ref(null);
-    const overlay = ref(""); // "" | orders | transactions | tv | recommendations
+    const overlay = ref(""); // "" | orders | transactions | stoplosses | tv | recommendations
 
     function onTrade({ side, row }) {
       orderPrefill.value = {
@@ -196,6 +197,10 @@ export default defineComponent({
 
       <HistoryOverlay :open="overlay === 'orders'" mode="orders" @close="overlay = ''" />
       <HistoryOverlay :open="overlay === 'transactions'" mode="transactions" @close="overlay = ''" />
+      <StopLossesOverlay :open="overlay === 'stoplosses'"
+                         @close="overlay = ''"
+                         @cancel="onCancel"
+                         @edit="onEditStopLoss" />
       <TvListsOverlay :open="overlay === 'tv'" @close="overlay = ''" />
       <RecommendationsOverlay :open="overlay === 'recommendations'" @close="overlay = ''" />
 

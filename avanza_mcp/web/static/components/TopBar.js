@@ -159,6 +159,7 @@ export default defineComponent({
         <div class="toolbar-group">
           <button class="ghost" @click="emit('open-overlay', 'orders')">Orders</button>
           <button class="ghost" @click="emit('open-overlay', 'transactions')">Transactions</button>
+          <button class="ghost" @click="emit('open-overlay', 'stoplosses')">Stop-Losses</button>
           <button class="ghost" @click="emit('open-overlay', 'tv')">TradingView lists</button>
           <button class="ghost" @click="emit('open-overlay', 'recommendations')">Research candidates</button>
         </div>

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6 - 2026-07-08
+
+- Added a full-page Web `Stop-Losses` overlay for configured live and paper stop-losses, with refresh, edit, and guarded cancel actions.
+- Added browser-local saved 1Password login profiles for primary and extra-session Web logins; profiles store only the item name, optional vault, and display label.
+
 ## 0.2.5 - 2026-07-08
 
 - Disabled browser caching for all local Web UI static assets to avoid stale Vue modules after Web UI updates.
