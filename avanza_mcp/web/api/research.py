@@ -172,6 +172,17 @@ def _format_zacks(snapshot: dict[str, Any]) -> tuple[str, str]:
     return text, note
 
 
+def _zacks_missing_detail(snapshot: dict[str, Any]) -> str:
+    if snapshot.get("blocked"):
+        blocked_sources = snapshot.get("blocked_sources") if isinstance(snapshot.get("blocked_sources"), list) else []
+        suffix = f" ({', '.join(str(item) for item in blocked_sources if item)})" if blocked_sources else ""
+        return f"Zacks returned no visible rank/summary; source appears blocked{suffix}."
+    error = str(snapshot.get("analysis_error") or "").strip()
+    if error:
+        return f"Zacks returned no visible rank/summary; analysis fetch failed: {_short_text(error, 140)}"
+    return "Zacks returned no visible rank/summary for this symbol."
+
+
 def _format_fmp(snapshot: dict[str, Any]) -> str:
     latest = snapshot.get("latest") if isinstance(snapshot.get("latest"), dict) else {}
     if not latest:
@@ -201,6 +212,21 @@ def _make_candidate(row: dict[str, Any], index: int, source: str = "TradingView 
     if value_traded is not None and value_traded > 0:
         score += min(8.0, value_traded / 50_000_000.0)
 
+    notes: list[str] = []
+    if change_percent is not None:
+        notes.append(f"{source} {change_percent:+.2f}% day")
+    if relative_volume is not None:
+        notes.append(f"rel vol {relative_volume:.2f}x")
+    if value_traded is not None:
+        notes.append(f"value traded {value_traded:,.0f}")
+    elif volume is not None:
+        notes.append(f"volume {volume:,.0f}")
+    sector = str(row.get("sector") or "")
+    if sector:
+        notes.append(sector)
+    if not notes:
+        notes.append(source)
+
     return {
         "rank": index + 1,
         "symbol": symbol,
@@ -214,18 +240,19 @@ def _make_candidate(row: dict[str, Any], index: int, source: str = "TradingView 
         "relative_volume": relative_volume,
         "value_traded": value_traded,
         "market_cap": market_cap,
-        "sector": str(row.get("sector") or ""),
+        "sector": sector,
         "industry": str(row.get("industry") or ""),
         "currency": str(_first_value(row, "currency", "fundamental_currency_code") or ""),
         "tv_rating": "n/a",
         "tv_score": None,
         "zacks_rank": "n/a",
         "zacks_note": "",
+        "zacks_error": "",
         "fmp_recommendation": "n/a",
         "score": score,
         "sources": [source],
         "source_count": 1,
-        "notes": [],
+        "notes": notes,
         "errors": [],
         "_enrich_symbol_sources": source == "TradingView heatmap",
     }
@@ -246,6 +273,8 @@ def _finish_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     candidate["sources"] = _unique_sources(candidate.get("sources", []))
     candidate["source_count"] = len(candidate["sources"])
     notes = [str(item) for item in candidate.get("notes", []) if str(item or "").strip()]
+    if not notes:
+        notes = [str(item) for item in candidate["sources"] if str(item or "").strip()]
     candidate["reason"] = _short_text(" · ".join(notes), 260)
     candidate["score"] = round(float(candidate.get("score") or 0.0), 2)
     return candidate
@@ -327,14 +356,21 @@ async def stock_recommendations(
                     zacks_text, zacks_note = _format_zacks(zacks)
                     candidate["zacks_rank"] = zacks_text
                     candidate["zacks_note"] = zacks_note
-                    candidate["score"] += _zacks_score_points(zacks)
-                    candidate["sources"].append("Zacks")
-                    if zacks_text != "n/a":
-                        candidate["notes"].append(f"Zacks {zacks_text}")
-                    if zacks_note:
-                        candidate["notes"].append(zacks_note)
+                    if zacks_text != "n/a" or zacks_note:
+                        candidate["score"] += _zacks_score_points(zacks)
+                        candidate["sources"].append("Zacks")
+                        if zacks_text != "n/a":
+                            candidate["notes"].append(f"Zacks {zacks_text}")
+                        if zacks_note:
+                            candidate["notes"].append(zacks_note)
+                    else:
+                        detail = _zacks_missing_detail(zacks)
+                        candidate["zacks_error"] = detail
+                        candidate["errors"].append({"source": "Zacks", "error": detail})
+                        source_errors.append({"source": "Zacks", "symbol": symbol, "error": detail})
             except Exception as exc:
                 detail = str(exc)
+                candidate["zacks_error"] = detail
                 candidate["errors"].append({"source": "Zacks", "error": detail})
                 source_errors.append({"source": "Zacks", "symbol": symbol, "error": detail})
 

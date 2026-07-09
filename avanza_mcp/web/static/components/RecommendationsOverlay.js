@@ -134,6 +134,14 @@ export default defineComponent({
             <span>{{ row.name }}</span>
             <span v-if="row.errors?.length" class="warn-text" :title="row.errors.map(e => e.source + ': ' + e.error).join('\\n')"> ⚠</span>
           </template>
+          <template #cell-zacks_rank="{ row }">
+            <span :title="[row.zacks_note, row.zacks_error].filter(Boolean).join(' · ')">
+              {{ row.zacks_rank || "n/a" }}
+            </span>
+          </template>
+          <template #cell-reason="{ row }">
+            <span :title="row.reason">{{ row.reason || "-" }}</span>
+          </template>
         </DataTable>
       </div>
     </div>

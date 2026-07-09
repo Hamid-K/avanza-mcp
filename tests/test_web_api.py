@@ -559,7 +559,13 @@ def test_recommendations_endpoint_aggregates_tv_and_zacks(with_session, runtime,
     assert payload["rows"][0]["symbol"] == "AAPL"
     assert payload["rows"][0]["tv_rating"] == "Strong Buy"
     assert payload["rows"][0]["zacks_rank"] == "#1 Strong Buy"
+    assert "TradingView heatmap +3.24% day" in payload["rows"][0]["reason"]
+    assert "TradingView Strong Buy" in payload["rows"][0]["reason"]
+    assert "Zacks #1 Strong Buy" in payload["rows"][0]["reason"]
     assert payload["rows"][0]["source_count"] >= 3
+    assert payload["rows"][1]["reason"]
+    assert "TradingView heatmap" in payload["rows"][1]["reason"]
+    assert payload["rows"][1]["zacks_error"] == "blocked"
     assert any(error["source"] == "Zacks" and error["symbol"] == "MSFT" for error in payload["source_errors"])
     assert calls[0][0] == "tv_scrape_heatmap"
 
@@ -599,6 +605,8 @@ def test_recommendations_endpoint_falls_back_to_avanza_movers(with_session, runt
     assert payload["rows"][0]["name"] == "Volvo B"
     assert payload["rows"][0]["last"] == 316.0
     assert payload["rows"][0]["change_percent"] == 2.5
+    assert "Avanza market movers +2.50% day" in payload["rows"][0]["reason"]
+    assert "value traded 15,000,000" in payload["rows"][0]["reason"]
     assert [call[0] for call in calls] == ["tv_scrape_heatmap", "avanza_market_movers"]
 
 
@@ -629,7 +637,45 @@ def test_recommendations_endpoint_accepts_nested_heatmap_rows(with_session, runt
     payload = response.json()
     assert payload["rows"][0]["symbol"] == "NVDA"
     assert payload["rows"][0]["symbol_full"] == "NASDAQ:NVDA"
+    assert "TradingView heatmap +1.20% day" in payload["rows"][0]["reason"]
     assert calls[0][0] == "tv_scrape_heatmap"
+
+
+def test_recommendations_endpoint_marks_empty_zacks_as_row_error(with_session, runtime, monkeypatch):
+    def fake_execute(tool, arguments):
+        if tool == "tv_scrape_heatmap":
+            return {
+                "rows": [
+                    {
+                        "name": "AAPL",
+                        "description": "Apple Inc",
+                        "exchange": "NASDAQ",
+                        "close": 280.14,
+                        "change": 3.24,
+                    }
+                ],
+            }
+        if tool == "tv_scrape_symbol_analytics":
+            return {"technicals": {"overall_label": "Buy", "overall_score": 0.6}, "analytics": {}}
+        if tool == "zacks_scrape_symbol":
+            return {
+                "blocked": True,
+                "blocked_sources": ["quote"],
+                "rank": {"value": None, "label": None},
+                "analysis_summary": {"available": False, "summary": None},
+            }
+        raise AssertionError(tool)
+
+    monkeypatch.setattr(runtime.kernel, "execute_mcp_tool", fake_execute)
+    response = with_session.get("/api/recommendations/stocks?limit=1&enrich_limit=1")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    row = payload["rows"][0]
+    assert row["reason"]
+    assert row["zacks_rank"] == "n/a"
+    assert "source appears blocked" in row["zacks_error"]
+    assert "Zacks" not in row["sources"]
+    assert payload["source_errors"][0]["source"] == "Zacks"
 
 
 def test_transactions_types_filter_parses(with_session, runtime):

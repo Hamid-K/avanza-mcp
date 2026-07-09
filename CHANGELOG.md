@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.14 - 2026-07-09
+
+- Fixed Web `Research candidates` rows with blank `Why` values by adding base heatmap/mover reasons for every row, even when deeper TradingView/Zacks enrichment is not run.
+- Made Zacks enrichment failures/no-data results visible as row-level warnings instead of silently marking Zacks as a successful source.
+
 ## 0.2.13 - 2026-07-09
 
 - Fixed Web saved 1Password login profiles so selecting a saved Personal/DarkCell profile submits that profile's exact item/vault and does not reuse a stale previously selected profile ID.

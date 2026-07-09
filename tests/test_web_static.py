@@ -164,6 +164,9 @@ def test_research_candidates_overlay_is_wired_to_toolbar_and_api():
     assert "/api/recommendations/stocks" in overlay
     assert "source-ranked" in overlay
     assert "Research input only" in overlay
+    assert "#cell-zacks_rank" in overlay
+    assert "row.zacks_error" in overlay
+    assert "#cell-reason" in overlay
     assert ".research-summary" in css
     assert ".score-pill" in css
 
