@@ -140,8 +140,12 @@ def test_tradingview_overlay_displays_fallback_notice_and_rows():
 
     assert "notice" in tv_overlay
     assert "payload.warning" in tv_overlay
+    assert "payload.warnings" in tv_overlay
     assert "selected_list" in tv_overlay
     assert "knownSelected" in tv_overlay
+    assert 'key: "zacks_rank", label: "Zacks"' in tv_overlay
+    assert "#cell-zacks_rank" in tv_overlay
+    assert "row.zacks_note" in tv_overlay
     assert "No TradingView symbols available" in tv_overlay
     assert "TradingView session may be missing" not in tv_overlay
     assert ".notice" in css

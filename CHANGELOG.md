@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12 - 2026-07-09
+
+- Added bounded, cached Zacks rank enrichment to the Web UI TradingView hot/list rows and exposed the result in the TradingView Lists table.
+
 ## 0.2.11 - 2026-07-09
 
 - Fixed the Web UI Performance chart period buttons so period changes force a fresh account-specific load, ignore stale responses, and redraw the chart cleanly.

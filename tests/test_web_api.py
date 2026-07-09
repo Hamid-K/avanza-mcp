@@ -441,6 +441,13 @@ def test_tv_lists_falls_back_to_public_scanner(with_session, runtime, monkeypatc
                     }
                 ],
             }
+        if tool == "zacks_scrape_symbol":
+            assert arguments == {"symbol": "AAPL"}
+            return {
+                "rank": {"value": 1, "label": "Strong Buy"},
+                "earnings_esp": "+2.5%",
+                "analysis_summary": {"summary": "Visible Zacks hot-list summary."},
+            }
         raise AssertionError(tool)
 
     monkeypatch.setattr(runtime.kernel, "execute_mcp_tool", fake_execute)
@@ -455,8 +462,13 @@ def test_tv_lists_falls_back_to_public_scanner(with_session, runtime, monkeypatc
     assert payload["rows"][0]["change"] == 8.79
     assert payload["rows"][0]["change_percent"] == 3.24
     assert payload["rows"][0]["market_state"] == "delayed_streaming_900"
+    assert payload["rows"][0]["zacks_symbol"] == "AAPL"
+    assert payload["rows"][0]["zacks_rank"] == "#1 Strong Buy"
+    assert payload["rows"][0]["zacks_note"] == "Visible Zacks hot-list summary."
+    assert payload["zacks_enriched_count"] == 1
     assert calls[0][0] == "tv_auth_custom_lists"
     assert calls[1][0] == "tv_scrape_heatmap"
+    assert calls[2][0] == "zacks_scrape_symbol"
 
 
 def test_recommendations_endpoint_aggregates_tv_and_zacks(with_session, runtime, monkeypatch):

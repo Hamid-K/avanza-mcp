@@ -26,6 +26,7 @@ export default defineComponent({
       { key: "change", label: "Chg", numeric: true, cellClass: (r) => (Number(r.change) >= 0 ? "up" : "down") },
       { key: "change_percent", label: "Chg%", numeric: true, cellClass: (r) => (Number(r.change_percent) >= 0 ? "up" : "down") },
       { key: "volume", label: "Volume", numeric: true },
+      { key: "zacks_rank", label: "Zacks" },
       { key: "market_state", label: "Status" },
     ];
 
@@ -36,7 +37,7 @@ export default defineComponent({
         const payload = await api.get(`/api/tv/lists${params}`);
         lists.value = payload.lists || payload.watchlists || [];
         rows.value = payload.rows || payload.items || payload.symbols || [];
-        notice.value = payload.warning || "";
+        notice.value = [payload.warning, ...(payload.warnings || [])].filter(Boolean).join(" ");
         const selectedId = payload.selected_list ? String(payload.selected_list.id || payload.selected_list.list_id || "") : "";
         const knownSelected = lists.value.some((item) => String(item.id || item.list_id || "") === selected.value);
         if (selectedId) selected.value = selectedId;
@@ -81,7 +82,13 @@ export default defineComponent({
         <div v-if="notice" class="notice warn-text">{{ notice }}</div>
         <div v-else-if="loading && !rows.length" class="skeleton" style="height: 200px"></div>
         <DataTable v-if="!error && !(loading && !rows.length)" :columns="columns" :rows="rows"
-                   emptyText="No TradingView symbols available" />
+                   emptyText="No TradingView symbols available">
+          <template #cell-zacks_rank="{ row }">
+            <span :title="[row.zacks_symbol, row.zacks_esp, row.zacks_note, row.zacks_error].filter(Boolean).join(' · ')">
+              {{ row.zacks_rank || "n/a" }}
+            </span>
+          </template>
+        </DataTable>
       </div>
     </div>
   `,
