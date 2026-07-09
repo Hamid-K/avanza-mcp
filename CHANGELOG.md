@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.15 - 2026-07-09
+
+- Added a Zacks quote-feed fallback so `zacks_scrape_symbol`, TradingView hot lists, and Web `Research candidates` can still show Zacks Rank when Zacks HTML pages are blocked by bot protection.
+
 ## 0.2.14 - 2026-07-09
 
 - Fixed Web `Research candidates` rows with blank `Why` values by adding base heatmap/mover reasons for every row, even when deeper TradingView/Zacks enrichment is not run.

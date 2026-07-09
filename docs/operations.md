@@ -249,7 +249,7 @@ Multi-session MCP behavior:
 | `avanza_tv_preopen_portfolio_bundle` | Read-only bundle that merges Avanza portfolio/protection state with TradingView pre-open context. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
-| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies). |
+| `zacks_scrape_symbol` | Fetch Zacks rank via quote-feed and scrape symbol/report pages for Earnings ESP plus visible analysis text (best effort; HTML may be blocked). |
 | `fmp_analyst_recommendations` | Fetch analyst recommendation history for a symbol from Financial Modeling Prep (requires FMP API key). |
 | `polygon_analyst_insights` | Fetch analyst insights/ratings for a symbol from Polygon Benzinga feed (requires Polygon API key). |
 | `sec_filings_recent` | Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data). |
@@ -315,6 +315,8 @@ Recommended flow:
 3. Use `tv_preopen_batch_snapshot` for watchlists/candidates or `avanza_tv_preopen_portfolio_bundle` for a read-only account review.
 4. Use `tv_scrape_heatmap` with `exchanges`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap outliers.
 5. Use the Web UI `Research candidates` section for a compact source-ranked candidate list when you want TradingView and Zacks context in one table.
+
+Zacks integration is best effort. `zacks_scrape_symbol` uses Zacks quote-feed data for rank when available, then attempts the public quote/report HTML pages for visible analysis text. The rank can still be present when the HTML pages are blocked by bot protection; row-level warnings identify symbols where only partial Zacks data was available.
 
 Performance behavior:
 

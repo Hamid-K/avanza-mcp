@@ -325,7 +325,7 @@ For multi-session setups:
 | `avanza_tv_preopen_portfolio_bundle` | Read-only bundle that merges Avanza portfolio/protection state with TradingView pre-open context. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
-| `zacks_scrape_symbol` | Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies). |
+| `zacks_scrape_symbol` | Fetch Zacks rank via quote-feed and scrape symbol/report pages for Earnings ESP plus visible analysis text (best effort; HTML may be blocked). |
 | `fmp_analyst_recommendations` | Fetch analyst recommendation history for a symbol from Financial Modeling Prep (requires FMP API key). |
 | `polygon_analyst_insights` | Fetch analyst insights/ratings for a symbol from Polygon Benzinga feed (requires Polygon API key). |
 | `sec_filings_recent` | Fetch recent SEC EDGAR filings by ticker or CIK (official SEC data). |
@@ -407,7 +407,7 @@ Canonical naming note:
   4. use `tv_scrape_heatmap` with filters such as `exchanges=["NASDAQ","NYSE","AMEX"]`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap noise.
 - Performance notes: `tv_preopen_batch_snapshot` uses a bulk TradingView scanner call for normal multi-symbol reviews; Avanza MCP read tools keep a short in-process account cache to avoid repeated full portfolio/stop/order pulls during focused workflows; `avanza_orderbook_quotes` deduplicates IDs and can skip metadata enrichment when `fields` contains only price fields.
 - TradingView extended-hours fields depend on TradingView entitlement/session and scanner availability. `premarket_close`, `postmarket_close`, `update_mode`, and quote freshness warnings are reported explicitly; missing fields are returned as `null` instead of inferred from Avanza.
-- `zacks_scrape_symbol` is best effort; it now attempts the quote page and free Zacks equity-report page, returning `analysis_summary`, `analysis_sources`, and `blocked_sources` when available. Zacks can return bot-protection pages unless a valid browser session/cookie is provided.
+- `zacks_scrape_symbol` is best effort; it uses Zacks quote-feed data for rank when available, then attempts the quote page and free Zacks equity-report page for visible analysis text. It returns `rank_source`, `quote_feed`, `analysis_summary`, `analysis_sources`, and `blocked_sources`. Zacks HTML pages can still return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
 - API-key tools:
   - `fmp_analyst_recommendations`: pass `api_key` or set `FMP_API_KEY`.

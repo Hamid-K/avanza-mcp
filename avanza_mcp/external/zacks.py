@@ -41,6 +41,53 @@ ZACKS_ANALYSIS_HEADINGS = (
     "Value Score",
     "Momentum Score",
 )
+ZACKS_RANK_LABELS = {
+    1: "Strong Buy",
+    2: "Buy",
+    3: "Hold",
+    4: "Sell",
+    5: "Strong Sell",
+}
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        number = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    return number
+
+
+def zacks_quote_feed_snapshot(symbol: str) -> dict[str, Any]:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        raise ValueError("symbol is required.")
+    url = f"https://quote-feed.zacks.com/index?t={ticker}"
+    data = ext_http.external_fetch_json(url)
+    row = data.get(ticker)
+    if not isinstance(row, dict):
+        row = next((item for item in data.values() if isinstance(item, dict)), {})
+    if not isinstance(row, dict):
+        row = {}
+    rank_value = _safe_int(row.get("zacks_rank"))
+    rank_label = str(row.get("zacks_rank_text") or "").strip()
+    if rank_value and not rank_label:
+        rank_label = ZACKS_RANK_LABELS.get(rank_value, "")
+    return {
+        "source": "zacks-quote-feed",
+        "url": url,
+        "symbol": str(row.get("ticker") or ticker).upper(),
+        "name": str(row.get("name") or row.get("company_short_name") or "").strip(),
+        "rank": {"value": rank_value, "label": rank_label or None},
+        "updated": str(row.get("updated") or "").strip() or None,
+        "last": row.get("last"),
+        "previous_close": row.get("previous_close"),
+        "percent_net_change": row.get("percent_net_change"),
+        "raw": row,
+    }
 
 
 def zacks_section_excerpt(document_text: str, heading: str, max_chars: int = 900) -> str:
@@ -144,22 +191,41 @@ def zacks_symbol_snapshot(symbol: str, cookie: str = "") -> dict[str, Any]:
             "sections": [],
         },
     )
-    blocked = quote_blocked and not selected_analysis.get("available")
+    quote_feed: dict[str, Any] = {}
+    quote_feed_error = ""
+    if not rank_match:
+        try:
+            quote_feed = zacks_quote_feed_snapshot(ticker)
+        except Exception as exc:
+            quote_feed_error = str(exc)
+    quote_feed_rank = quote_feed.get("rank") if isinstance(quote_feed.get("rank"), dict) else {}
+    rank_value = int(rank_match.group(1)) if rank_match else _safe_int(quote_feed_rank.get("value"))
+    rank_label = (
+        html.unescape(rank_match.group(2)).strip()
+        if rank_match
+        else str(quote_feed_rank.get("label") or "").strip() or (ZACKS_RANK_LABELS.get(rank_value or 0, "") if rank_value else "")
+    )
+    rank_source = "html" if rank_match else "quote-feed" if rank_value else None
+    blocked = quote_blocked and not selected_analysis.get("available") and not rank_value
     return {
         "symbol": ticker,
         "url": url,
         "report_url": report_url,
+        "quote_feed_url": f"https://quote-feed.zacks.com/index?t={ticker}",
         "blocked": blocked,
         "blocked_sources": blocked_sources,
         "rank": {
-            "value": int(rank_match.group(1)) if rank_match else None,
-            "label": html.unescape(rank_match.group(2)).strip() if rank_match else None,
+            "value": rank_value,
+            "label": rank_label or None,
         },
+        "rank_source": rank_source,
         "industry_rank": int(industry_rank_match.group(1)) if industry_rank_match else None,
         "earnings_esp": esp_match.group(1) if esp_match else None,
         "analysis_summary": selected_analysis,
         "analysis_sources": analysis_sources,
         "analysis_error": report_error or None,
+        "quote_feed": quote_feed,
+        "quote_feed_error": quote_feed_error or None,
         "source": "zacks-web",
         "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "unsafe_for_execution": blocked,

@@ -368,7 +368,7 @@ MCP_TOOLS = [
     },
     {
         "name": "zacks_scrape_symbol",
-        "description": "Scrape Zacks symbol page for rank, Earnings ESP, and freely visible analysis/report summary text (best effort; may be blocked without valid browser session/cookies).",
+        "description": "Fetch Zacks rank via quote-feed and scrape symbol/report pages for Earnings ESP plus visible analysis text (best effort; HTML may be blocked without valid browser session/cookies).",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -3964,7 +3964,12 @@ def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
         assert "/stock/quote/AAPL" in url
         return "<html><title>Pardon Our Interruption</title><body>Access denied</body></html>"
 
+    def fake_fetch_json(url, **kwargs):
+        assert "quote-feed.zacks.com/index?t=AAPL" in url
+        return {"AAPL": {"ticker": "AAPL", "name": "Apple Inc.", "zacks_rank": "", "zacks_rank_text": ""}}
+
     monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
 
     snapshot = zacks_symbol_snapshot("AAPL")
 
@@ -3972,6 +3977,39 @@ def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
     assert snapshot["blocked_sources"] == ["quote"]
     assert snapshot["analysis_summary"]["available"] is False
     assert snapshot["unsafe_for_execution"] is True
+
+
+def test_zacks_symbol_snapshot_uses_quote_feed_when_html_is_blocked(monkeypatch):
+    from avanza_mcp.external.zacks import zacks_symbol_snapshot
+
+    def fake_fetch_text(url, **kwargs):
+        assert "/stock/quote/AMD" in url
+        return "<html><title>Pardon Our Interruption</title><body>Access denied</body></html>"
+
+    def fake_fetch_json(url, **kwargs):
+        assert "quote-feed.zacks.com/index?t=AMD" in url
+        return {
+            "AMD": {
+                "ticker": "AMD",
+                "name": "Advanced Micro Devices, Inc.",
+                "zacks_rank": "2",
+                "zacks_rank_text": "Buy",
+                "updated": "Jul 09, 2026 11:00 AM",
+            }
+        }
+
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
+
+    snapshot = zacks_symbol_snapshot("AMD")
+
+    assert snapshot["blocked"] is False
+    assert snapshot["blocked_sources"] == ["quote"]
+    assert snapshot["rank"] == {"value": 2, "label": "Buy"}
+    assert snapshot["rank_source"] == "quote-feed"
+    assert snapshot["quote_feed"]["name"] == "Advanced Micro Devices, Inc."
+    assert snapshot["analysis_summary"]["available"] is False
+    assert snapshot["unsafe_for_execution"] is False
 
 
 def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
