@@ -527,6 +527,74 @@ def test_recommendations_endpoint_aggregates_tv_and_zacks(with_session, runtime,
     assert calls[0][0] == "tv_scrape_heatmap"
 
 
+def test_recommendations_endpoint_falls_back_to_avanza_movers(with_session, runtime, monkeypatch):
+    calls = []
+
+    def fake_execute(tool, arguments):
+        calls.append((tool, arguments))
+        if tool == "tv_scrape_heatmap":
+            return {"source": "tradingview-scanner", "rows": [], "rows_before_filter": 99}
+        if tool == "avanza_market_movers":
+            return {
+                "gainers": [
+                    {
+                        "name": "Volvo B",
+                        "display_symbol": "VOLV B",
+                        "market": "NASDAQ Stockholm",
+                        "currency": "SEK",
+                        "last_price": 316.0,
+                        "one_day_change_percent": 2.5,
+                        "total_value_traded": 15_000_000,
+                    }
+                ],
+                "losers": [],
+            }
+        raise AssertionError(tool)
+
+    monkeypatch.setattr(runtime.kernel, "execute_mcp_tool", fake_execute)
+    response = with_session.get("/api/recommendations/stocks?limit=5&enrich_limit=3")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["universe"] == "Avanza Swedish market movers fallback"
+    assert "Avanza market movers" in payload["sources"]
+    assert any("TradingView heatmap returned no filtered candidates" in warning for warning in payload["warnings"])
+    assert payload["rows"][0]["symbol"] == "VOLV B"
+    assert payload["rows"][0]["name"] == "Volvo B"
+    assert payload["rows"][0]["last"] == 316.0
+    assert payload["rows"][0]["change_percent"] == 2.5
+    assert [call[0] for call in calls] == ["tv_scrape_heatmap", "avanza_market_movers"]
+
+
+def test_recommendations_endpoint_accepts_nested_heatmap_rows(with_session, runtime, monkeypatch):
+    calls = []
+
+    def fake_execute(tool, arguments):
+        calls.append((tool, arguments))
+        if tool == "tv_scrape_heatmap":
+            return {
+                "result": {
+                    "rows": [
+                        {
+                            "name": "NVDA",
+                            "description": "NVIDIA",
+                            "exchange": "NASDAQ",
+                            "close": 198.5,
+                            "change": 1.2,
+                        }
+                    ]
+                }
+            }
+        raise AssertionError(tool)
+
+    monkeypatch.setattr(runtime.kernel, "execute_mcp_tool", fake_execute)
+    response = with_session.get("/api/recommendations/stocks?limit=1&enrich_limit=0")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["rows"][0]["symbol"] == "NVDA"
+    assert payload["rows"][0]["symbol_full"] == "NASDAQ:NVDA"
+    assert calls[0][0] == "tv_scrape_heatmap"
+
+
 def test_transactions_types_filter_parses(with_session, runtime):
     class TransactionAvanza(FakeAvanza):
         def __init__(self):

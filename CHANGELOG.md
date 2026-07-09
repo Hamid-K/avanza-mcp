@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.10 - 2026-07-09
+
+- Fixed the Web UI `Research candidates` panel returning no rows when TradingView's first scanner slice was dominated by OTC/outlier symbols before local exchange filtering.
+- Added a safe Avanza market-movers fallback for research candidates when TradingView heatmap data is empty or shape-shifted.
+
 ## 0.2.9 - 2026-07-08
 
 - Added live-refresh behavior to Web Completed Orders and Transactions overlays: they reload after relevant WebSocket order/portfolio/stop-loss updates and poll every 10 seconds while open as a fallback.

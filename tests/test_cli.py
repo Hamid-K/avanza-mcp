@@ -3763,7 +3763,10 @@ def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypat
 def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
     from avanza_mcp.external.tradingview_data import tradingview_heatmap_snapshot
 
+    captured_payloads = []
+
     def fake_fetch_json(url, **kwargs):
+        captured_payloads.append(kwargs.get("payload", {}))
         columns = list(kwargs.get("payload", {}).get("columns", []))
 
         def row(symbol, values):
@@ -3827,6 +3830,7 @@ def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
     assert tickers == ["NASDAQ:SNDK", "NYSE:BIG"]
     assert "OTC:PENNY" not in tickers
     assert snapshot["rows_before_filter"] == 3
+    assert captured_payloads[0]["range"] == [0, 999]
 
 
 def test_tradingview_watchlist_entry_matches_target_variants():

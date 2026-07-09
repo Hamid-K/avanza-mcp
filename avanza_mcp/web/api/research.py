@@ -40,14 +40,66 @@ def _short_text(value: Any, max_chars: int = 180) -> str:
 
 
 def _symbol_from_row(row: dict[str, Any]) -> str:
-    symbol = str(_first_value(row, "symbol", "name") or "").strip().upper()
+    symbol = str(_first_value(row, "display_symbol", "symbol", "ticker", "name") or "").strip().upper()
     if ":" in symbol:
         symbol = symbol.split(":", 1)[1]
     return symbol
 
 
 def _exchange_from_row(row: dict[str, Any]) -> str:
-    return str(_first_value(row, "exchange", "market") or "").strip().upper()
+    return str(_first_value(row, "exchange", "market", "market_place", "marketPlace") or "").strip().upper()
+
+
+def _payload_rows(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    for key in ("rows", "items", "symbols", "data", "constituents"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            rows = [row for row in raw if isinstance(row, dict)]
+            if rows:
+                return rows
+    for key in ("result", "payload"):
+        nested = payload.get(key)
+        rows = _payload_rows(nested)
+        if rows:
+            return rows
+    return []
+
+
+def _avanza_market_mover_rows(kernel: Any, limit: int, source_errors: list[dict[str, str]]) -> list[dict[str, Any]]:
+    try:
+        movers = kernel.execute_mcp_tool(
+            "avanza_market_movers",
+            {
+                "countryCodes": ["SE"],
+                "min_price": 5,
+                "min_total_value_traded": 5_000_000,
+                "limit": max(1, min(limit, MAX_CANDIDATES)),
+            },
+        )
+    except Exception as exc:
+        source_errors.append({"source": "Avanza market movers", "symbol": "", "error": str(exc)})
+        return []
+
+    rows: list[dict[str, Any]] = []
+    if isinstance(movers, dict):
+        for bucket in ("gainers", "losers"):
+            raw_rows = movers.get(bucket)
+            if not isinstance(raw_rows, list):
+                continue
+            for raw in raw_rows:
+                if not isinstance(raw, dict):
+                    continue
+                row = dict(raw)
+                row["_source"] = "Avanza market movers"
+                row.setdefault("symbol", _first_value(row, "display_symbol", "ticker", "name"))
+                row.setdefault("description", _first_value(row, "name", "stock", "Stock"))
+                row.setdefault("last", _first_value(row, "last_price", "last", "price"))
+                row.setdefault("change_percent", _first_value(row, "one_day_change_percent", "change_percent", "change"))
+                row.setdefault("Value.Traded", _first_value(row, "total_value_traded", "turnover"))
+                rows.append(row)
+    return rows[: max(1, min(limit, MAX_CANDIDATES))]
 
 
 def _technical_score_points(label: str, score: Any) -> float:
@@ -130,13 +182,14 @@ def _format_fmp(snapshot: dict[str, Any]) -> str:
     )
 
 
-def _make_candidate(row: dict[str, Any], index: int) -> dict[str, Any]:
+def _make_candidate(row: dict[str, Any], index: int, source: str = "TradingView heatmap") -> dict[str, Any]:
+    source = str(row.get("_source") or source or "TradingView heatmap")
     symbol = _symbol_from_row(row)
     exchange = _exchange_from_row(row)
-    close = _number(_first_value(row, "close", "last", "premarket_close", "postmarket_close"))
-    change_percent = _number(_first_value(row, "change_percent", "change"))
+    close = _number(_first_value(row, "close", "last", "last_price", "premarket_close", "postmarket_close"))
+    change_percent = _number(_first_value(row, "change_percent", "one_day_change_percent", "change"))
     relative_volume = _number(_first_value(row, "relative_volume_10d_calc", "relative_volume"))
-    volume = _number(row.get("volume"))
+    volume = _number(_first_value(row, "volume", "day_volume"))
     value_traded = _number(_first_value(row, "Value.Traded", "total_value_traded", "turnover"))
     market_cap = _number(_first_value(row, "market_cap_basic", "market_cap"))
 
@@ -170,10 +223,11 @@ def _make_candidate(row: dict[str, Any], index: int) -> dict[str, Any]:
         "zacks_note": "",
         "fmp_recommendation": "n/a",
         "score": score,
-        "sources": ["TradingView heatmap"],
+        "sources": [source],
         "source_count": 1,
         "notes": [],
         "errors": [],
+        "_enrich_symbol_sources": source == "TradingView heatmap",
     }
 
 
@@ -188,6 +242,7 @@ def _unique_sources(sources: list[str]) -> list[str]:
 
 
 def _finish_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    candidate.pop("_enrich_symbol_sources", None)
     candidate["sources"] = _unique_sources(candidate.get("sources", []))
     candidate["source_count"] = len(candidate["sources"])
     notes = [str(item) for item in candidate.get("notes", []) if str(item or "").strip()]
@@ -221,11 +276,21 @@ async def stock_recommendations(
                 "exclude_otc": True,
             },
         )
-        rows_raw = heatmap.get("rows") if isinstance(heatmap, dict) else []
-        rows = [row for row in rows_raw if isinstance(row, dict)]
+        rows = _payload_rows(heatmap)
+        fallback_used = False
+        if not rows:
+            rows_before_filter = heatmap.get("rows_before_filter") if isinstance(heatmap, dict) else None
+            detail = f" ({rows_before_filter} raw rows before filters)" if rows_before_filter is not None else ""
+            warnings.append(f"TradingView heatmap returned no filtered candidates{detail}; trying Avanza market movers fallback.")
+            rows = _avanza_market_mover_rows(kernel, bounded_limit, source_errors)
+            fallback_used = bool(rows)
+            if not rows:
+                warnings.append("No research candidates returned by TradingView heatmap or Avanza market movers.")
         candidates = [_make_candidate(row, index) for index, row in enumerate(rows[:bounded_limit])]
 
         for candidate in candidates[:bounded_enrich]:
+            if not candidate.get("_enrich_symbol_sources", True):
+                continue
             symbol = str(candidate.get("symbol") or "").strip()
             exchange = str(candidate.get("exchange") or "").strip()
             if not symbol:
@@ -302,10 +367,17 @@ async def stock_recommendations(
         return {
             "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mode": "research_candidates",
-            "universe": "TradingView public U.S. movers",
+            "universe": "Avanza Swedish market movers fallback" if fallback_used else "TradingView public U.S. movers",
             "limit": bounded_limit,
             "enrich_limit": bounded_enrich,
-            "sources": _unique_sources(["TradingView heatmap", "TradingView technicals", "Zacks"] + (["FMP"] if include_fmp else [])),
+            "sources": _unique_sources(
+                [
+                    source
+                    for candidate in finished
+                    for source in candidate.get("sources", [])
+                ]
+                or ["TradingView heatmap"]
+            ),
             "warnings": warnings,
             "source_errors": source_errors[:50],
             "rows": finished,

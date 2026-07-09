@@ -990,6 +990,11 @@ def tradingview_heatmap_snapshot(
     if not include_premarket:
         fields = [field for field in fields if not field.startswith("premarket_") and not field.startswith("postmarket_")]
     fetch_limit = max(limit, min(1000, max(limit * 5, 100)))
+    if exclude_otc or exchanges is not None:
+        # TradingView's unfiltered "top movers" feed is often dominated by OTC
+        # outliers. Fetch a deeper window before local exchange/OTC filtering so
+        # listed U.S. rows are not filtered down to an empty result set.
+        fetch_limit = max(fetch_limit, 1000)
     scanner_sort = sort_by if sort_by in fields else "change"
     scan, unsupported_fields = tradingview_scan_with_field_fallback(
         symbols=[],
