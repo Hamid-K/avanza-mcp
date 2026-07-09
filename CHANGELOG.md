@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.11 - 2026-07-09
+
+- Fixed the Web UI Performance chart period buttons so period changes force a fresh account-specific load, ignore stale responses, and redraw the chart cleanly.
+
 ## 0.2.10 - 2026-07-09
 
 - Fixed the Web UI `Research candidates` panel returning no rows when TradingView's first scanner slice was dominated by OTC/outlier symbols before local exchange filtering.

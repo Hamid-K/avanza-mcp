@@ -164,6 +164,20 @@ def test_research_candidates_overlay_is_wired_to_toolbar_and_api():
     assert ".score-pill" in css
 
 
+def test_performance_chart_period_switch_uses_explicit_reload_and_cache_bust():
+    chart = (STATIC_DIR / "components" / "PerformanceChart.js").read_text()
+
+    assert "function setPeriod" in chart
+    assert '@click="setPeriod(value)"' in chart
+    assert "loadSequence" in chart
+    assert "selectedPeriod = period.value" in chart
+    assert 'params.set("period", selectedPeriod)' in chart
+    assert 'params.set("account_id", store.portfolio.account_id)' in chart
+    assert 'params.set("_", String(Date.now()))' in chart
+    assert "await nextTick()" in chart
+    assert "host.value.replaceChildren()" in chart
+
+
 def test_stoplosses_overlay_is_wired_to_toolbar_and_actions():
     topbar = (STATIC_DIR / "components" / "TopBar.js").read_text()
     app_shell = (STATIC_DIR / "components" / "AppShell.js").read_text()

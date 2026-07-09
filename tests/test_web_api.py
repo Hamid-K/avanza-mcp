@@ -825,6 +825,49 @@ def test_performance_includes_pl_series_and_cash_events(with_session, runtime):
     assert deposit["date"]
 
 
+def test_performance_period_parameter_changes_chart_payload(with_session, runtime):
+    """Period buttons must result in distinct Avanza performance calls."""
+    base_timestamp = 1_760_000_000_000
+
+    class PeriodAvanza(FakeAvanza):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def get_account_performance_chart_data(self, account_ids, period):
+            period_value = getattr(period, "value", str(period))
+            self.calls.append((list(account_ids), period_value))
+            absolute_by_period = {
+                "ONE_WEEK": 100.0,
+                "THREE_MONTHS": 300.0,
+            }
+            absolute = absolute_by_period.get(period_value, 10.0)
+            return {
+                "absoluteSeries": [{"timestamp": base_timestamp, "value": absolute, "unit": "SEK"}],
+                "relativeSeries": [{"timestamp": base_timestamp, "value": absolute / 100.0, "unit": "%"}],
+                "valueSeries": [{"timestamp": base_timestamp, "value": 900_000.0 + absolute, "unit": "SEK"}],
+            }
+
+    kernel = runtime.kernel
+    chart_avanza = PeriodAvanza()
+    kernel.avanza = chart_avanza
+    for context in kernel.tenant_sessions.values():
+        context.avanza = chart_avanza
+
+    week = with_session.get("/api/performance?period=ONE_WEEK&account_id=acc-1")
+    three_months = with_session.get("/api/performance?period=THREE_MONTHS&account_id=acc-1")
+
+    assert week.status_code == 200, week.text
+    assert three_months.status_code == 200, three_months.text
+    week_payload = week.json()
+    three_month_payload = three_months.json()
+    assert week_payload["period"] == "ONE_WEEK"
+    assert three_month_payload["period"] == "THREE_MONTHS"
+    assert week_payload["development_absolute"]["value"] == 100.0
+    assert three_month_payload["development_absolute"]["value"] == 300.0
+    assert [call[1] for call in chart_avanza.calls] == ["ONE_WEEK", "THREE_MONTHS"]
+
+
 def test_performance_cash_events_failure_never_breaks_chart(with_session, runtime):
     import time as _time
 

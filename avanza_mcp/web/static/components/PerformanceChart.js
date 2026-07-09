@@ -4,7 +4,7 @@
 // account balance as a subdued dashed line on the left scale, and deposits/
 // withdrawals as markers. % mode: relative development. Axis and legend
 // numbers use sv-SE grouping ("934 671"), never unbroken zero-runs.
-import { defineComponent, ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { defineComponent, ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { api } from "../api.js";
 import { store } from "../store.js";
 
@@ -50,6 +50,7 @@ export default defineComponent({
     const payload = ref(null);
     let chart = null;
     let resizeObserver = null;
+    let loadSequence = 0;
 
     const summary = computed(() => {
       const p = payload.value;
@@ -68,15 +69,33 @@ export default defineComponent({
 
     async function load() {
       if (!store.sessions.length) return;
+      const sequence = ++loadSequence;
+      const selectedPeriod = period.value;
       loading.value = true;
       error.value = "";
       try {
-        payload.value = await api.get(`/api/performance?period=${period.value}`);
+        const params = new URLSearchParams();
+        params.set("period", selectedPeriod);
+        if (store.portfolio?.account_id) params.set("account_id", store.portfolio.account_id);
+        params.set("_", String(Date.now()));
+        const nextPayload = await api.get(`/api/performance?${params}`);
+        if (sequence !== loadSequence || selectedPeriod !== period.value) return;
+        payload.value = nextPayload;
+        await nextTick();
         draw();
       } catch (exc) {
+        if (sequence !== loadSequence) return;
         error.value = exc.payload?.detail || exc.message;
       } finally {
-        loading.value = false;
+        if (sequence === loadSequence) loading.value = false;
+      }
+    }
+
+    function setPeriod(value) {
+      if (period.value === value) {
+        load();
+      } else {
+        period.value = value;
       }
     }
 
@@ -119,6 +138,7 @@ export default defineComponent({
     function draw() {
       if (!host.value || typeof LightweightCharts === "undefined" || !payload.value) return;
       if (chart) { chart.remove(); chart = null; }
+      host.value.replaceChildren();
       const isSek = mode.value === "SEK";
       chart = LightweightCharts.createChart(host.value, {
         layout: { background: { color: "transparent" }, textColor: cssVar("--muted"), fontSize: 11 },
@@ -195,7 +215,7 @@ export default defineComponent({
 
     return {
       host, period, mode, loading, error, summary, PERIODS,
-      fmtSek, fmtSekSigned, fmtPercentSigned,
+      fmtSek, fmtSekSigned, fmtPercentSigned, setPeriod,
     };
   },
   template: `
@@ -209,7 +229,7 @@ export default defineComponent({
                   title="Relative development">%</button>
           <span class="pill-divider" aria-hidden="true"></span>
           <button v-for="[value, label] in PERIODS" :key="value" class="pill"
-                  :class="{ active: period === value }" @click="period = value">{{ label }}</button>
+                  :class="{ active: period === value }" @click="setPeriod(value)">{{ label }}</button>
         </div>
       </div>
       <div v-if="summary" class="chart-legend num">
