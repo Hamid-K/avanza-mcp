@@ -36,6 +36,34 @@ The current TOTP code is passed to `avanza-api` as `totpToken`, which is the fie
 
 
 
+## Quick Start
+
+```bash
+# 1. Install uv (once), then dependencies
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+
+# 2a. Run the terminal UI ...
+uv run python avanza_cli.py tui
+
+# 2b. ... or the browser UI (prints a one-time access token — paste it
+#     into the login form that opens; then sign in to Avanza from there)
+uv run python avanza_cli.py web
+
+# 2c. ... or scriptable console commands
+uv run python avanza_cli.py accounts
+uv run python avanza_cli.py portfolio summary
+```
+
+Log in with your Avanza username, password, and current TOTP code (or via
+the 1Password CLI). **Paper trading mode is on by default** — order and
+stop-loss tickets go to a local paper ledger until you explicitly switch to
+live mode. The TUI and Web UI are mutually exclusive: run one at a time.
+
+To expose the MCP tools to an agent: log in (TUI or Web), enable the MCP
+toggle, then register `python avanza_cli.py mcp` in your MCP client — see
+"MCP Server Registration & Run" below.
+
 ## Setup
 
 ```bash
@@ -67,6 +95,12 @@ Show running app version:
 
 ```bash
 python avanza_cli.py --version
+```
+
+Launch the browser trading console (see the Web UI section):
+
+```bash
+python avanza_cli.py web
 ```
 
 Show account overview:
@@ -186,6 +220,40 @@ Controls: `AVANZA_UPDATE_CHECK_ENABLED=0` disables checks, `AVANZA_GITHUB_REPO=o
 After login, the largest account by total value is selected by default. The top panel groups account metrics into colored cards, keeps action buttons together, and shows a live clock plus a weekday OMXS open/close countdown. The P/L metric cycles through `1D P/L`, `1W P/L`, `1M P/L`, `1Y P/L`, `Since Start P/L`, and `Total P/L`, with SEK and % values colored separately. The main table shows the selected account's stocks with day movement, profit state, a distinct header row, and a real-time quote indicator: green dot for real-time, yellow dot for delayed or unresolved status. The order ticket searches as you type by stock name, ticker, or ISIN, so it supports opening new positions as well as trading current holdings. The lower table shows stop-losses and open orders for the selected account, with trigger and price values labeled as `SEK` or `%`; its cancel column opens a guarded cancellation ticket. Buy/sell side cells are color-coded green/red. Click any table column header to sort by that column; click the same header again to reverse the order. Drag the horizontal divider between tables, the vertical divider beside Active Trades, or the left edge of the order/stop-loss ticket to resize panes. Position and order state refreshes live every 5 seconds.
 
 Multi-session mode: use **Login extra account** to add more authenticated Avanza sessions without leaving TUI. The session selector lets you switch tenant context quickly; account drop-down and all tables follow the selected session. Background refresh keeps inactive tenant/account snapshots warm without visibly switching the active TUI context.
+
+## Web UI
+
+Run the browser-based trading console from the same script:
+
+```bash
+python avanza_cli.py web            # 127.0.0.1:8787, opens the browser
+python avanza_cli.py web --port 9000 --no-browser
+```
+
+The Web UI has feature parity with the TUI — portfolio with live 5-second
+updates, order and stop-loss tickets (dry-run → review → typed `PLACE`),
+guarded cancellations, multi-tenant session switching with re-auth, MCP
+bridge management (bridge/R-W/live-authorization controls, token and proxy
+command, streaming tool log), a dedicated Paper trading workspace,
+TradingView lists, source-ranked research candidates, performance charting,
+orders/transactions history, and a full-page configured stop-loss view
+beside the compact dashboard stop-loss pane.
+When using 1Password CLI login, the Web UI can remember browser-local
+profiles containing only the 1Password item name, optional vault, and display
+label, so future primary or extra-session logins can pull credentials from
+1Password without retyping the item name.
+The dashboard keeps view and trade actions in a second top-toolbar row;
+Activity and MCP Live logs sit under Ongoing Orders, scroll independently,
+and the main/side, portfolio/order/log, and Activity/MCP splits can be
+drag-resized and are remembered locally.
+It binds `127.0.0.1` only and is protected by a startup access token,
+cookie session, CSRF header, and a strict CSP (self + two pinned CDN files
+with SRI). See `docs/web.md` for the full security model, endpoint table,
+and smoke checklist.
+
+The Web UI and the TUI are mutually exclusive: one at a time per checkout
+(enforced via `.avanza_ui.lock`). Both manage the same MCP bridge contract,
+so `python avanza_cli.py mcp` works identically against either.
 
 ## MCP Server Registration & Run
 
@@ -329,6 +397,7 @@ Canonical naming note:
   3. wait for auto-capture confirmation, then run `tv_auth_session_status`,
   4. use `tv_auth_*` tools with no repeated cookie input.
 - The TUI `TradingView Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
+- The Web UI `Research candidates` view uses `/api/recommendations/stocks` to assemble a bounded, read-only candidate list from TradingView movers/technicals and Zacks rank/analysis summaries. It is research input only, not an order instruction.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - If Codex or another agent does not expose `tv_*` tools as direct native calls, keep using the registered `avanza_cli` MCP server and call the tools through the local stdio/TUI bridge. The bridge command remains `python avanza_cli.py mcp`; it forwards to the authenticated TUI localhost session.
 - Pre-open workflow:

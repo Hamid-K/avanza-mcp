@@ -23,33 +23,26 @@ from textual.widgets import Button, DataTable, Input, Select, Static
 from avanza.constants import OrderType, StopLossPriceType, TimePeriod
 from rich.text import Text
 
-from avanza_cli import (
-    APP_VERSION,
-    STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
-    build_parser,
+from avanza_mcp.cli import build_parser
+from avanza_mcp.mcp.proxy import call_mcp_bridge, load_mcp_session, read_mcp_message, write_mcp_message
+from avanza_mcp.tui.layout import restore_table_row_selection, selected_table_row_key
+from avanza_mcp.auth import connect, onepassword_credentials, prompt_credentials
+from avanza_mcp.config import APP_VERSION, STOPLOSS_ORDER_VALID_DAYS_DEFAULT
+from avanza_mcp.rendering import (
     build_stop_loss_preview,
-    call_mcp_bridge,
-    connect,
     enum_value,
-    load_mcp_session,
-    max_valid_until_date,
-    onepassword_credentials,
     parse_date,
     parse_price_type,
-    prompt_credentials,
-    read_mcp_message,
-    restore_table_row_selection,
-    selected_table_row_key,
     position_state_row_with_quote,
     trade_action_badge,
-    write_mcp_message,
 )
+from avanza_mcp.stoploss_rules import max_valid_until_date
 
 
 @pytest.fixture(autouse=True)
 def isolate_runtime_files(monkeypatch, tmp_path):
-    monkeypatch.setattr("avanza_cli.LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr("avanza_cli.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
+    monkeypatch.setattr("avanza_mcp.config.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr("avanza_mcp.config.PAPER_SESSION_FILE", tmp_path / "paper-session.json")
     monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_UPDATE_CHECK_ENABLED", "0")
@@ -107,7 +100,7 @@ def test_parse_price_type_accepts_percent_symbol():
 
 
 def test_tui_resolves_mcp_stock_marker_from_cached_data():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     app.holding_labels_by_order_book["529720"] = "Advanced Micro Devices"
@@ -119,7 +112,7 @@ def test_tui_resolves_mcp_stock_marker_from_cached_data():
 
 
 def test_tui_debug_mode_writes_profile_artifacts():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui(debug=True, debug_profile_top=5)
 
@@ -182,7 +175,7 @@ def test_runtime_version_matches_pyproject():
 
 
 def test_version_outdated_comparison_helpers():
-    from avanza_cli import is_version_outdated, normalize_version_text, version_tuple
+    from avanza_mcp.update_check import is_version_outdated, normalize_version_text, version_tuple
 
     assert normalize_version_text("v1.2.3") == "1.2.3"
     assert version_tuple("v0.1.2") == (0, 1, 2)
@@ -192,7 +185,7 @@ def test_version_outdated_comparison_helpers():
 
 
 def test_tradingview_watchlist_id_from_url():
-    from avanza_cli import tradingview_watchlist_id_from_input
+    from avanza_mcp.external.tradingview_data import tradingview_watchlist_id_from_input
 
     assert tradingview_watchlist_id_from_input("https://www.tradingview.com/watchlists/57177174/") == "57177174"
     assert tradingview_watchlist_id_from_input("57177174") == "57177174"
@@ -200,14 +193,14 @@ def test_tradingview_watchlist_id_from_url():
 
 
 def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
-    from avanza_cli import github_latest_version_info
+    from avanza_mcp.update_check import github_latest_version_info
     from urllib.error import HTTPError
 
     def fake_fetch_text_release(url, **kwargs):
         assert "releases/latest" in url
         return json.dumps({"tag_name": "v0.1.9", "html_url": "https://example/release"})
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text_release)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text_release)
     release_info = github_latest_version_info("hamid-k/avanza-mcp")
     assert release_info["version"] == "0.1.9"
     assert release_info["source"] == "release"
@@ -218,14 +211,14 @@ def test_github_latest_version_info_uses_release_then_tags(monkeypatch):
         assert "tags" in url
         return json.dumps([{"name": "v0.2.0", "zipball_url": "https://example/tag"}])
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text_tags)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text_tags)
     tag_info = github_latest_version_info("hamid-k/avanza-mcp")
     assert tag_info["version"] == "0.2.0"
     assert tag_info["source"] == "tag"
 
 
 def test_cmd_tui_reload_reexecs_current_command(monkeypatch):
-    import avanza_cli
+    from avanza_mcp import cli as avanza_cli
 
     class FakeApp:
         def __init__(self, **kwargs):
@@ -252,7 +245,7 @@ def test_cmd_tui_reload_reexecs_current_command(monkeypatch):
 
 
 def test_cmd_tui_without_reload_does_not_reexec(monkeypatch):
-    import avanza_cli
+    from avanza_mcp import cli as avanza_cli
 
     class FakeApp:
         def __init__(self, **kwargs):
@@ -359,7 +352,7 @@ def test_stoploss_edit_parser_uses_order_valid_days_default():
 
 
 def test_tui_mounts_headless():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -401,18 +394,18 @@ def test_tui_mounts_headless():
             assert app.query_one("#open-tv-lists-overlay") is not None
             assert app.query_one("#tv-lists-select") is not None
             assert isinstance(app.query_one("#paper-mode-toggle"), Button)
-            assert app.query_one("#paper-mode-label").renderable == "Paper"
+            assert str(app.query_one("#paper-mode-label").render()) == "Paper"
             assert isinstance(app.query_one("#mcp-toggle"), Button)
-            assert app.query_one("#mcp-label").renderable == "MCP"
+            assert str(app.query_one("#mcp-label").render()) == "MCP"
             assert isinstance(app.query_one("#mcp-write-toggle"), Button)
-            assert app.query_one("#mcp-write-label").renderable == "Live R/W"
+            assert str(app.query_one("#mcp-write-label").render()) == "Live R/W"
             assert app.query_one("#mcp-log") is not None
             assert app.query_one("#order-ticket-resizer") is not None
             assert app.query_one("#stoploss-ticket-resizer") is not None
             assert app.query_one("#activity-resizer") is not None
             assert app.query_one("#order-valid-days", Input).value == str(STOPLOSS_ORDER_VALID_DAYS_DEFAULT)
             resizer = app.query_one("#pane-resizer")
-            assert resizer.renderable == "─"
+            assert str(resizer.render()) == "─"
             assert app.query_one("#stoploss-table") is not None
             assert app.query_one("#stoploss-table", DataTable).cursor_type == "cell"
             assert app.query_one("#active-trades-table", DataTable).cursor_type == "cell"
@@ -467,7 +460,7 @@ def test_tui_mounts_headless():
 
 
 def test_tui_on_unmount_stops_timers(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeTimer:
         def __init__(self):
@@ -497,7 +490,7 @@ def test_tui_on_unmount_stops_timers(monkeypatch):
 
 
 def test_tui_resize_flags_initialized():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     assert app.is_resizing_side_pane is False
@@ -507,7 +500,7 @@ def test_tui_resize_flags_initialized():
 
 
 def test_tui_write_logs_tolerate_missing_widgets(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     monkeypatch.setattr(app, "query_one", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("missing")))
@@ -517,9 +510,9 @@ def test_tui_write_logs_tolerate_missing_widgets(monkeypatch):
 
 
 def test_tui_on_unmount_with_mcp_and_missing_log_widgets(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
-    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
 
     class FakeServer:
         def __init__(self):
@@ -553,9 +546,9 @@ def test_tui_on_unmount_with_mcp_and_missing_log_widgets(monkeypatch, tmp_path):
 
 
 def test_tui_on_unmount_does_not_block_on_slow_mcp_shutdown(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
-    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
 
     shutdown_started = threading.Event()
     shutdown_release = threading.Event()
@@ -593,10 +586,10 @@ def test_tui_on_unmount_does_not_block_on_slow_mcp_shutdown(monkeypatch, tmp_pat
 
 
 def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
-    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
-    monkeypatch.setattr("avanza_cli.secrets.token_urlsafe", lambda _n: "token")
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("secrets.token_urlsafe", lambda _n: "token")
 
     class FakeMcpServer:
         def __init__(self, server_address, _handler, _app, _token):
@@ -611,7 +604,7 @@ def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
         def server_close(self):
             return
 
-    monkeypatch.setattr("avanza_cli.AvanzaMcpHttpServer", FakeMcpServer)
+    monkeypatch.setattr("avanza_mcp.mcp.server.AvanzaMcpHttpServer", FakeMcpServer)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -629,10 +622,10 @@ def test_tui_mcp_health_restores_missing_session_file(monkeypatch, tmp_path):
 
 
 def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
-    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
-    monkeypatch.setattr("avanza_cli.secrets.token_urlsafe", lambda _n: "token")
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("secrets.token_urlsafe", lambda _n: "token")
 
     class FakeMcpServer:
         def __init__(self, server_address, _handler, _app, _token):
@@ -647,7 +640,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
         def server_close(self):
             return
 
-    monkeypatch.setattr("avanza_cli.AvanzaMcpHttpServer", FakeMcpServer)
+    monkeypatch.setattr("avanza_mcp.mcp.server.AvanzaMcpHttpServer", FakeMcpServer)
 
     class FakeAvanza:
         def __init__(self, credentials):
@@ -811,7 +804,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 ],
             }
 
-    monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", FakeAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -847,7 +840,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert "Since Start P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert "+90.00 SEK" in str(app.query_one("#metric-profit-value").render())
             app.cycle_profit_metric()
-            assert "Total P/L" in str(app.query_one("#profit-cycle", Button).label)
+            assert "Unrealized P/L" in str(app.query_one("#profit-cycle", Button).label)
             assert "+100.00 SEK" in str(app.query_one("#metric-profit-value").render())
             assert app.query_one("#account-select").value == "acc-2"
             assert app.query_one("#instrument-select").value == "ob-1"
@@ -1078,7 +1071,7 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
 
 
 def test_tui_login_shows_progress_while_authenticating(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class SlowAvanza:
         def __init__(self, _credentials):
@@ -1107,7 +1100,7 @@ def test_tui_login_shows_progress_while_authenticating(monkeypatch):
         def get_orders(self):
             return []
 
-    monkeypatch.setattr("avanza_cli.Avanza", SlowAvanza)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", SlowAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -1138,7 +1131,7 @@ def test_tui_login_shows_progress_while_authenticating(monkeypatch):
 
 
 def test_mcp_stoploss_snapshots_include_stop_loss_id_and_order_book_id():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_all_stop_losses(self):
@@ -1209,7 +1202,7 @@ def test_mcp_stoploss_snapshots_include_stop_loss_id_and_order_book_id():
 
 
 def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_market_data(self, _order_book_id):
@@ -1243,6 +1236,7 @@ def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
     app.avanza = FakeAvanza()
     app.selected_account_id = "acc-1"
     app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
     app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
 
     dry_run = app.execute_mcp_tool(
@@ -1275,7 +1269,7 @@ def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
 
 
 def test_open_order_items_infers_side_from_buy_sell_buckets():
-    from avanza_cli import open_order_items, open_order_side_value
+    from avanza_mcp.rendering import open_order_items, open_order_side_value
 
     payload = {
         "buyOrders": [
@@ -1309,7 +1303,7 @@ def test_open_order_items_infers_side_from_buy_sell_buckets():
 
 
 def test_mcp_open_orders_include_ids_side_and_raw_shapes():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_orders(self):
@@ -1390,7 +1384,8 @@ def test_mcp_open_orders_include_ids_side_and_raw_shapes():
 
 
 def test_mcp_capabilities_and_live_session_authorization():
-    from avanza_cli import AvanzaTradingTui, account_rows_from_overview
+    from avanza_mcp.tui.app import AvanzaTradingTui
+    from avanza_mcp.rendering import account_rows_from_overview
 
     class FakeAvanza:
         def get_overview(self):
@@ -1427,6 +1422,7 @@ def test_mcp_capabilities_and_live_session_authorization():
         app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
 
     app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
     auth = app.execute_mcp_tool(
         "avanza_live_session_authorize",
         {"acknowledge": True, "reason": "unit test authorization"},
@@ -1439,7 +1435,7 @@ def test_mcp_capabilities_and_live_session_authorization():
 
 
 def test_mcp_search_stock_returns_structured_results():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def search_for_stock(self, _query, _limit):
@@ -1475,7 +1471,7 @@ def test_mcp_search_stock_returns_structured_results():
 
 
 def test_mcp_orderbook_quotes_supports_arbitrary_ids():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_market_data(self, order_book_id):
@@ -1516,7 +1512,7 @@ def test_mcp_orderbook_quotes_supports_arbitrary_ids():
 
 
 def test_mcp_orderbook_quotes_deduplicates_and_skips_metadata_for_price_projection():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self):
@@ -1549,7 +1545,7 @@ def test_mcp_orderbook_quotes_deduplicates_and_skips_metadata_for_price_projecti
 
 
 def test_mcp_focused_instrument_state_and_protection_summaries():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     today = date.today().isoformat()
 
@@ -1667,14 +1663,18 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     acn = next(row for row in buybacks["items"] if row["orderbook_id"] == "ob-acn")
     assert acn["sold_volume"] == 4
     assert acn["active_tight_buyback_volume"] == 2
-    assert acn["missing_buyback_volume"] == 2
+    # issue #2 P1: same-day BUY fills and open BUY orders are netted now:
+    # 4 sold - 1 same-day fill - 2 active BUY stops - 2 open BUY order = 0 missing
+    assert acn["same_day_buy_fill_volume"] == 1
+    assert acn["open_buy_order_volume"] == 2
+    assert acn["missing_buyback_volume"] == 0
 
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
 
 
 def test_mcp_account_read_cache_reuses_large_avanza_lists():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self):
@@ -1734,7 +1734,7 @@ def test_mcp_account_read_cache_reuses_large_avanza_lists():
 
 
 def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def place_stop_loss_order(self, **_kwargs):
@@ -1765,6 +1765,7 @@ def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
     app.avanza = FakeAvanza()
     app.selected_account_id = "acc-1"
     app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
     app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
 
     placed = app.execute_mcp_tool(
@@ -1786,7 +1787,7 @@ def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
 
 
 def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -1840,8 +1841,8 @@ def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
         assert path == "/_api/market-stock-filter/stocks/filter-options"
         return {"marketPlaces": ["se.xsto.large cap stockholm"]}
 
-    monkeypatch.setattr("avanza_cli.avanza_private_post", fake_private_post)
-    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -1859,7 +1860,7 @@ def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
 
 
 def test_mcp_market_movers_supports_market_place_filter(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -1871,8 +1872,8 @@ def test_mcp_market_movers_supports_market_place_filter(monkeypatch):
         captured["body"] = body
         return {"gainers": [], "losers": [], "numberOfGainers": 0, "numberOfLosers": 0, "numberOfNeutrals": 0}
 
-    monkeypatch.setattr("avanza_cli.avanza_private_post", fake_private_post)
-    monkeypatch.setattr("avanza_cli.avanza_private_get", lambda *_args, **_kwargs: {"marketPlaces": []})
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {"marketPlaces": []})
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -1891,7 +1892,7 @@ def test_mcp_market_movers_supports_market_place_filter(monkeypatch):
 
 
 def test_mcp_index_constituents_omxs30_shape(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -1912,7 +1913,7 @@ def test_mcp_index_constituents_omxs30_shape(monkeypatch):
         assert path == "/_api/market-index/19002/constituents"
         return fake_rows
 
-    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("avanza_index_constituents", {"index_id": "19002", "index_name": "OMXS30"})
@@ -1928,7 +1929,7 @@ def test_mcp_index_constituents_omxs30_shape(monkeypatch):
 
 
 def test_mcp_index_constituents_include_quotes_and_spread(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_market_data(self, order_book_id):
@@ -1948,7 +1949,7 @@ def test_mcp_index_constituents_include_quotes_and_spread(monkeypatch):
             {"orderBookId": "2002", "name": "NVIDIA", "countryCode": "US", "tickerSymbol": "NVDA"},
         ]
 
-    monkeypatch.setattr("avanza_cli.avanza_private_get", fake_private_get)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool(
@@ -1965,7 +1966,7 @@ def test_mcp_index_constituents_include_quotes_and_spread(monkeypatch):
 
 
 def test_mcp_search_stock_normalizes_last_price_scale_to_bid_ask():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def search_for_stock(self, query, _limit):
@@ -1999,7 +2000,7 @@ def test_mcp_search_stock_normalizes_last_price_scale_to_bid_ask():
 
 
 def test_mcp_orderbook_quotes_enriches_metadata_from_cache():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_market_data(self, _order_book_id):
@@ -2030,7 +2031,7 @@ def test_mcp_orderbook_quotes_enriches_metadata_from_cache():
 
 
 def test_mcp_orderbook_quotes_enriches_known_scalp_ids():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_market_data(self, order_book_id):
@@ -2064,7 +2065,7 @@ def test_mcp_orderbook_quotes_enriches_known_scalp_ids():
 
 
 def test_mcp_fee_estimate_infers_currency_from_metadata_and_warns_if_unknown():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     app.avanza = object()
@@ -2124,7 +2125,7 @@ def test_mcp_fee_estimate_infers_currency_from_metadata_and_warns_if_unknown():
 
 
 def test_mcp_search_stock_parses_display_symbol_from_parenthesized_name():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def search_for_stock(self, query, _limit):
@@ -2200,7 +2201,7 @@ def test_mcp_search_stock_parses_display_symbol_from_parenthesized_name():
 
 
 def test_mcp_quote_metadata_flows_from_search_cache():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def search_for_stock(self, query, _limit):
@@ -2234,7 +2235,7 @@ def test_mcp_quote_metadata_flows_from_search_cache():
 
 
 def test_mcp_select_account_switches_context():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_overview(self):
@@ -2255,7 +2256,8 @@ def test_mcp_select_account_switches_context():
 
 
 def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
-    from avanza_cli import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, TENANT_SESSION_SCOPED_TOOLS, mcp_tools_catalog
+    from avanza_mcp.mcp.catalog import MCP_TOOLS, PAPER_SESSION_ID_TOOLS, TENANT_SESSION_SCOPED_TOOLS
+    from avanza_mcp.mcp.server import mcp_tools_catalog
 
     raw_tools = {tool["name"]: tool for tool in MCP_TOOLS}
     scoped_tools = {tool["name"]: tool for tool in mcp_tools_catalog()}
@@ -2284,7 +2286,7 @@ def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
 
 
 def test_mcp_status_can_be_scoped_by_tenant_session_without_switching_active():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self, account_id: str, account_name: str):
@@ -2321,7 +2323,7 @@ def test_mcp_status_can_be_scoped_by_tenant_session_without_switching_active():
 
 
 def test_mcp_legacy_session_id_alias_scopes_non_paper_tools():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self, account_id: str, account_name: str):
@@ -2369,7 +2371,7 @@ def test_mcp_legacy_session_id_alias_scopes_non_paper_tools():
 
 
 def test_generic_avanza_tools_ignore_tenant_session_scope_argument():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self, label: str):
@@ -2417,7 +2419,7 @@ def test_generic_avanza_tools_ignore_tenant_session_scope_argument():
 
 
 def test_mcp_sessions_list_and_select_session_without_mounted_tui():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self, account_id: str, account_name: str):
@@ -2467,7 +2469,7 @@ def test_mcp_sessions_list_and_select_session_without_mounted_tui():
 
 
 def test_tui_ignores_stale_account_select_event_after_session_switch():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -2516,7 +2518,7 @@ def test_tui_ignores_stale_account_select_event_after_session_switch():
 
 
 def test_live_refresh_is_deferred_during_mcp_scope():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -2535,7 +2537,7 @@ def test_live_refresh_is_deferred_during_mcp_scope():
 
 
 def test_live_refresh_payload_is_not_applied_during_mcp_scope():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     app.active_session_id = "visible-session"
@@ -2554,7 +2556,7 @@ def test_live_refresh_payload_is_not_applied_during_mcp_scope():
 
 
 def test_mcp_unauthorized_marks_scoped_session_expired():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class UnauthorizedAvanza:
         def get_overview(self):
@@ -2592,7 +2594,7 @@ def test_mcp_unauthorized_marks_scoped_session_expired():
 
 
 def test_background_session_heartbeat_marks_inactive_session_expired(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class HealthyAvanza:
         def get_overview(self):
@@ -2636,7 +2638,7 @@ def test_background_session_heartbeat_marks_inactive_session_expired(monkeypatch
 
 
 def test_background_session_refresh_updates_inactive_cache_without_visible_switch(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class VisibleAvanza:
         def get_overview(self):
@@ -2750,7 +2752,7 @@ def test_background_session_refresh_updates_inactive_cache_without_visible_switc
 
 
 def test_mcp_account_scoped_portfolio_uses_matching_tenant_session():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self, account_id: str, stock_name: str, orderbook_id: str):
@@ -2813,7 +2815,7 @@ def test_mcp_account_scoped_portfolio_uses_matching_tenant_session():
 
 
 def test_mcp_account_scoped_portfolio_does_not_activate_visible_session():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self, account_id: str, stock_name: str, orderbook_id: str):
@@ -2879,7 +2881,7 @@ def test_mcp_account_scoped_portfolio_does_not_activate_visible_session():
 
 
 def test_mcp_paper_ledger_flow_with_risk_state():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     app.avanza = object()
@@ -2943,7 +2945,7 @@ def test_mcp_paper_ledger_flow_with_risk_state():
 
 
 def test_tui_tracks_terminal_resize():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -2957,7 +2959,7 @@ def test_tui_tracks_terminal_resize():
 
 
 def test_orders_overlay_loads_completed_buy_sell_history():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_transactions_details(self, **_kwargs):
@@ -2998,7 +3000,7 @@ def test_orders_overlay_loads_completed_buy_sell_history():
 
 
 def test_transactions_overlay_loads_account_transactions():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_transactions_details(self, **_kwargs):
@@ -3046,11 +3048,12 @@ def test_load_mcp_session_requires_existing_session_file(tmp_path):
 
 
 def test_mcp_session_keychain_storage_mode(monkeypatch, tmp_path):
-    from avanza_cli import load_mcp_session, remove_mcp_session_file, write_mcp_session_file
+    from avanza_mcp.mcp.proxy import load_mcp_session
+    from avanza_mcp.mcp.server import remove_mcp_session_file, write_mcp_session_file
 
     session_path = tmp_path / "mcp-session.json"
     monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "keychain")
-    monkeypatch.setattr("avanza_cli.tradingview_keychain_supported", lambda: True)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_session.tradingview_keychain_supported", lambda: True)
 
     store: dict[str, str] = {}
 
@@ -3064,9 +3067,9 @@ def test_mcp_session_keychain_storage_mode(monkeypatch, tmp_path):
     def fake_delete(path):
         return (store.pop(str(path), None) is not None), ""
 
-    monkeypatch.setattr("avanza_cli.mcp_keychain_set_token", fake_set)
-    monkeypatch.setattr("avanza_cli.mcp_keychain_get_token", fake_get)
-    monkeypatch.setattr("avanza_cli.mcp_keychain_delete_token", fake_delete)
+    monkeypatch.setattr("avanza_mcp.mcp.server.mcp_keychain_set_token", fake_set)
+    monkeypatch.setattr("avanza_mcp.mcp.server.mcp_keychain_get_token", fake_get)
+    monkeypatch.setattr("avanza_mcp.mcp.server.mcp_keychain_delete_token", fake_delete)
 
     write_mcp_session_file(
         session_path,
@@ -3102,7 +3105,7 @@ def test_call_mcp_bridge_handles_non_json_http_error(monkeypatch):
     def fake_urlopen(_request, timeout):
         raise FakeHttpError()
 
-    monkeypatch.setattr("avanza_cli.urlopen", fake_urlopen)
+    monkeypatch.setattr("avanza_mcp.mcp.proxy.urlopen", fake_urlopen)
     payload = call_mcp_bridge({"url": "http://127.0.0.1", "token": "x"}, "avanza_status", {})
     assert payload["ok"] is False
     assert payload["error"] == "internal error"
@@ -3164,7 +3167,7 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
 
 
 def test_tui_sorts_table_when_header_is_clicked():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -3196,7 +3199,7 @@ def test_tui_sorts_table_when_header_is_clicked():
 
 
 def test_mcp_account_performance_uses_selected_account_and_period_mapping():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self):
@@ -3270,7 +3273,7 @@ def test_mcp_account_performance_uses_selected_account_and_period_mapping():
 
 
 def test_mcp_account_performance_allows_explicit_account_and_period():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def __init__(self):
@@ -3304,7 +3307,7 @@ def test_mcp_account_performance_allows_explicit_account_and_period():
 
 
 def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monkeypatch):
-    from avanza_cli import tradingview_symbol_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_symbol_snapshot
 
     def fake_fetch_json(url, **kwargs):
         assert "scanner.tradingview.com/america/scan" in url
@@ -3347,7 +3350,7 @@ def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monk
             ],
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("AAPL", exchange="NASDAQ", market="america")
 
     assert snapshot["symbol"] == "NASDAQ:AAPL"
@@ -3360,7 +3363,7 @@ def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monk
 
 
 def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
-    from avanza_cli import tradingview_symbol_full_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_symbol_full_snapshot
 
     scanner_calls: list[list[str]] = []
 
@@ -3407,8 +3410,8 @@ def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
         </html>
         """
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
     snapshot = tradingview_symbol_full_snapshot("AAPL", exchange="NASDAQ", market="america")
 
     assert snapshot["symbol"] == "NASDAQ:AAPL"
@@ -3423,7 +3426,7 @@ def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
 
 
 def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monkeypatch):
-    from avanza_cli import tradingview_symbol_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_symbol_snapshot
 
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -3474,7 +3477,7 @@ def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monk
             }
         return {"totalCount": 0, "data": []}
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("ETHUSD", exchange="NASDAQ", market="america")
 
     assert snapshot["fallback_used"] is True
@@ -3486,7 +3489,7 @@ def test_tradingview_symbol_snapshot_falls_back_to_crypto_market_for_ethusd(monk
 
 
 def test_tradingview_symbol_snapshot_crypto_recovers_from_unknown_field_400(monkeypatch):
-    from avanza_cli import tradingview_symbol_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_symbol_snapshot
 
     def fake_fetch_json(url, **kwargs):
         payload = kwargs.get("payload", {})
@@ -3526,7 +3529,7 @@ def test_tradingview_symbol_snapshot_crypto_recovers_from_unknown_field_400(monk
             return {"totalCount": 1, "data": [{"s": "BITSTAMP:ETHUSD", "d": values}]}
         return {"totalCount": 0, "data": []}
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("ETHUSD", exchange="NASDAQ", market="america")
 
     assert snapshot["fallback_used"] is True
@@ -3538,7 +3541,7 @@ def test_tradingview_symbol_snapshot_crypto_recovers_from_unknown_field_400(monk
 
 
 def test_tradingview_field_fallback_cache_skips_known_unsupported_fields(monkeypatch):
-    from avanza_cli import TRADINGVIEW_UNSUPPORTED_FIELD_CACHE, tradingview_scan_with_field_fallback
+    from avanza_mcp.external.tradingview_data import TRADINGVIEW_UNSUPPORTED_FIELD_CACHE, tradingview_scan_with_field_fallback
 
     TRADINGVIEW_UNSUPPORTED_FIELD_CACHE.clear()
     calls: list[list[str]] = []
@@ -3549,7 +3552,7 @@ def test_tradingview_field_fallback_cache_skips_known_unsupported_fields(monkeyp
             return {"error": 'Unknown field "Bad.Field"', "rows": [], "total_count": 0}
         return {"error": None, "rows": [{"name": "AAPL", "close": 10.0}], "total_count": 1}
 
-    monkeypatch.setattr("avanza_cli.tradingview_scan", fake_scan)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_scan", fake_scan)
 
     first, first_unsupported = tradingview_scan_with_field_fallback(
         symbols=["NASDAQ:AAPL"],
@@ -3571,7 +3574,7 @@ def test_tradingview_field_fallback_cache_skips_known_unsupported_fields(monkeyp
 
 
 def test_tradingview_symbol_attempts_for_qualified_symbols_include_market_and_exchange_fallbacks():
-    from avanza_cli import tradingview_symbol_attempts
+    from avanza_mcp.external.tradingview_data import tradingview_symbol_attempts
 
     attempts = tradingview_symbol_attempts("LSE:BA.", exchange="NASDAQ", market="america")
     assert ("LSE:BA.", "america") in attempts
@@ -3583,7 +3586,7 @@ def test_tradingview_symbol_attempts_for_qualified_symbols_include_market_and_ex
 
 
 def test_tradingview_symbol_snapshot_falls_back_from_america_to_exchange_market(monkeypatch):
-    from avanza_cli import tradingview_symbol_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_symbol_snapshot
 
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -3634,7 +3637,7 @@ def test_tradingview_symbol_snapshot_falls_back_from_america_to_exchange_market(
             }
         return {"totalCount": 0, "data": []}
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = tradingview_symbol_snapshot("LSE:BA.", exchange="NASDAQ", market="america")
 
     assert snapshot["fallback_used"] is True
@@ -3646,7 +3649,7 @@ def test_tradingview_symbol_snapshot_falls_back_from_america_to_exchange_market(
 
 
 def test_tradingview_preopen_symbol_snapshot_normalizes_extended_hours(monkeypatch):
-    from avanza_cli import tradingview_preopen_symbol_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_preopen_symbol_snapshot
 
     def fake_full(symbol, **kwargs):
         return {
@@ -3697,7 +3700,7 @@ def test_tradingview_preopen_symbol_snapshot_normalizes_extended_hours(monkeypat
             "unsupported_fields": [],
         }
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_full)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_full_snapshot", fake_full)
 
     snapshot = tradingview_preopen_symbol_snapshot("SNDK", exchange="NASDAQ", market="america", authenticated=True)
 
@@ -3713,7 +3716,7 @@ def test_tradingview_preopen_symbol_snapshot_normalizes_extended_hours(monkeypat
 
 
 def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypatch):
-    from avanza_cli import tradingview_preopen_batch_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_preopen_batch_snapshot
 
     calls: list[list[str]] = []
 
@@ -3738,8 +3741,8 @@ def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypat
     def fake_single(symbol, **kwargs):
         raise RuntimeError(f"{symbol} unavailable")
 
-    monkeypatch.setattr("avanza_cli.tradingview_scan_with_field_fallback", fake_scan)
-    monkeypatch.setattr("avanza_cli.tradingview_preopen_symbol_snapshot", fake_single)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_scan_with_field_fallback", fake_scan)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_preopen_symbol_snapshot", fake_single)
 
     batch = tradingview_preopen_batch_snapshot(
         [{"symbol": "SNDK", "exchange": "NASDAQ"}, {"symbol": "CRWD", "exchange": "NASDAQ"}, "MU"],
@@ -3758,7 +3761,7 @@ def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypat
 
 
 def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
-    from avanza_cli import tradingview_heatmap_snapshot
+    from avanza_mcp.external.tradingview_data import tradingview_heatmap_snapshot
 
     def fake_fetch_json(url, **kwargs):
         columns = list(kwargs.get("payload", {}).get("columns", []))
@@ -3808,7 +3811,7 @@ def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
 
     snapshot = tradingview_heatmap_snapshot(
         market="america",
@@ -3827,7 +3830,7 @@ def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):
 
 
 def test_tradingview_watchlist_entry_matches_target_variants():
-    from avanza_cli import tradingview_watchlist_entry_matches_target
+    from avanza_mcp.external.tradingview_data import tradingview_watchlist_entry_matches_target
 
     entry = {"id": "id57177174", "name": "My Stocks", "raw_label": "My Stocks 128"}
     assert tradingview_watchlist_entry_matches_target(entry, "57177174", "")
@@ -3836,7 +3839,7 @@ def test_tradingview_watchlist_entry_matches_target_variants():
 
 
 def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypatch):
-    from avanza_cli import sec_recent_filings_snapshot
+    from avanza_mcp.external.feeds import sec_recent_filings_snapshot
 
     def fake_fetch_json(url, **kwargs):
         if "company_tickers_exchange.json" in url:
@@ -3859,7 +3862,7 @@ def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypat
             }
         raise AssertionError(f"Unexpected URL: {url}")
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = sec_recent_filings_snapshot(ticker="AAPL", cik=None, limit=2)
 
     assert snapshot["cik"] == "0000320193"
@@ -3870,7 +3873,7 @@ def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypat
 
 
 def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
-    from avanza_cli import fmp_analyst_recommendations_snapshot
+    from avanza_mcp.external.feeds import fmp_analyst_recommendations_snapshot
 
     def fake_fetch_text(url, **kwargs):
         assert "financialmodelingprep.com/api/v3/analyst-stock-recommendations/AAPL" in url
@@ -3889,7 +3892,7 @@ def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
     snapshot = fmp_analyst_recommendations_snapshot("AAPL", api_key="test-key", limit=5)
     assert snapshot["symbol"] == "AAPL"
     assert snapshot["latest"]["strong_buy"] == 12
@@ -3897,7 +3900,7 @@ def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
 
 
 def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
-    from avanza_cli import zacks_symbol_snapshot
+    from avanza_mcp.external.zacks import zacks_symbol_snapshot
 
     def fake_fetch_text(url, **kwargs):
         if "/stock/quote/AAPL" in url:
@@ -3932,7 +3935,7 @@ def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
             """
         raise AssertionError(url)
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
 
     snapshot = zacks_symbol_snapshot("AAPL")
 
@@ -3951,13 +3954,13 @@ def test_zacks_symbol_snapshot_includes_analysis_summary(monkeypatch):
 
 
 def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
-    from avanza_cli import zacks_symbol_snapshot
+    from avanza_mcp.external.zacks import zacks_symbol_snapshot
 
     def fake_fetch_text(url, **kwargs):
         assert "/stock/quote/AAPL" in url
         return "<html><title>Pardon Our Interruption</title><body>Access denied</body></html>"
 
-    monkeypatch.setattr("avanza_cli.external_fetch_text", fake_fetch_text)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_text", fake_fetch_text)
 
     snapshot = zacks_symbol_snapshot("AAPL")
 
@@ -3968,7 +3971,7 @@ def test_zacks_symbol_snapshot_marks_blocked_without_summary(monkeypatch):
 
 
 def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
-    from avanza_cli import polygon_analyst_insights_snapshot
+    from avanza_mcp.external.feeds import polygon_analyst_insights_snapshot
 
     def fake_fetch_json(url, **kwargs):
         assert "api.polygon.io/benzinga/v1/analyst-insights" in url
@@ -3990,7 +3993,7 @@ def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
             "next_url": "",
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = polygon_analyst_insights_snapshot("AAPL", api_key="poly-key", limit=5)
     assert snapshot["symbol"] == "AAPL"
     assert snapshot["status"] == "OK"
@@ -3999,7 +4002,7 @@ def test_polygon_analyst_insights_snapshot_parses_rows(monkeypatch):
 
 
 def test_fred_observations_snapshot_parses_values(monkeypatch):
-    from avanza_cli import fred_observations_snapshot
+    from avanza_mcp.external.feeds import fred_observations_snapshot
 
     def fake_fetch_json(url, **kwargs):
         assert "fred/series/observations" in url
@@ -4013,7 +4016,7 @@ def test_fred_observations_snapshot_parses_values(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr("avanza_cli.external_fetch_json", fake_fetch_json)
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
     snapshot = fred_observations_snapshot("FEDFUNDS", api_key="test-key", limit=2, sort_order="desc")
 
     assert snapshot["series_id"] == "FEDFUNDS"
@@ -4022,7 +4025,7 @@ def test_fred_observations_snapshot_parses_values(monkeypatch):
 
 
 def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4040,9 +4043,9 @@ def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
     def fake_sec(*args, **kwargs):
         return {"ticker": "AAPL", "filings": [{"form": "10-Q"}], "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
-    monkeypatch.setattr("avanza_cli.zacks_symbol_snapshot", fake_zacks)
-    monkeypatch.setattr("avanza_cli.sec_recent_filings_snapshot", fake_sec)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr("avanza_mcp.external.zacks.zacks_symbol_snapshot", fake_zacks)
+    monkeypatch.setattr("avanza_mcp.external.feeds.sec_recent_filings_snapshot", fake_sec)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4056,21 +4059,21 @@ def test_execute_mcp_signal_context_bundle_aggregates_sources(monkeypatch):
 
 
 def test_execute_mcp_signal_context_bundle_with_fmp_and_polygon(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
 
     monkeypatch.setattr(
-        "avanza_cli.tradingview_symbol_snapshot",
+        "avanza_mcp.external.tradingview_data.tradingview_symbol_snapshot",
         lambda *args, **kwargs: {"symbol": "NASDAQ:AAPL", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False},
     )
     monkeypatch.setattr(
-        "avanza_cli.fmp_analyst_recommendations_snapshot",
+        "avanza_mcp.external.feeds.fmp_analyst_recommendations_snapshot",
         lambda *args, **kwargs: {"symbol": "AAPL", "rows": [{"buy": 10}], "unsafe_for_execution": False},
     )
     monkeypatch.setattr(
-        "avanza_cli.polygon_analyst_insights_snapshot",
+        "avanza_mcp.external.feeds.polygon_analyst_insights_snapshot",
         lambda *args, **kwargs: {"symbol": "AAPL", "rows": [{"rating": "Buy"}], "unsafe_for_execution": False},
     )
 
@@ -4096,7 +4099,7 @@ def test_execute_mcp_signal_context_bundle_with_fmp_and_polygon(monkeypatch):
 
 
 def test_execute_mcp_signal_context_bundle_uses_raw_symbol_for_tradingview_fallback(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4117,10 +4120,10 @@ def test_execute_mcp_signal_context_bundle_uses_raw_symbol_for_tradingview_fallb
         captured["zacks_symbol"] = symbol
         return {"symbol": symbol, "blocked": False, "rank": {"value": 3, "label": "Hold"}}
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
-    monkeypatch.setattr("avanza_cli.zacks_symbol_snapshot", fake_zacks)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr("avanza_mcp.external.zacks.zacks_symbol_snapshot", fake_zacks)
     monkeypatch.setattr(
-        "avanza_cli.sec_recent_filings_snapshot",
+        "avanza_mcp.external.feeds.sec_recent_filings_snapshot",
         lambda *args, **kwargs: {"ticker": "ETHUSD", "filings": [], "unsafe_for_execution": False},
     )
 
@@ -4137,7 +4140,7 @@ def test_execute_mcp_signal_context_bundle_uses_raw_symbol_for_tradingview_fallb
 
 
 def test_execute_mcp_signal_context_bundle_degrades_when_tradingview_fails(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4145,9 +4148,9 @@ def test_execute_mcp_signal_context_bundle_degrades_when_tradingview_fails(monke
     def fake_tv(*args, **kwargs):
         raise RuntimeError("TradingView down")
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_snapshot", fake_tv)
     monkeypatch.setattr(
-        "avanza_cli.zacks_symbol_snapshot",
+        "avanza_mcp.external.zacks.zacks_symbol_snapshot",
         lambda symbol, **kwargs: {"symbol": symbol, "rank": {"value": 2, "label": "Buy"}, "unsafe_for_execution": False},
     )
 
@@ -4166,7 +4169,7 @@ def test_execute_mcp_signal_context_bundle_degrades_when_tradingview_fails(monke
 
 
 def test_execute_mcp_signal_context_bundle_accepts_symbols_list(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4176,7 +4179,7 @@ def test_execute_mcp_signal_context_bundle_accepts_symbols_list(monkeypatch):
             raise RuntimeError("no row")
         return {"symbol": f"NASDAQ:{symbol}", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_tv)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_snapshot", fake_tv)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4197,7 +4200,7 @@ def test_execute_mcp_signal_context_bundle_accepts_symbols_list(monkeypatch):
 
 
 def test_avanza_tv_preopen_portfolio_bundle_merges_read_only_state(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_accounts_positions(self):
@@ -4249,7 +4252,7 @@ def test_avanza_tv_preopen_portfolio_bundle_merges_read_only_state(monkeypatch):
             "events": {},
         }
 
-    monkeypatch.setattr("avanza_cli.tradingview_preopen_symbol_snapshot", fake_preopen)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_preopen_symbol_snapshot", fake_preopen)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4269,15 +4272,15 @@ def test_avanza_tv_preopen_portfolio_bundle_merges_read_only_state(monkeypatch):
 
 
 def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
-    from avanza_cli import (
-        clear_tradingview_session,
-        load_tradingview_session,
-        save_tradingview_session,
-        tradingview_session_status,
-    )
+    from avanza_mcp.external.tradingview_session import (
+    clear_tradingview_session,
+    load_tradingview_session,
+    save_tradingview_session,
+    tradingview_session_status,
+)
 
     session_path = tmp_path / ".avanza_tradingview_session.json"
-    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", session_path)
+    monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", session_path)
     monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
 
     empty_status = tradingview_session_status()
@@ -4299,17 +4302,17 @@ def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):
 
 
 def test_tradingview_session_keychain_storage_mode(monkeypatch, tmp_path):
-    from avanza_cli import (
-        clear_tradingview_session,
-        load_tradingview_session,
-        save_tradingview_session,
-        tradingview_session_status,
-    )
+    from avanza_mcp.external.tradingview_session import (
+    clear_tradingview_session,
+    load_tradingview_session,
+    save_tradingview_session,
+    tradingview_session_status,
+)
 
     session_path = tmp_path / ".avanza_tradingview_session.json"
-    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", session_path)
+    monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", session_path)
     monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "keychain")
-    monkeypatch.setattr("avanza_cli.tradingview_keychain_supported", lambda: True)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_session.tradingview_keychain_supported", lambda: True)
 
     store: dict[str, str] = {}
 
@@ -4323,9 +4326,9 @@ def test_tradingview_session_keychain_storage_mode(monkeypatch, tmp_path):
     def fake_delete(path):
         return (store.pop(str(path), None) is not None), ""
 
-    monkeypatch.setattr("avanza_cli.tradingview_keychain_set_cookie", fake_set)
-    monkeypatch.setattr("avanza_cli.tradingview_keychain_get_cookie", fake_get)
-    monkeypatch.setattr("avanza_cli.tradingview_keychain_delete_cookie", fake_delete)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_session.tradingview_keychain_set_cookie", fake_set)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_session.tradingview_keychain_get_cookie", fake_get)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_session.tradingview_keychain_delete_cookie", fake_delete)
 
     saved = save_tradingview_session("sessionid=abc123; sessionid_sign=sig987", source="unit-test")
     assert saved["saved"] is True
@@ -4348,13 +4351,13 @@ def test_tradingview_session_keychain_storage_mode(monkeypatch, tmp_path):
 
 
 def test_mcp_tv_auth_session_start_set_status_clear(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
 
-    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
-    monkeypatch.setattr("avanza_cli.webbrowser.open", lambda *args, **kwargs: True)
+    monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("webbrowser.open", lambda *args, **kwargs: True)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4379,7 +4382,7 @@ def test_mcp_tv_auth_session_start_set_status_clear(monkeypatch, tmp_path):
 
 
 def test_mcp_tv_auth_session_login_auto_delegates_and_saves(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4390,8 +4393,8 @@ def test_mcp_tv_auth_session_login_auto_delegates_and_saves(monkeypatch, tmp_pat
         called["thread_wrapper"] = True
         return {"captured": True, "status": {"configured": True}}
 
-    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
-    monkeypatch.setattr("avanza_cli.run_blocking_in_thread", fake_worker)
+    monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_mcp.utils.run_blocking_in_thread", fake_worker)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4403,7 +4406,7 @@ def test_mcp_tv_auth_session_login_auto_delegates_and_saves(monkeypatch, tmp_pat
 
 
 def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4414,8 +4417,8 @@ def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_pat
         captured["cookie"] = kwargs.get("cookie", "")
         return {"symbol": "NASDAQ:AAPL", "technicals": {"overall_label": "Buy"}, "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_snapshot", fake_snapshot)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4427,7 +4430,7 @@ def test_tv_auth_symbol_analytics_uses_saved_session_cookie(monkeypatch, tmp_pat
 
 
 def test_tv_scrape_symbol_full_delegates(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4436,7 +4439,7 @@ def test_tv_scrape_symbol_full_delegates(monkeypatch):
         assert symbol == "AAPL"
         return {"symbol": "NASDAQ:AAPL", "field_count": 42, "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_full_snapshot", fake_snapshot)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("tv_scrape_symbol_full", {"symbol": "AAPL"})
@@ -4446,7 +4449,7 @@ def test_tv_scrape_symbol_full_delegates(monkeypatch):
 
 
 def test_tv_auth_symbol_full_uses_saved_session_cookie(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4457,8 +4460,8 @@ def test_tv_auth_symbol_full_uses_saved_session_cookie(monkeypatch, tmp_path):
         captured["cookie"] = kwargs.get("cookie", "")
         return {"symbol": "NASDAQ:AAPL", "field_count": 12, "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
-    monkeypatch.setattr("avanza_cli.tradingview_symbol_full_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.config.TRADINGVIEW_SESSION_FILE", tmp_path / ".avanza_tradingview_session.json")
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_symbol_full_snapshot", fake_snapshot)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     app.execute_mcp_tool("tv_auth_session_set", {"sessionid": "abc", "sessionid_sign": "sig"})
@@ -4469,7 +4472,8 @@ def test_tv_auth_symbol_full_uses_saved_session_cookie(monkeypatch, tmp_path):
 
 
 def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
-    from avanza_cli import AvanzaTradingTui, TRADINGVIEW_WATCHLIST_ROW_LIMIT
+    from avanza_mcp.config import TRADINGVIEW_WATCHLIST_ROW_LIMIT
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4485,7 +4489,7 @@ def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
             "source": "tradingview-auth-watchlists",
         }
 
-    monkeypatch.setattr("avanza_cli.run_blocking_in_thread", fake_thread_wrapper)
+    monkeypatch.setattr("avanza_mcp.utils.run_blocking_in_thread", fake_thread_wrapper)
 
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
@@ -4502,7 +4506,7 @@ def test_tv_auth_custom_lists_uses_profile_scrape(monkeypatch):
 
 
 def test_fmp_analyst_recommendations_tool_dispatch(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4511,7 +4515,7 @@ def test_fmp_analyst_recommendations_tool_dispatch(monkeypatch):
         assert symbol == "AAPL"
         return {"symbol": "AAPL", "rows": [{"buy": 11}], "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.fmp_analyst_recommendations_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.external.feeds.fmp_analyst_recommendations_snapshot", fake_snapshot)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("fmp_analyst_recommendations", {"symbol": "AAPL", "api_key": "x"})
@@ -4520,7 +4524,7 @@ def test_fmp_analyst_recommendations_tool_dispatch(monkeypatch):
 
 
 def test_polygon_analyst_insights_tool_dispatch(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4529,7 +4533,7 @@ def test_polygon_analyst_insights_tool_dispatch(monkeypatch):
         assert symbol == "AAPL"
         return {"symbol": "AAPL", "rows": [{"rating": "Buy"}], "unsafe_for_execution": False}
 
-    monkeypatch.setattr("avanza_cli.polygon_analyst_insights_snapshot", fake_snapshot)
+    monkeypatch.setattr("avanza_mcp.external.feeds.polygon_analyst_insights_snapshot", fake_snapshot)
     app = AvanzaTradingTui()
     app.avanza = FakeAvanza()
     result = app.execute_mcp_tool("polygon_analyst_insights", {"symbol": "AAPL", "api_key": "x"})
@@ -4538,7 +4542,7 @@ def test_polygon_analyst_insights_tool_dispatch(monkeypatch):
 
 
 def test_tradingview_cookie_from_browser_cookies_extracts_session_tokens():
-    from avanza_cli import tradingview_cookie_from_browser_cookies
+    from avanza_mcp.external.tradingview_session import tradingview_cookie_from_browser_cookies
 
     cookies = [
         {"name": "other", "value": "x", "domain": ".tradingview.com"},
@@ -4551,7 +4555,7 @@ def test_tradingview_cookie_from_browser_cookies_extracts_session_tokens():
 
 
 def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -4614,7 +4618,7 @@ def test_tui_portfolio_trade_action_opens_prefilled_order_ticket():
 
 
 def test_tui_order_ticket_validates_required_numeric_fields():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -4646,7 +4650,7 @@ def test_tui_order_ticket_validates_required_numeric_fields():
 
 
 def test_tui_order_search_includes_owned_holdings_when_remote_search_fails():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def search_for_stock(self, query, limit):
@@ -4681,7 +4685,7 @@ def test_tui_order_search_includes_owned_holdings_when_remote_search_fails():
 
 
 def test_table_selection_can_be_restored_after_rebuild():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -4705,7 +4709,7 @@ def test_table_selection_can_be_restored_after_rebuild():
 
 
 def test_live_refresh_runs_in_background_thread():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_accounts_positions(self):
@@ -4736,7 +4740,7 @@ def test_live_refresh_runs_in_background_thread():
 
 
 def test_live_refresh_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         def get_accounts_positions(self):
@@ -4766,11 +4770,11 @@ def test_live_refresh_worker_tolerates_call_from_thread_runtime_error(monkeypatc
 
 
 def test_update_check_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     app.update_check_inflight = True
-    monkeypatch.setattr("avanza_cli.github_latest_version_info", lambda _repo: {"version": "v9.9.9"})
+    monkeypatch.setattr("avanza_mcp.update_check.github_latest_version_info", lambda _repo: {"version": "v9.9.9"})
     monkeypatch.setattr(
         app,
         "call_from_thread",
@@ -4783,11 +4787,11 @@ def test_update_check_worker_tolerates_call_from_thread_runtime_error(monkeypatc
 
 
 def test_tv_lists_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     app = AvanzaTradingTui()
     app.tv_lists_refresh_inflight = True
-    monkeypatch.setattr("avanza_cli.tradingview_custom_watchlists_from_profile", lambda **_kwargs: {"lists": [], "items": []})
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_custom_watchlists_from_profile", lambda **_kwargs: {"lists": [], "items": []})
     monkeypatch.setattr(
         app,
         "call_from_thread",
@@ -4801,7 +4805,7 @@ def test_tv_lists_worker_tolerates_call_from_thread_runtime_error(monkeypatch):
 
 
 def test_logout_selected_session_switches_to_remaining_tenant():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4854,7 +4858,7 @@ def test_logout_selected_session_switches_to_remaining_tenant():
 
 
 def test_logout_selected_session_logs_out_to_login_screen_when_last_session_removed():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4895,7 +4899,7 @@ def test_logout_selected_session_logs_out_to_login_screen_when_last_session_remo
 
 
 def test_tui_refresh_selected_session_opens_reauth_modal():
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
     class FakeAvanza:
         pass
@@ -4929,18 +4933,18 @@ def test_tui_refresh_selected_session_opens_reauth_modal():
 
             assert app.query_one("#extra-login-modal").display is True
             assert app.login_target_session_id == session.session_id
-            assert "Refresh selected session login" in str(app.query_one("#extra-login-title", Static).renderable)
+            assert "Refresh selected session login" in str(app.query_one("#extra-login-title", Static).render())
             assert app.query_one("#extra-session-label", Input).value == "Session One"
 
     asyncio.run(run_app())
 
 
 def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
-    from avanza_cli import AvanzaTradingTui
+    from avanza_mcp.tui.app import AvanzaTradingTui
 
-    monkeypatch.setattr("avanza_cli.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
+    monkeypatch.setattr("avanza_mcp.config.MCP_SESSION_FILE", tmp_path / "mcp-session.json")
     monkeypatch.setattr(
-        "avanza_cli.onepassword_credentials",
+        "avanza_mcp.auth.onepassword_credentials",
         lambda item, vault=None: {
             "username": "alice",
             "password": "secret-password",
@@ -4975,7 +4979,7 @@ def test_tui_1password_login_uses_op_credentials(monkeypatch, tmp_path):
         def get_orders(self):
             return []
 
-    monkeypatch.setattr("avanza_cli.Avanza", FakeAvanza)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", FakeAvanza)
 
     async def run_app() -> None:
         app = AvanzaTradingTui()
@@ -5045,7 +5049,7 @@ def test_onepassword_credentials_reads_item_and_otp(monkeypatch):
 
 
 def test_render_accounts_overview_outputs_human_table(capsys):
-    from avanza_cli import render_accounts_overview
+    from avanza_mcp.rendering import render_accounts_overview
 
     render_accounts_overview(
         {

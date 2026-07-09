@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Python dependencies (pyproject.toml / uv.lock)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Keep the security workflows themselves current
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"

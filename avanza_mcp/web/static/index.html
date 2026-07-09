@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Avanza-MCP Trading Console</title>
+  <link rel="stylesheet" href="/static/styles/tokens.css">
+  <link rel="stylesheet" href="/static/styles/base.css">
+  <link rel="stylesheet" href="/static/styles/components.css">
+  <link rel="stylesheet" href="/static/styles/tables.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%233b82f6'/%3E%3Cpath d='M4 11 8 5l4 6' stroke='white' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+  <script type="importmap">
+  {
+    "imports": {
+      "vue": "https://cdn.jsdelivr.net/npm/vue@3.4.38/dist/vue.esm-browser.prod.js"
+    },
+    "integrity": {
+      "https://cdn.jsdelivr.net/npm/vue@3.4.38/dist/vue.esm-browser.prod.js": "sha384-iYa/ju0jufZH3zjfKQMeniqW4rITAg1chnNhm+pY70IeWgzG5csuu0T31TWT4hFu"
+    }
+  }
+  </script>
+  <!-- To run fully offline, swap the import above for "/static/vendor/vue.esm-browser.prod.js"
+       and the script below for "/static/vendor/lightweight-charts.standalone.production.js". -->
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
+          integrity="sha384-OK7vELvjHdhUFi31JYioPIcRHTROLdcDa6ZsNWgvgLaKj+9JqhU0Ad8g4wz3CXjA"
+          crossorigin="anonymous" defer></script>
+</head>
+<body>
+  <div id="app" class="app-root">
+    <noscript>Avanza-MCP Web UI requires JavaScript.</noscript>
+  </div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

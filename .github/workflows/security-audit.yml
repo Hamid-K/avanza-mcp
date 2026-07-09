@@ -1,0 +1,57 @@
+name: Dependency vulnerability audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
+      - ".github/workflows/security-audit.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "requirements.txt"
+  schedule:
+    - cron: "23 6 * * *" # daily 06:23 UTC — catches newly published advisories
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (resolved environment)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Export locked dependencies
+        run: uv export --frozen --no-dev --no-emit-project --format requirements-txt > locked-requirements.txt
+      - name: Audit against PyPI advisory + OSV databases
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: locked-requirements.txt
+
+  osv-scan:
+    name: OSV scanner (lockfile)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload SARIF to the Security tab
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action/osv-scanner-action@v2.0.2
+        with:
+          scan-args: |-
+            --lockfile=uv.lock
+            --format=sarif
+            --output=osv-results.sarif
+        continue-on-error: true
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: osv-results.sarif
+          category: osv-scanner

@@ -8,7 +8,7 @@ echo "[verify] py_compile"
 python3 -m py_compile avanza_cli.py tests/test_cli.py tests/test_tui_helpers.py
 
 echo "[verify] compileall"
-python3 -m compileall -q avanza_cli.py tests
+python3 -m compileall -q avanza_cli.py avanza_mcp tests
 
 echo "[verify] pytest"
 PYTHONWARNINGS=ignore pytest -q

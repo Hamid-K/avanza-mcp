@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.2.9 - 2026-07-08
+
+- Added live-refresh behavior to Web Completed Orders and Transactions overlays: they reload after relevant WebSocket order/portfolio/stop-loss updates and poll every 10 seconds while open as a fallback.
+
+## 0.2.8 - 2026-07-08
+
+- Reload active Web overlay panels after session or account dropdown changes so Orders, Transactions, Stop-Losses, TradingView lists, and Research candidates reflect the newly selected context.
+
+## 0.2.7 - 2026-07-08
+
+- Added a visible Web Transactions `P/L SEK` column backed by Avanza's transaction result field, with gain/loss coloring for realized trade damage checks.
+
+## 0.2.6 - 2026-07-08
+
+- Added a full-page Web `Stop-Losses` overlay for configured live and paper stop-losses, with refresh, edit, and guarded cancel actions.
+- Added browser-local saved 1Password login profiles for primary and extra-session Web logins; profiles store only the item name, optional vault, and display label.
+
+## 0.2.5 - 2026-07-08
+
+- Disabled browser caching for all local Web UI static assets to avoid stale Vue modules after Web UI updates.
+- Added compact Web transaction load/failure events to the app/session logs with account, date range, type filters, and fetched/returned row counts.
+
+## 0.2.4 - 2026-07-08
+
+- Fixed Web Transactions filtering so non-order transaction rows such as dividends, deposits, withdrawals, and unknown/service rows are not discarded after being fetched.
+- Hardened transaction account matching for Avanza payloads that provide `accountName` or top-level account fields instead of nested `account.id`.
+
+## 0.2.3 - 2026-07-08
+
+- Fixed the Web Transactions/Completed Orders overlay so blank date fields default to the past calendar month, both in the visible date inputs and in `/api/transactions` backend calls.
+
+## 0.2.2 - 2026-07-08
+
+- Added a Web UI `Research candidates` overlay next to TradingView lists. It assembles read-only source-ranked stock candidates from TradingView movers/technicals and Zacks rank/analysis summaries, with optional FMP analyst history when `FMP_API_KEY` is configured.
+- Added `/api/recommendations/stocks`, a bounded research aggregation endpoint with per-symbol source errors, source provenance, transparent scores, and a clear research-only disclaimer.
+- Added Web API/static tests covering research candidate aggregation and toolbar/overlay wiring.
+
+## 0.2.1 - 2026-07-08
+
+- Fixed Web UI completed-order history filtering so `BUY,SELL` transaction filters are parsed once and sent to Avanza with valid enum values.
+- Restored Web UI CSRF tokens after authenticated page reloads via `/api/auth/me`, so mutating requests do not fail after refresh.
+- Improved Web UI live data freshness: login, account switching, and live refresh now update portfolio, ongoing orders, and stop-loss panes together.
+- Reworked the Web dashboard layout:
+  - moved Activity and MCP Live logs directly under Ongoing Orders,
+  - moved Orders, Transactions, TradingView lists, Order, and Stop-Loss actions into a second top-toolbar row,
+  - removed the fixed bottom-right floating action row,
+  - added persisted splitters for main/side panes, portfolio/ongoing/log panes, and Activity/MCP Live logs.
+- Simplified Web MCP live authorization into a compact warning strip and removed duplicate tick boxes; authorizing live MCP trading now also disables paper mode.
+- Removed the browser confirmation popup when toggling paper mode in the Web UI.
+- Fixed Web Transactions/Completed Orders table rendering so API rows with title-case fields display real dates, accounts, types, descriptions, and amounts instead of blank `-` cells; Transactions now requests all Avanza transaction categories.
+- Made Web TradingView lists degrade to public TradingView scanner movers when authenticated custom-list scraping is unavailable, so the overlay still presents TradingView data without Playwright/profile setup.
+- Added focused Web API/static regression tests for transaction filters, CSRF reload recovery, stale order/stop-loss refreshes, toolbar placement, log scrolling, and live authorization UX.
+
+## 0.2.0 - 2026-07-07
+
+- Restructured the 16.7k-line `avanza_cli.py` monolith into the `avanza_mcp` package (config, domain modules, external integrations, MCP server, TUI); the root file is now a thin shim and all documented invocations keep working.
+- Extracted a UI-agnostic trading kernel (`avanza_mcp/core`): tenant sessions, caches, MCP bridge + tool dispatch, snapshot providers, trading submission bodies, and refresh workers shared by every front-end.
+- Added a full Web UI (`python avanza_cli.py web`): dark single-page trading console with portfolio + live WebSocket updates, order/stop-loss tickets (dry-run → single-use review nonce → typed PLACE), guarded cancellations, multi-tenant sessions with re-auth, MCP management (bridge/R-W/live-arming, token + proxy command, streaming log), a dedicated Paper workspace, TradingView lists, performance charts, and orders/transactions history.
+- Web security: 127.0.0.1-only bind, startup access token → HttpOnly SameSite=Strict cookie, double-submit CSRF header, Origin validation, strict CSP with SRI-pinned CDN assets (offline vendor fallbacks committed).
+- The TUI and Web UI are mutually exclusive per checkout via a pid lock; both manage the same MCP bridge and session-file contract.
+- New dependencies: fastapi, uvicorn, websockets, rich (previously transitive).
+
 ## 0.1.12 - 2026-07-02
 
 - Optimized TradingView pre-open batch snapshots to use one scanner request for normal multi-symbol calls, with per-symbol fallback/error isolation only for missing rows.

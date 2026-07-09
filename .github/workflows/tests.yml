@@ -1,0 +1,28 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    env:
+      NO_COLOR: "1"
+      AVANZA_UPDATE_CHECK_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --extra dev
+      - name: Run test suite
+        run: uv run pytest -q
+      - name: Compile check
+        run: |
+          uv run python -m py_compile avanza_cli.py tests/test_cli.py tests/test_tui_helpers.py
+          uv run python -m compileall -q avanza_cli.py avanza_mcp tests

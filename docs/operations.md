@@ -160,6 +160,32 @@ python avanza_cli.py transactions list \
   --types BUY,SELL,DIVIDEND
 ```
 
+## Web UI
+
+`python avanza_cli.py web` serves the browser trading console on
+`127.0.0.1:8787` (`--port` to change, `--no-browser` to skip auto-open).
+Paste the access token printed at startup (also in
+`.avanza_web_session.json`) into the login form, then add Avanza sessions
+from the browser. The Web UI and the TUI are mutually exclusive per
+checkout — `.avanza_ui.lock` enforces one at a time. Both manage the same
+MCP bridge and `.avanza_mcp_session.json` contract, so MCP clients work
+identically against either. Full details: `docs/web.md`.
+
+The Web UI includes a `Research candidates` section next to `TradingView
+lists`. It calls `/api/recommendations/stocks` and assembles a bounded,
+read-only candidate list from TradingView movers/technicals and Zacks
+rank/analysis summaries, with optional FMP enrichment when `FMP_API_KEY` is
+configured. Treat it as research input only; it never authorizes or places
+orders.
+
+The Web UI also has a full-page `Stop-Losses` view next to Orders and
+Transactions. It lists configured live and paper stop-losses with account,
+stock, trigger, order, validity, edit, and guarded cancellation actions. The
+login modal can remember 1Password CLI profiles for primary and extra-session
+logins; it stores only the 1Password item name, optional vault, and display
+label in browser local storage, never the Avanza password or TOTP.
+
+
 ## MCP Mode
 
 ### Register and run the MCP server
@@ -288,6 +314,7 @@ Recommended flow:
 2. Run `tv_auth_session_status` when authenticated TradingView entitlement/session data is needed.
 3. Use `tv_preopen_batch_snapshot` for watchlists/candidates or `avanza_tv_preopen_portfolio_bundle` for a read-only account review.
 4. Use `tv_scrape_heatmap` with `exchanges`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap outliers.
+5. Use the Web UI `Research candidates` section for a compact source-ranked candidate list when you want TradingView and Zacks context in one table.
 
 Performance behavior:
 
