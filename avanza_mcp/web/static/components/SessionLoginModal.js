@@ -9,21 +9,46 @@ function loadProfiles() {
   try {
     const parsed = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "[]");
     if (!Array.isArray(parsed)) return [];
-    return parsed
+    return normalizeProfiles(parsed
       .filter((item) => item && typeof item === "object" && item.op_item)
       .map((item) => ({
         id: String(item.id || `${item.op_item}:${item.op_vault || ""}`),
         label: String(item.label || item.op_item),
         op_item: String(item.op_item || ""),
         op_vault: String(item.op_vault || ""),
-      }));
+      })));
   } catch {
     return [];
   }
 }
 
+function normalizeProfiles(profiles) {
+  const seenIds = new Set();
+  const normalized = [];
+  for (const item of profiles) {
+    const opItem = String(item.op_item || "").trim();
+    if (!opItem) continue;
+    const opVault = String(item.op_vault || "").trim();
+    let id = String(item.id || `${opItem}:${opVault}`).trim();
+    if (!id || seenIds.has(id)) {
+      id = `${opItem}:${opVault}`;
+    }
+    if (seenIds.has(id)) {
+      id = newProfileId();
+    }
+    seenIds.add(id);
+    normalized.push({
+      id,
+      label: String(item.label || opItem).trim() || opItem,
+      op_item: opItem,
+      op_vault: opVault,
+    });
+  }
+  return normalized;
+}
+
 function saveProfiles(profiles) {
-  const cleaned = profiles.map((item) => ({
+  const cleaned = normalizeProfiles(profiles).map((item) => ({
     id: item.id,
     label: item.label,
     op_item: item.op_item,
@@ -57,20 +82,39 @@ export default defineComponent({
       store.sessions.find((s) => s.session_id === props.reauthSessionId));
 
     watch(() => props.open, (isOpen) => {
-      if (isOpen) { error.value = ""; password.value = ""; totp.value = ""; }
+      if (isOpen) {
+        error.value = ""; password.value = ""; totp.value = "";
+        selectedProfileId.value = "";
+        if (!props.reauthSessionId) label.value = "";
+        opItem.value = ""; opVault.value = "";
+      }
     });
 
     function persistProfiles() {
+      savedProfiles.value = normalizeProfiles(savedProfiles.value);
       saveProfiles(savedProfiles.value);
     }
 
+    function selectedProfile() {
+      return savedProfiles.value.find((item) => item.id === selectedProfileId.value) || null;
+    }
+
     function applySelectedProfile() {
-      const profile = savedProfiles.value.find((item) => item.id === selectedProfileId.value);
+      const profile = selectedProfile();
       if (!profile) return;
       mode.value = "1password";
       opItem.value = profile.op_item;
       opVault.value = profile.op_vault;
       label.value = profile.label;
+    }
+
+    function selectedMatchesCurrentProfile() {
+      const profile = selectedProfile();
+      return Boolean(profile && profile.op_item === opItem.value.trim() && profile.op_vault === opVault.value.trim());
+    }
+
+    function detachSelectedProfile() {
+      selectedProfileId.value = "";
     }
 
     function forgetSelectedProfile() {
@@ -85,7 +129,7 @@ export default defineComponent({
       if (mode.value !== "1password" || !rememberProfile.value || !opItem.value.trim()) return;
       const session = (result.sessions || []).find((item) => item.session_id === result.session_id);
       const profile = {
-        id: selectedProfileId.value || newProfileId(),
+        id: selectedMatchesCurrentProfile() ? selectedProfile().id : newProfileId(),
         label: label.value.trim() || session?.label || opItem.value.trim(),
         op_item: opItem.value.trim(),
         op_vault: opVault.value.trim(),
@@ -113,12 +157,15 @@ export default defineComponent({
       busy.value = true;
       error.value = "";
       try {
-        const body = { mode: mode.value, label: label.value };
+        const profile = selectedProfile();
+        const activeMode = profile ? "1password" : mode.value;
+        const body = { mode: activeMode, label: profile ? profile.label : label.value };
         if (props.reauthSessionId) body.refresh_session_id = props.reauthSessionId;
-        if (mode.value === "credentials") {
+        if (activeMode === "credentials") {
           body.username = username.value; body.password = password.value; body.totp = totp.value;
         } else {
-          body.op_item = opItem.value; body.op_vault = opVault.value;
+          body.op_item = profile ? profile.op_item : opItem.value;
+          body.op_vault = profile ? profile.op_vault : opVault.value;
         }
         const result = await addSession(body);
         rememberCurrentProfile(result);
@@ -136,7 +183,7 @@ export default defineComponent({
     return {
       props, emit, mode, username, password, totp, opItem, opVault, label, busy, error,
       savedProfiles, selectedProfileId, rememberProfile, applySelectedProfile,
-      forgetSelectedProfile, submitSelectedProfile, submit, reauthTarget, store,
+      detachSelectedProfile, forgetSelectedProfile, submitSelectedProfile, submit, reauthTarget, store,
     };
   },
   template: `
@@ -173,8 +220,8 @@ export default defineComponent({
             </div>
           </template>
           <template v-else>
-            <div class="field"><label>1Password item</label><input v-model="opItem" autocomplete="off"></div>
-            <div class="field"><label>Vault (optional)</label><input v-model="opVault" autocomplete="off"></div>
+            <div class="field"><label>1Password item</label><input v-model="opItem" autocomplete="off" @input="detachSelectedProfile"></div>
+            <div class="field"><label>Vault (optional)</label><input v-model="opVault" autocomplete="off" @input="detachSelectedProfile"></div>
             <label class="check-row">
               <input type="checkbox" v-model="rememberProfile">
               Remember this 1Password item name on this browser

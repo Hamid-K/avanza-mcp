@@ -115,6 +115,31 @@ def test_session_login_requires_credentials(authed, monkeypatch):
     assert response.status_code == 400
 
 
+def test_session_login_onepassword_uses_requested_profile(authed, monkeypatch):
+    captured = []
+
+    def fake_onepassword_credentials(item, vault=None):
+        captured.append((item, vault))
+        return {"username": "u", "password": "p", "totpToken": "123456"}
+
+    monkeypatch.setattr("avanza_mcp.web.api.sessions.avanza_auth.onepassword_credentials", fake_onepassword_credentials)
+    monkeypatch.setattr("avanza_mcp.core.login.Avanza", FakeAvanza)
+
+    first = authed.post(
+        "/api/sessions",
+        json={"mode": "1password", "op_item": "DarkCell", "op_vault": "Company", "label": "DarkCell AB"},
+    )
+    assert first.status_code == 200, first.text
+
+    second = authed.post(
+        "/api/sessions",
+        json={"mode": "1password", "op_item": "Personal", "op_vault": "Private", "label": "Personal"},
+    )
+    assert second.status_code == 200, second.text
+
+    assert captured == [("DarkCell", "Company"), ("Personal", "Private")]
+
+
 def test_portfolio_shape(with_session):
     payload = with_session.get("/api/portfolio").json()
     assert payload["account"]["id"] == "acc-1"

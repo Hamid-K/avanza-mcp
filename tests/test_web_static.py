@@ -207,11 +207,18 @@ def test_session_login_remembers_onepassword_profiles_without_passwords():
 
     assert "PROFILE_STORAGE_KEY" in modal
     assert "avanza.web.onePasswordProfiles.v1" in modal
+    assert "function normalizeProfiles" in modal
+    assert "seenIds.has(id)" in modal
+    assert "savedProfiles.value = normalizeProfiles(savedProfiles.value)" in modal
     assert "localStorage.setItem(PROFILE_STORAGE_KEY" in modal
     assert "Saved 1Password profile" in modal
     assert "Sign in saved" in modal
     assert "forgetSelectedProfile" in modal
     assert "rememberCurrentProfile" in modal
+    assert "selectedMatchesCurrentProfile() ? selectedProfile().id : newProfileId()" in modal
+    assert "const profile = selectedProfile();" in modal
+    assert "body.op_item = profile ? profile.op_item : opItem.value" in modal
+    assert '@input="detachSelectedProfile"' in modal
     assert "Only the 1Password item name, vault, and display label are stored locally." in modal
     save_start = modal.index("function saveProfiles")
     save_end = modal.index("function newProfileId")

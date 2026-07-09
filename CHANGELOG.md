@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13 - 2026-07-09
+
+- Fixed Web saved 1Password login profiles so selecting a saved Personal/DarkCell profile submits that profile's exact item/vault and does not reuse a stale previously selected profile ID.
+- Added saved-profile normalization to repair duplicate browser-local profile IDs created by earlier modal state leakage.
+
 ## 0.2.12 - 2026-07-09
 
 - Added bounded, cached Zacks rank enrichment to the Web UI TradingView hot/list rows and exposed the result in the TradingView Lists table.
