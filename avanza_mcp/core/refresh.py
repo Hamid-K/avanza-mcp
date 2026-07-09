@@ -93,7 +93,7 @@ class CoreRefreshMixin:
                 self._finish_live_refresh_cycle()
         except Exception as exc:
             if is_unauthorized_http_error(exc):
-                self.safe_call_from_thread(self.mark_tenant_session_auth_expired, active_session_id, exc)
+                self.safe_call_from_thread(self.mark_tenant_session_auth_expired_if_confirmed, active_session_id, exc)
             else:
                 self.safe_call_from_thread(self.write_log, f"[red]Live refresh failed:[/red] {exc}")
             self._finish_live_refresh_cycle()
@@ -129,7 +129,7 @@ class CoreRefreshMixin:
                         orders = []
                 except Exception as exc:
                     if is_unauthorized_http_error(exc):
-                        self.safe_call_from_thread(self.mark_tenant_session_auth_expired, session_id, exc)
+                        self.safe_call_from_thread(self.mark_tenant_session_auth_expired_if_confirmed, session_id, exc)
                     else:
                         self.safe_call_from_thread(
                             self.debug_log,

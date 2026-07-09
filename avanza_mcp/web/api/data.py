@@ -37,8 +37,8 @@ def _scope(kernel, session_id: str | None):
 def _auth_expired_response(kernel, exc: Exception) -> JSONResponse | None:
     if is_unauthorized_http_error(exc):
         session_id = kernel.active_session_id
-        kernel.mark_tenant_session_auth_expired(session_id, exc)
-        return JSONResponse({"error": "auth_expired", "session_id": session_id}, status_code=401)
+        if kernel.mark_tenant_session_auth_expired_if_confirmed(session_id, exc):
+            return JSONResponse({"error": "auth_expired", "session_id": session_id}, status_code=401)
     return None
 
 

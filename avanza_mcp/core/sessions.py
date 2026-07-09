@@ -23,6 +23,7 @@ from avanza_mcp.rendering import (
     open_order_account_id,
     open_order_items,
 )
+from avanza_mcp.utils import http_status_code_from_exception, is_unauthorized_http_error
 
 
 class CoreSessionsMixin:
@@ -361,6 +362,57 @@ class CoreSessionsMixin:
         )
         self.refresh_session_select_options()
         self.update_session_auth_badge()
+
+    def tenant_session_auth_expiry_confirmed(self, session_id: str | None, exc: Exception) -> bool:
+        """Return true when an Avanza auth error proves the whole tenant session is dead.
+
+        Avanza sometimes returns 403 for individual endpoints even while the
+        login is still valid. Treat 401/Unauthorized as definitive, but verify
+        generic 403/Forbidden with the baseline overview endpoint before
+        poisoning the session.
+        """
+        token = str(session_id or "").strip()
+        if not token or token not in self.tenant_sessions:
+            return False
+        status_code = http_status_code_from_exception(exc)
+        message = str(exc).lower()
+        if status_code == 401 or "unauthorized" in message:
+            return True
+        if status_code == 403 or "forbidden" in message:
+            context = self.tenant_sessions.get(token)
+            if context is None:
+                return False
+            try:
+                overview = context.avanza.get_overview()
+            except Exception as probe_exc:
+                if is_unauthorized_http_error(probe_exc):
+                    return True
+                self.debug_log(
+                    f"auth probe for {token} was inconclusive after endpoint 403: {probe_exc}"
+                )
+                return False
+            if isinstance(overview, dict):
+                accounts = account_rows_from_overview(overview)
+                if accounts:
+                    self.update_tenant_session_accounts(token, accounts)
+            self.mark_tenant_session_auth_ok(token)
+            self.record_event(
+                "app",
+                "session_auth_probe_ok",
+                {
+                    "session_id": token,
+                    "session_label": self.tenant_session_label(token),
+                    "original_error": str(exc),
+                },
+            )
+            return False
+        return False
+
+    def mark_tenant_session_auth_expired_if_confirmed(self, session_id: str | None, exc: Exception) -> bool:
+        if not self.tenant_session_auth_expiry_confirmed(session_id, exc):
+            return False
+        self.mark_tenant_session_auth_expired(session_id, exc)
+        return True
 
     def mark_tenant_session_auth_ok(self, session_id: str | None) -> None:
         token = str(session_id or "").strip()

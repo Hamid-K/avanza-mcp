@@ -479,7 +479,7 @@ class CoreBridgeMixin:
                 return self._execute_mcp_tool_inner(tool, arguments)
             except Exception as exc:
                 if session_scope_id and is_unauthorized_http_error(exc):
-                    self.mark_tenant_session_auth_expired(session_scope_id, exc)
+                    self.mark_tenant_session_auth_expired_if_confirmed(session_scope_id, exc)
                 raise
 
     def _execute_mcp_tool_inner(self, tool: str, arguments: dict[str, Any]) -> Any:

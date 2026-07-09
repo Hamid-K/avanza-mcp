@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.16 - 2026-07-09
+
+- Fixed false Web/MCP Avanza tenant-session expiry by confirming generic Avanza `403 Forbidden` errors against the baseline account overview endpoint before marking a session expired.
+- Prevented optional performance-chart endpoint failures from pausing live refresh for an otherwise healthy authenticated session.
+
 ## 0.2.15 - 2026-07-09
 
 - Added a Zacks quote-feed fallback so `zacks_scrape_symbol`, TradingView hot lists, and Web `Research candidates` can still show Zacks Rank when Zacks HTML pages are blocked by bot protection.

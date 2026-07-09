@@ -974,3 +974,28 @@ def test_performance_cash_events_failure_never_breaks_chart(with_session, runtim
     payload = response.json()
     assert payload["cash_events"] == []
     assert payload["chart_points"]
+
+
+def test_performance_forbidden_does_not_expire_healthy_session(with_session, runtime):
+    class ForbiddenChartAvanza(FakeAvanza):
+        def get_account_performance_chart_data(self, account_ids, period):
+            raise RuntimeError(
+                "403 Client Error: Forbidden for url: "
+                "https://www.avanza.se/_api/account-performance/overview/chart/accounts/timeperiod"
+            )
+
+    kernel = runtime.kernel
+    chart_avanza = ForbiddenChartAvanza()
+    kernel.avanza = chart_avanza
+    for context in kernel.tenant_sessions.values():
+        context.avanza = chart_avanza
+        context.auth_valid = True
+        context.auth_error = ""
+
+    response = with_session.get("/api/performance?period=ONE_WEEK")
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "upstream_failed"
+    sessions = with_session.get("/api/sessions").json()["sessions"]
+    assert sessions[0]["auth_valid"] is True
+    assert sessions[0]["auth_error"] == ""
