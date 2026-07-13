@@ -1,6 +1,6 @@
 avanza-api>=16.1.0,<17
 fastapi>=0.115,<1
 rich>=13
-textual>=6.1,<7
+textual>=8.2.8,<9
 uvicorn>=0.30,<1
 websockets>=12
