@@ -40,7 +40,10 @@ TradingView movers/technicals and Zacks rank/analysis summaries, with
 optional FMP analyst-history enrichment when `FMP_API_KEY` is configured.
 The source labels above the table are client-side filters: toggle TradingView
 heatmap, TradingView technicals, Zacks, or an optional returned source without
-refetching the candidate list.
+refetching the candidate list. Each source reports its loaded-row count; a small
+warning count identifies failed optional enrichment checks, with row-level
+details available from the warning icon. Exact failures are also recorded in
+the timestamped Web session log.
 Use it as research input for review; it never authorizes or places orders.
 
 ## Security model

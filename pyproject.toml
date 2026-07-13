@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avanza-mcp"
-version = "0.2.17"
+version = "0.2.18"
 description = "CLI/TUI Avanza toolkit with MCP bridge, paper trading, and stop-loss/order workflows built on avanza-api."
 authors = [
   {name = "Hamid Kashfi"},

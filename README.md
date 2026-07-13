@@ -397,7 +397,7 @@ Canonical naming note:
   3. wait for auto-capture confirmation, then run `tv_auth_session_status`,
   4. use `tv_auth_*` tools with no repeated cookie input.
 - The TUI `TradingView Lists` tab uses the same authenticated profile and provides a dedicated custom-list monitor with list switching.
-- The Web UI `Research candidates` view uses `/api/recommendations/stocks` to assemble a bounded, read-only candidate list from TradingView movers/technicals and Zacks rank/analysis summaries. Its source controls filter the loaded table instantly without another server request. It is research input only, not an order instruction.
+- The Web UI `Research candidates` view uses `/api/recommendations/stocks` to assemble a bounded, read-only candidate list from TradingView movers/technicals and Zacks rank/analysis summaries. Its source controls filter the loaded table instantly without another server request and report compact per-source enrichment health. It is research input only, not an order instruction.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - If Codex or another agent does not expose `tv_*` tools as direct native calls, keep using the registered `avanza_cli` MCP server and call the tools through the local stdio/TUI bridge. The bridge command remains `python avanza_cli.py mcp`; it forwards to the authenticated TUI localhost session.
 - Pre-open workflow:

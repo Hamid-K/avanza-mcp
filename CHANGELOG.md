@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.18 - 2026-07-13
+
+- Replaced the Web Research Candidates generic partial-enrichment warning with per-source attempted/succeeded/failed health counts on the source filters.
+- Moved the research-only disclaimer into the existing `Research input only` tooltip and logged exact source failures to the timestamped Web session log for diagnosis.
+
 ## 0.2.17 - 2026-07-13
 
 - Turned the Web Research Candidates source labels into instant client-side filters with selected state, per-source counts, and no network request when toggling TradingView heatmap, TradingView technicals, Zacks, or optional sources.

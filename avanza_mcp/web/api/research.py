@@ -295,6 +295,14 @@ async def stock_recommendations(
         bounded_enrich = max(0, min(int(enrich_limit), MAX_ENRICHED_CANDIDATES, bounded_limit))
         warnings: list[str] = []
         source_errors: list[dict[str, str]] = []
+        source_health: dict[str, dict[str, int]] = {}
+
+        def mark_source(source: str, outcome: str) -> None:
+            health = source_health.setdefault(source, {"attempted": 0, "succeeded": 0, "failed": 0})
+            if outcome == "attempted":
+                health["attempted"] += 1
+            elif outcome in {"succeeded", "failed"}:
+                health[outcome] += 1
 
         heatmap = kernel.execute_mcp_tool(
             "tv_scrape_heatmap",
@@ -325,11 +333,14 @@ async def stock_recommendations(
             if not symbol:
                 continue
 
+            mark_source("TradingView technicals", "attempted")
             try:
                 tv_snapshot = kernel.execute_mcp_tool(
                     "tv_scrape_symbol_analytics",
                     {"symbol": symbol, "exchange": exchange or "NASDAQ"},
                 )
+                if not isinstance(tv_snapshot, dict):
+                    raise RuntimeError("TradingView technicals returned an invalid payload.")
                 technicals = tv_snapshot.get("technicals") if isinstance(tv_snapshot, dict) else {}
                 if isinstance(technicals, dict):
                     label = str(technicals.get("overall_label") or "Unknown")
@@ -345,11 +356,14 @@ async def stock_recommendations(
                     candidate["sector"] = candidate["sector"] or str(analytics.get("sector") or "")
                     candidate["industry"] = candidate["industry"] or str(analytics.get("industry") or "")
                     candidate["market_cap"] = candidate["market_cap"] if candidate["market_cap"] is not None else _number(analytics.get("market_cap_basic"))
+                mark_source("TradingView technicals", "succeeded")
             except Exception as exc:
                 detail = str(exc)
+                mark_source("TradingView technicals", "failed")
                 candidate["errors"].append({"source": "TradingView technicals", "error": detail})
                 source_errors.append({"source": "TradingView technicals", "symbol": symbol, "error": detail})
 
+            mark_source("Zacks", "attempted")
             try:
                 zacks = kernel.execute_mcp_tool("zacks_scrape_symbol", {"symbol": symbol})
                 if isinstance(zacks, dict):
@@ -363,13 +377,22 @@ async def stock_recommendations(
                             candidate["notes"].append(f"Zacks {zacks_text}")
                         if zacks_note:
                             candidate["notes"].append(zacks_note)
+                        mark_source("Zacks", "succeeded")
                     else:
                         detail = _zacks_missing_detail(zacks)
+                        mark_source("Zacks", "failed")
                         candidate["zacks_error"] = detail
                         candidate["errors"].append({"source": "Zacks", "error": detail})
                         source_errors.append({"source": "Zacks", "symbol": symbol, "error": detail})
+                else:
+                    detail = "Zacks returned an invalid payload."
+                    mark_source("Zacks", "failed")
+                    candidate["zacks_error"] = detail
+                    candidate["errors"].append({"source": "Zacks", "error": detail})
+                    source_errors.append({"source": "Zacks", "symbol": symbol, "error": detail})
             except Exception as exc:
                 detail = str(exc)
+                mark_source("Zacks", "failed")
                 candidate["zacks_error"] = detail
                 candidate["errors"].append({"source": "Zacks", "error": detail})
                 source_errors.append({"source": "Zacks", "symbol": symbol, "error": detail})
@@ -379,6 +402,7 @@ async def stock_recommendations(
                     if "FMP skipped: FMP_API_KEY is not configured." not in warnings:
                         warnings.append("FMP skipped: FMP_API_KEY is not configured.")
                 else:
+                    mark_source("FMP", "attempted")
                     try:
                         fmp = kernel.execute_mcp_tool("fmp_analyst_recommendations", {"symbol": symbol, "limit": 1})
                         if isinstance(fmp, dict):
@@ -387,8 +411,12 @@ async def stock_recommendations(
                             candidate["sources"].append("FMP")
                             if candidate["fmp_recommendation"] != "n/a":
                                 candidate["notes"].append(f"FMP {candidate['fmp_recommendation']}")
+                            mark_source("FMP", "succeeded")
+                        else:
+                            raise RuntimeError("FMP returned an invalid payload.")
                     except Exception as exc:
                         detail = str(exc)
+                        mark_source("FMP", "failed")
                         candidate["errors"].append({"source": "FMP", "error": detail})
                         source_errors.append({"source": "FMP", "symbol": symbol, "error": detail})
 
@@ -397,10 +425,11 @@ async def stock_recommendations(
         for index, candidate in enumerate(finished, start=1):
             candidate["rank"] = index
 
-        if source_errors:
-            warnings.append("Some enrichment sources failed; affected rows include per-source errors.")
-
-        return {
+        health_rows = [
+            {"source": source, **counts}
+            for source, counts in source_health.items()
+        ]
+        result = {
             "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mode": "research_candidates",
             "universe": "Avanza Swedish market movers fallback" if fallback_used else "TradingView public U.S. movers",
@@ -416,9 +445,21 @@ async def stock_recommendations(
             ),
             "warnings": warnings,
             "source_errors": source_errors[:50],
+            "source_health": health_rows,
             "rows": finished,
             "disclaimer": "Research candidates only. This is not investment advice and does not authorize order placement.",
         }
+        kernel.record_event(
+            "app",
+            "research_candidates_loaded",
+            {
+                "rows": len(finished),
+                "source_health": health_rows,
+                "source_errors": source_errors[:50],
+                "warnings": warnings,
+            },
+        )
+        return result
 
     try:
         return await asyncio.to_thread(work)

@@ -176,8 +176,13 @@ def test_research_candidates_overlay_is_wired_to_toolbar_and_api():
     assert '@click="toggleSource(filter.label)"' in overlay
     assert ':aria-pressed="isSourceEnabled(filter.label)"' in overlay
     assert ':rows="filteredRows"' in overlay
+    assert "payload.source_health" in overlay
+    assert "sourceFilterTitle(filter)" in overlay
+    assert "source-filter-fail" in overlay
+    assert 'class="notice">{{ disclaimer }}' not in overlay
     assert ".source-filter.active" in css
     assert ".source-filter-count" in css
+    assert ".source-filter-fail" in css
     assert ".research-summary" in css
     assert ".score-pill" in css
 

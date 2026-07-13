@@ -567,6 +567,11 @@ def test_recommendations_endpoint_aggregates_tv_and_zacks(with_session, runtime,
     assert "TradingView heatmap" in payload["rows"][1]["reason"]
     assert payload["rows"][1]["zacks_error"] == "blocked"
     assert any(error["source"] == "Zacks" and error["symbol"] == "MSFT" for error in payload["source_errors"])
+    assert payload["source_health"] == [
+        {"source": "TradingView technicals", "attempted": 2, "succeeded": 2, "failed": 0},
+        {"source": "Zacks", "attempted": 2, "succeeded": 1, "failed": 1},
+    ]
+    assert "Some enrichment sources failed" not in payload["warnings"]
     assert calls[0][0] == "tv_scrape_heatmap"
 
 
@@ -676,6 +681,10 @@ def test_recommendations_endpoint_marks_empty_zacks_as_row_error(with_session, r
     assert "source appears blocked" in row["zacks_error"]
     assert "Zacks" not in row["sources"]
     assert payload["source_errors"][0]["source"] == "Zacks"
+    assert payload["source_health"] == [
+        {"source": "TradingView technicals", "attempted": 1, "succeeded": 1, "failed": 0},
+        {"source": "Zacks", "attempted": 1, "succeeded": 0, "failed": 1},
+    ]
 
 
 def test_transactions_types_filter_parses(with_session, runtime):

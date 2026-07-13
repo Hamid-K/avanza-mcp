@@ -343,6 +343,10 @@ body.is-resizing { cursor: col-resize; user-select: none; }
   color: var(--muted);
   text-align: right;
 }
+.source-filter-fail {
+  color: var(--warn);
+  font-weight: 700;
+}
 .source-filter-result { margin-top: 4px; font-size: var(--fs-tiny); }
 .score-pill {
   display: inline-flex;

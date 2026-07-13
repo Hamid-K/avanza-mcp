@@ -46,6 +46,7 @@ export default defineComponent({
     const rows = ref([]);
     const warnings = ref([]);
     const sources = ref([]);
+    const sourceHealth = ref([]);
     const disclaimer = ref("");
     const asOf = ref("");
     const loading = ref(false);
@@ -61,11 +62,24 @@ export default defineComponent({
         const label = String(source || "").trim();
         if (label && !labels.includes(label)) labels.push(label);
       }
-      return labels.map((label) => ({
-        label,
-        count: rows.value.filter((row) => rowSources(row).includes(label)).length,
-      }));
+      return labels.map((label) => {
+        const health = sourceHealth.value.find((entry) => entry?.source === label) || {};
+        return {
+          label,
+          count: rows.value.filter((row) => rowSources(row).includes(label)).length,
+          attempted: Number(health.attempted || 0),
+          succeeded: Number(health.succeeded || 0),
+          failed: Number(health.failed || 0),
+        };
+      });
     });
+
+    function sourceFilterTitle(filter) {
+      const parts = [`${filter.label}: ${filter.count} candidates`];
+      if (filter.attempted) parts.push(`${filter.succeeded}/${filter.attempted} enrichment checks succeeded`);
+      if (filter.failed) parts.push(`${filter.failed} failed; hover row warning icons for details`);
+      return parts.join(" · ");
+    }
 
     function isSourceEnabled(source) {
       return enabledSources.value[source] !== false;
@@ -121,6 +135,7 @@ export default defineComponent({
         rows.value = payload.rows || [];
         warnings.value = payload.warnings || [];
         sources.value = payload.sources || [];
+        sourceHealth.value = payload.source_health || [];
         disclaimer.value = payload.disclaimer || "";
         asOf.value = payload.as_of || "";
       } catch (exc) {
@@ -137,7 +152,7 @@ export default defineComponent({
     return {
       props, emit, rows, warnings, sources, disclaimer, asOf, loading, error,
       limit, enrichLimit, includeFmp, columns, load, sourceFilters, filteredRows,
-      filterEmptyText, isSourceEnabled, toggleSource,
+      filterEmptyText, isSourceEnabled, toggleSource, sourceFilterTitle,
     };
   },
   template: `
@@ -160,11 +175,12 @@ export default defineComponent({
               <button v-for="filter in sourceFilters" :key="filter.label" type="button"
                       class="source-filter" :class="{ active: isSourceEnabled(filter.label), empty: !filter.count }"
                       :aria-pressed="isSourceEnabled(filter.label)"
-                      :title="filter.count ? filter.label + ': ' + filter.count + ' candidates' : filter.label + ': no candidates in the loaded results'"
+                      :title="sourceFilterTitle(filter)"
                       @click="toggleSource(filter.label)">
                 <span class="source-filter-state" aria-hidden="true">{{ isSourceEnabled(filter.label) ? "✓" : "×" }}</span>
                 <span>{{ filter.label }}</span>
                 <span class="source-filter-count mono">{{ filter.count }}</span>
+                <span v-if="filter.failed" class="source-filter-fail mono" aria-label="failed enrichment checks">!{{ filter.failed }}</span>
               </button>
             </div>
             <div class="source-filter-result muted">Showing {{ filteredRows.length }} of {{ rows.length }}</div>
@@ -175,10 +191,9 @@ export default defineComponent({
           </div>
           <div>
             <div class="muted">Use</div>
-            <div>Research input only</div>
+            <div :title="disclaimer">Research input only</div>
           </div>
         </div>
-        <div v-if="disclaimer" class="notice">{{ disclaimer }}</div>
         <div v-for="warning in warnings" :key="warning" class="notice warn-text">{{ warning }}</div>
         <div v-if="error" class="error">{{ error }}</div>
         <div v-else-if="loading && !rows.length" class="skeleton" style="height: 240px"></div>
