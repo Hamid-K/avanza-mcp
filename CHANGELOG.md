@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.17 - 2026-07-13
+
+- Turned the Web Research Candidates source labels into instant client-side filters with selected state, per-source counts, and no network request when toggling TradingView heatmap, TradingView technicals, Zacks, or optional sources.
+
 ## 0.2.16 - 2026-07-09
 
 - Fixed false Web/MCP Avanza tenant-session expiry by confirming generic Avanza `403 Forbidden` errors against the baseline account overview endpoint before marking a session expired.

@@ -38,6 +38,9 @@ browser's local storage.
 `/api/recommendations/stocks` and assembles a bounded candidate list from
 TradingView movers/technicals and Zacks rank/analysis summaries, with
 optional FMP analyst-history enrichment when `FMP_API_KEY` is configured.
+The source labels above the table are client-side filters: toggle TradingView
+heatmap, TradingView technicals, Zacks, or an optional returned source without
+refetching the candidate list.
 Use it as research input for review; it never authorizes or places orders.
 
 ## Security model

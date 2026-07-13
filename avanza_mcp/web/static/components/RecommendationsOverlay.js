@@ -1,8 +1,20 @@
 // Research candidates overlay: source-ranked read-only stock ideas.
-import { defineComponent, ref, watch } from "vue";
+import { computed, defineComponent, ref, watch } from "vue";
 import { api } from "../api.js";
 import { store } from "../store.js";
 import DataTable from "./DataTable.js";
+
+const CORE_SOURCE_FILTERS = [
+  "TradingView heatmap",
+  "TradingView technicals",
+  "Zacks",
+];
+
+function rowSources(row) {
+  return Array.isArray(row?.sources)
+    ? row.sources.map((source) => String(source || "").trim()).filter(Boolean)
+    : [];
+}
 
 function fmtNumber(value) {
   if (value === null || value === undefined || value === "") return "-";
@@ -41,6 +53,46 @@ export default defineComponent({
     const limit = ref(25);
     const enrichLimit = ref(8);
     const includeFmp = ref(false);
+    const enabledSources = ref({});
+
+    const sourceFilters = computed(() => {
+      const labels = [...CORE_SOURCE_FILTERS];
+      for (const source of sources.value) {
+        const label = String(source || "").trim();
+        if (label && !labels.includes(label)) labels.push(label);
+      }
+      return labels.map((label) => ({
+        label,
+        count: rows.value.filter((row) => rowSources(row).includes(label)).length,
+      }));
+    });
+
+    function isSourceEnabled(source) {
+      return enabledSources.value[source] !== false;
+    }
+
+    function toggleSource(source) {
+      enabledSources.value = {
+        ...enabledSources.value,
+        [source]: !isSourceEnabled(source),
+      };
+    }
+
+    const filteredRows = computed(() => {
+      const enabled = new Set(
+        sourceFilters.value
+          .filter(({ label }) => isSourceEnabled(label))
+          .map(({ label }) => label),
+      );
+      if (!enabled.size) return [];
+      return rows.value.filter((row) => rowSources(row).some((source) => enabled.has(source)));
+    });
+
+    const filterEmptyText = computed(() => (
+      rows.value.length
+        ? "No candidates match the enabled sources"
+        : "No research candidates available"
+    ));
 
     const columns = [
       { key: "rank", label: "#", numeric: true },
@@ -84,7 +136,8 @@ export default defineComponent({
 
     return {
       props, emit, rows, warnings, sources, disclaimer, asOf, loading, error,
-      limit, enrichLimit, includeFmp, columns, load,
+      limit, enrichLimit, includeFmp, columns, load, sourceFilters, filteredRows,
+      filterEmptyText, isSourceEnabled, toggleSource,
     };
   },
   template: `
@@ -103,9 +156,18 @@ export default defineComponent({
         <div class="research-summary">
           <div>
             <div class="muted">Assembled from</div>
-            <div class="source-chip-row">
-              <span v-for="source in sources" :key="source" class="source-chip">{{ source }}</span>
+            <div class="source-chip-row" role="group" aria-label="Filter candidates by source">
+              <button v-for="filter in sourceFilters" :key="filter.label" type="button"
+                      class="source-filter" :class="{ active: isSourceEnabled(filter.label), empty: !filter.count }"
+                      :aria-pressed="isSourceEnabled(filter.label)"
+                      :title="filter.count ? filter.label + ': ' + filter.count + ' candidates' : filter.label + ': no candidates in the loaded results'"
+                      @click="toggleSource(filter.label)">
+                <span class="source-filter-state" aria-hidden="true">{{ isSourceEnabled(filter.label) ? "✓" : "×" }}</span>
+                <span>{{ filter.label }}</span>
+                <span class="source-filter-count mono">{{ filter.count }}</span>
+              </button>
             </div>
+            <div class="source-filter-result muted">Showing {{ filteredRows.length }} of {{ rows.length }}</div>
           </div>
           <div>
             <div class="muted">Last update</div>
@@ -120,8 +182,8 @@ export default defineComponent({
         <div v-for="warning in warnings" :key="warning" class="notice warn-text">{{ warning }}</div>
         <div v-if="error" class="error">{{ error }}</div>
         <div v-else-if="loading && !rows.length" class="skeleton" style="height: 240px"></div>
-        <DataTable v-else :columns="columns" :rows="rows" rowKey="symbol_full"
-                   emptyText="No research candidates available">
+        <DataTable v-else :columns="columns" :rows="filteredRows" rowKey="symbol_full"
+                   :emptyText="filterEmptyText">
           <template #cell-score="{ row }">
             <span class="score-pill" :class="Number(row.score) >= 25 ? 'hot' : Number(row.score) <= 0 ? 'cold' : ''">
               {{ Number(row.score || 0).toFixed(1) }}

@@ -167,6 +167,17 @@ def test_research_candidates_overlay_is_wired_to_toolbar_and_api():
     assert "#cell-zacks_rank" in overlay
     assert "row.zacks_error" in overlay
     assert "#cell-reason" in overlay
+    assert "CORE_SOURCE_FILTERS" in overlay
+    assert '"TradingView heatmap"' in overlay
+    assert '"TradingView technicals"' in overlay
+    assert '"Zacks"' in overlay
+    assert "const filteredRows = computed" in overlay
+    assert "rowSources(row).some" in overlay
+    assert '@click="toggleSource(filter.label)"' in overlay
+    assert ':aria-pressed="isSourceEnabled(filter.label)"' in overlay
+    assert ':rows="filteredRows"' in overlay
+    assert ".source-filter.active" in css
+    assert ".source-filter-count" in css
     assert ".research-summary" in css
     assert ".score-pill" in css
 
