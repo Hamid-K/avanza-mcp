@@ -16,7 +16,7 @@ jobs:
       NO_COLOR: "1"
       AVANZA_UPDATE_CHECK_ENABLED: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v5
       - name: Install dependencies
         run: uv sync --extra dev
