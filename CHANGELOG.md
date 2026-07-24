@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.19 - 2026-07-24
+
+- Suppressed expected MCP bridge `BrokenPipeError`/connection-reset tracebacks when a local client cancels or times out while a response is being written.
+- Prevented the bridge from attempting a second HTTP error response on an already-closed client socket and added compact `client_disconnected` session-log events.
+
 ## 0.2.18 - 2026-07-13
 
 - Replaced the Web Research Candidates generic partial-enrichment warning with per-source attempted/succeeded/failed health counts on the source filters.

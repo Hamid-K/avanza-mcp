@@ -1,6 +1,7 @@
 """MCP HTTP bridge server, session payload, and keychain/session-file storage."""
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -79,13 +80,46 @@ class AvanzaMcpRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: Any) -> None:
         return
 
-    def send_json(self, status_code: int, payload: dict[str, Any]) -> None:
+    def _record_client_disconnect(self, exc: OSError) -> None:
+        self.close_connection = True
+        record_event = getattr(getattr(self.server, "app", None), "record_event", None)
+        if not callable(record_event):
+            return
+        try:
+            record_event(
+                "mcp",
+                "client_disconnected",
+                {
+                    "method": str(getattr(self, "command", "") or ""),
+                    "path": str(getattr(self, "path", "") or ""),
+                    "error": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_client_disconnect(exc: OSError) -> bool:
+        return isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)) or exc.errno in {
+            errno.EPIPE,
+            errno.ECONNRESET,
+            errno.ECONNABORTED,
+        }
+
+    def send_json(self, status_code: int, payload: dict[str, Any]) -> bool:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError as exc:
+            if not self._is_client_disconnect(exc):
+                raise
+            self._record_client_disconnect(exc)
+            return False
+        return True
 
     def authorized(self) -> bool:
         expected = self.server.token
