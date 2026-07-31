@@ -52,16 +52,32 @@ These instructions capture the user's trading workflow preferences for future LL
 - Do not hardcode account IDs, account names, or specific holdings in standing instructions, automations, or warm-up prompts. Always refresh live MCP state and derive the target account and holdings from the current session.
 - Market and asset-analysis lessons may persist across sessions, but portfolio state does not. Re-apply prior research only after confirming the asset exists in the currently selected account.
 - Use paper orders/stop-losses first unless the user explicitly says to place real/live orders.
+- Treat every live approval as a closed, immutable tuple: exact `tenant_session_id`, `account_id`, instrument/orderbook, action/side, `Antal`, order type, hard BUY price cap or hard SELL price floor, all applicable trigger and child-order settings, and validity. It authorizes nothing outside that tuple.
+- `ASAP`, urgency, a complaint, criticism, frustration, a price observation, or a statement that an opportunity was missed is analysis-only. It never authorizes a reprice, larger volume, side or order-type change, validity extension, cancellation, replacement, or another order.
+- A BUY cap is a hard maximum and a SELL floor is a hard minimum. If the market moves beyond it, preserve the exact tuple; never chase or cross the limit without a fresh instruction containing the changed field.
+- When a complete tuple is explicitly urgent, run only the mandatory scoped preflight and submit that exact tuple before broader analysis or commentary. Do not add a redundant confirmation after every required field is already explicit.
+- If the user supplies a SEK budget instead of `Antal`, calculate the largest integer quantity that fits the budget including modeled courtage, present one compact exact tuple, and ask once. Execute immediately after the user confirms that tuple; urgency cannot supply the missing quantity.
 - Before live mutations:
   - confirm the user has explicitly asked for real/live action,
   - confirm MCP `read_write` is enabled,
-  - confirm tenant session id when available,
-  - confirm account id,
-  - confirm order volumes and stop-loss settings,
+  - confirm exact tenant session id and account id,
+  - compare the intended mutation against the current-thread tuple field by field,
+  - confirm instrument/orderbook, action/side, exact quantity, order type, hard cap/floor, applicable trigger/child fields, and validity,
+  - fail closed on any missing, conflicting, stale, or inferred field,
   - execute,
-  - verify the resulting live stop-loss list.
+  - verify exact same-account broker readback, failed/error rows, and strategy metadata,
+  - revoke per-tenant live authorization immediately and verify it is off.
 - Never try to bypass MCP read/write protection. If a guard test is requested, make it clear that the expected outcome is rejection unless R/W is enabled.
-- After live mutations, remind the user to disable live R/W if no further live actions are needed.
+- Only the user controls the MCP process and global Read/Write mode. The assistant may authorize only the exact tenant needed for an approved tuple and must revoke that per-tenant live authorization in `finally`; never start, stop, restart, configure, or bypass the user-run MCP.
+
+### Order-Kind Tuple Requirements
+
+- Regular order placement: exact account scope, orderbook, BUY/SELL side, `Antal`, order type, hard price, and `valid_until`.
+- Stop placement or edit: all regular tuple fields plus exact trigger type/value/value type, child price/value type, parent validity, child `order_valid_days`, and any market-maker-quote or short-selling flags used by the tool.
+- Cancellation: exact account scope plus exact current order or stop ID. Cancellation never authorizes replacement, reissue, or repricing.
+- Edit or replacement: exact current ID plus the complete new tuple. The old order's fields do not silently carry forward unless the user explicitly preserves them or exact live readback proves they are part of the approved tuple.
+- Multi-account request: validate and execute each account tuple independently. A fill, miss, rejection, or price move in one account never amends another account's tuple.
+- Record request receipt, preflight result, submission result, broker ID, exact readback, failure/error state, and authorization revocation. A timeout or ambiguous response requires readback before retry; never blindly resubmit.
 
 ### Multi-Account / Multi-Session MCP Standard
 
