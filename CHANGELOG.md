@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Tightened the reusable portfolio instruction template with thesis-invalidation position sizing, volatility-scaled risk caps, and lower rolling turnover/full-friction brakes to prevent stop/rebuy churn from replacing mid-term investment intent.
+
 ## 0.2.20 - 2026-07-31
 
 - Added account-scoped, file-backed position and stop-loss strategy registries with atomic persistence, exact broker fingerprints, drift/mismatch detection, and fail-closed audit states.
