@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from avanza_mcp.core.trading import build_regular_order_request_from_fields, build_stop_loss_request_from_fields
 from avanza_mcp.stoploss_rules import validate_valid_until
+from avanza_mcp.strategy_intent import validate_mcp_stoploss_strategy_intent
 
 router = APIRouter()
 
@@ -162,9 +163,18 @@ async def stoploss_dry_run(request: Request):
             "order_valid_days": body.get("order_valid_days", 1),
             "order_price_type": body.get("order_price_type", "percentage"),
             "short_selling_allowed": bool(body.get("short_selling_allowed", False)),
+            "strategy_intent": body.get("strategy_intent"),
+            "strategy_reason": body.get("strategy_reason"),
         }
         trigger, order_event, preview = build_stop_loss_request_from_fields(fields)
         warnings = await _run(kernel, kernel.apply_stoploss_valid_days_safety, preview, live=not kernel.paper_mode_enabled)
+        warnings.extend(
+            validate_mcp_stoploss_strategy_intent(
+                preview,
+                preview,
+                live=not kernel.paper_mode_enabled,
+            )
+        )
     except (ValueError, KeyError, TypeError) as exc:
         return JSONResponse({"error": "invalid_request", "detail": str(exc)}, status_code=400)
     replace_id = str(body.get("replace_stoploss_id", "") or "").strip() or None

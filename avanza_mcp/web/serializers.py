@@ -8,7 +8,7 @@ flags through to the kernel snapshot methods which own the caching rules.
 from typing import Any
 
 from avanza_mcp.config import PROFIT_METRIC_MODES
-from avanza_mcp.records import position_mcp_dict, stop_loss_mcp_dict
+from avanza_mcp.records import position_mcp_dict
 from avanza_mcp.rendering import (
     account_display_name,
     account_performance_window_summary,
@@ -120,7 +120,11 @@ def orders_payload(kernel: Any) -> dict[str, Any]:
 
 
 def stoplosses_payload(kernel: Any) -> dict[str, Any]:
-    live = [stop_loss_mcp_dict(item) for item in kernel.latest_stoploss_items if isinstance(item, dict)]
+    live = [
+        kernel.stoploss_mcp_row(item)
+        for item in kernel.latest_stoploss_items
+        if isinstance(item, dict)
+    ]
     paper_rows: list[dict[str, Any]] = []
     for item in kernel.paper_session.get("orders", []):
         if not isinstance(item, dict):

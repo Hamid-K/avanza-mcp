@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.20 - 2026-07-31
+
+- Added account-scoped, file-backed position and stop-loss strategy registries with atomic persistence, exact broker fingerprints, drift/mismatch detection, and fail-closed audit states.
+- Added MCP audit and batch-registration tools for durable position plans and stop-loss intent metadata without granting broker mutation authority.
+- Required explicit strategy intent and rationale for stop-loss creation and editing across MCP, TUI, and Web flows, including fixed-price enforcement for deep residual recovery orders.
+- Reworked SELL coverage checks around explicit strategy-classified targets instead of automatically treating nearly an entire holding as disposable stop volume.
+- Expanded portfolio, stop-loss, and order snapshots with strategy metadata, exact exposure reconciliation, and improved instrument/orderbook identity handling.
+- Fixed the MCP stdio proxy to use newline-delimited JSON-RPC required by the MCP specification while retaining compatibility with legacy `Content-Length` clients.
+- Added registry, strategy-validation, coverage-policy, Web API, kernel, and MCP transport regression tests and updated operating documentation.
+- Excluded local portfolio-analysis output and temporary runtime artifacts from Git tracking.
+
 ## 0.2.19 - 2026-07-24
 
 - Suppressed expected MCP bridge `BrokenPipeError`/connection-reset tracebacks when a local client cancels or times out while a response is being written.

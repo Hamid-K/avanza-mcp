@@ -32,6 +32,8 @@ export default defineComponent({
     const orderValidDays = ref("1");
     const mmQuote = ref(false);
     const shortSelling = ref(false);
+    const strategyIntent = ref("");
+    const strategyReason = ref("");
     const review = ref(null);
     const confirmText = ref("");
     const busy = ref(false);
@@ -51,6 +53,8 @@ export default defineComponent({
       if (target && target.raw) {
         orderBookId.value = String(target.raw.orderbook_id || target.raw["Order Book ID"] || "");
         if (target.volume) volume.value = String(target.volume);
+        strategyIntent.value = String(target.raw.strategy_intent || "");
+        strategyReason.value = String(target.raw.strategy_reason || "");
       }
     });
 
@@ -70,6 +74,8 @@ export default defineComponent({
           order_valid_days: parseInt(orderValidDays.value, 10),
           trigger_on_market_maker_quote: mmQuote.value,
           short_selling_allowed: shortSelling.value,
+          strategy_intent: strategyIntent.value,
+          strategy_reason: strategyReason.value,
           replace_stoploss_id: isEdit.value ? props.editTarget.id : undefined,
         });
       } catch (exc) {
@@ -97,7 +103,8 @@ export default defineComponent({
     return {
       props, emit, store, holdings, isEdit, orderBookId, volume, triggerType, triggerValue,
       triggerValueType, validUntil, orderType, orderPrice, orderPriceType, orderValidDays,
-      mmQuote, shortSelling, review, confirmText, busy, error, dryRun, place,
+      mmQuote, shortSelling, strategyIntent, strategyReason, review, confirmText,
+      busy, error, dryRun, place,
     };
   },
   template: `
@@ -149,6 +156,25 @@ export default defineComponent({
           <div class="field"><label>Order valid days</label><input v-model="orderValidDays" inputmode="numeric"></div>
         </div>
         <div class="field"><label>Stop-loss valid until</label><input v-model="validUntil" type="date"></div>
+        <div class="field-row">
+          <div class="field">
+            <label>Strategy intent</label>
+            <select v-model="strategyIntent">
+              <option value="" disabled>Select intent</option>
+              <option value="CORE_RESTORATION">Core restoration</option>
+              <option value="PARTIAL_PARTICIPATION">Partial participation</option>
+              <option value="DEEP_RESIDUAL">Deep residual</option>
+              <option value="TACTICAL_RECOVERY">Tactical recovery</option>
+              <option value="OPTIONAL_GROWTH">Optional growth</option>
+              <option value="TACTICAL_HARVEST">Tactical harvest</option>
+              <option value="PROFIT_PROTECTION">Profit protection</option>
+              <option value="RISK_OFF_EXIT">Risk-off exit</option>
+              <option value="THESIS_BREAK_EXIT">Thesis-break exit</option>
+              <option value="SPECIAL_APPROVED">Special approved</option>
+            </select>
+          </div>
+          <div class="field"><label>Strategy reason</label><input v-model="strategyReason"></div>
+        </div>
         <label class="check-row"><input type="checkbox" v-model="mmQuote"> Trigger on market-maker quote</label>
         <label class="check-row"><input type="checkbox" v-model="shortSelling"> Short selling allowed</label>
 
@@ -164,6 +190,8 @@ export default defineComponent({
             <dt>Order</dt><dd>{{ review.preview.stop_loss_order_event.type }} {{ review.preview.stop_loss_order_event.volume }} @ {{ review.preview.stop_loss_order_event.price }} ({{ review.preview.stop_loss_order_event.price_type }})</dd>
             <dt>Valid days</dt><dd>{{ review.preview.stop_loss_order_event.valid_days }}</dd>
             <dt>Valid until</dt><dd>{{ review.preview.stop_loss_trigger.valid_until }}</dd>
+            <dt>Intent</dt><dd>{{ review.preview.strategy_intent }}</dd>
+            <dt>Reason</dt><dd>{{ review.preview.strategy_reason }}</dd>
           </dl>
           <ConfirmTyped v-if="review.confirm_required" :word="review.confirm_required" @armed="confirmText = $event" />
           <button :class="review.confirm_required ? 'danger' : 'warn'" style="width: 100%"

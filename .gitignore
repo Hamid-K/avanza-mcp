@@ -15,11 +15,15 @@ htmlcov/
 # Avanza local runtime state (can contain account/order/session metadata)
 .avanza_mcp_session.json
 .avanza_paper_session.json
+.avanza_stoploss_strategy.json
+.avanza_position_strategy.json
 .avanza_*_session.json
 .avanza_tradingview_profile/
 avanza-cli/logs/
 avanza-cli/backups/
 .playwright-mcp/
+output/
+tmp/
 
 # Local assistant preferences and trading workflow notes.
 # Keep the folder visible in git, but keep all private contents local-only.

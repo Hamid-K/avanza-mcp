@@ -60,6 +60,9 @@ from avanza_mcp.paper import (
     paper_session_summary,
     paper_trades,
 )
+from avanza_mcp.position_strategy_registry import (
+    position_strategy_live_fingerprint,
+)
 from avanza_mcp.records import (
     filter_mover_rows,
     first_nested_text_for_keys,
@@ -69,8 +72,8 @@ from avanza_mcp.records import (
     movers_rows_from_payload,
     normalized_search_rows,
     parse_optional_iso_date,
+    position_mcp_dict,
     search_rows_with_market_data,
-    stop_loss_mcp_dict,
 )
 from avanza_mcp.rendering import (
     account_display_name,
@@ -81,16 +84,21 @@ from avanza_mcp.rendering import (
     format_order_request,
     format_stop_loss_request,
     normalize_order_side,
+    open_order_mcp_dict,
     rows_as_dicts,
 )
 from avanza_mcp.stoploss_rules import validate_valid_until
+from avanza_mcp.stoploss_strategy_registry import (
+    stoploss_row_from_preview,
+    stoploss_strategy_fingerprint,
+)
+from avanza_mcp.strategy_intent import validate_mcp_stoploss_strategy_intent
 from avanza_mcp.utils import (
     is_unauthorized_http_error,
     mcp_call_log_line,
     mcp_result_log_detail,
     mcp_result_log_suffix,
     mcp_stock_marker,
-    nested_value,
     summarize_mcp_result,
 )
 from datetime import date, datetime, timezone
@@ -207,6 +215,8 @@ class CoreBridgeMixin:
                 else ""
             ),
             "paper_session_file": str(self.paper_session_path),
+            "stoploss_strategy_registry": self.stoploss_strategy_registry.health(),
+            "position_strategy_registry": self.position_strategy_registry.health(),
             "update_available": self.update_status_outdated,
             "latest_version": self.update_status_latest or APP_VERSION,
         }
@@ -284,27 +294,20 @@ class CoreBridgeMixin:
         if result_id:
             for item in items:
                 if str(item.get("id") or "") == result_id:
-                    return stop_loss_mcp_dict(item)
-        requested_volume = utils.scalar_number(order_event.get("volume"))
-        requested_price = utils.scalar_number(order_event.get("price"))
-        trigger = preview.get("stop_loss_trigger") if isinstance(preview.get("stop_loss_trigger"), dict) else {}
-        requested_trigger = utils.scalar_number(trigger.get("value"))
-        best: dict[str, Any] | None = None
-        best_score = -1
+                    return self.stoploss_mcp_row(item)
+        exact_matches: list[dict[str, Any]] = []
         for item in items:
-            score = 0
-            if str(item.get("status", "")).upper() == "ACTIVE":
-                score += 1
-            if requested_volume is not None and utils.scalar_number(nested_value(item, "order", "volume")) == requested_volume:
-                score += 2
-            if requested_price is not None and utils.scalar_number(nested_value(item, "order", "price")) == requested_price:
-                score += 2
-            if requested_trigger is not None and utils.scalar_number(nested_value(item, "trigger", "value")) == requested_trigger:
-                score += 2
-            if score > best_score:
-                best = item
-                best_score = score
-        return stop_loss_mcp_dict(best) if best else None
+            row = self.stoploss_mcp_row(item)
+            expected = stoploss_strategy_fingerprint(
+                stoploss_row_from_preview(
+                    str(row.get("stop_loss_id") or ""),
+                    preview,
+                )
+            )
+            actual = stoploss_strategy_fingerprint(row)
+            if expected == actual:
+                exact_matches.append(row)
+        return exact_matches[0] if len(exact_matches) == 1 else None
 
     def stoploss_mutation_response(
         self,
@@ -317,7 +320,30 @@ class CoreBridgeMixin:
         deleted_stop_loss_id: str = "",
         deprecated_alias: bool = False,
     ) -> dict[str, Any]:
+        effective_warnings = list(warnings or [])
         row = None if dry_run else self.stoploss_readback_match(self.require_connection(), preview, result)
+        strategy_metadata_error = ""
+        if not dry_run:
+            if row is None:
+                strategy_metadata_error = (
+                    "Exact live stop-loss readback was unavailable or ambiguous; "
+                    "strategy metadata was not persisted."
+                )
+                effective_warnings.append(strategy_metadata_error)
+            else:
+                try:
+                    self.persist_stoploss_strategy_from_preview(
+                        preview,
+                        row,
+                        source=f"MCP_{action.upper()}",
+                    )
+                    row = self.enrich_stoploss_strategy_row(row)
+                except Exception as exc:
+                    strategy_metadata_error = str(exc)
+                    effective_warnings.append(
+                        "The broker stop exists, but local strategy metadata "
+                        f"could not be persisted: {exc}"
+                    )
         order_event = preview.get("stop_loss_order_event") if isinstance(preview.get("stop_loss_order_event"), dict) else {}
         trigger = preview.get("stop_loss_trigger") if isinstance(preview.get("stop_loss_trigger"), dict) else {}
         payload: dict[str, Any] = {
@@ -339,9 +365,25 @@ class CoreBridgeMixin:
             "valid_until": trigger.get("valid_until"),
             "order_valid_days": order_event.get("valid_days"),
             "readback": row,
+            "strategy_intent": preview.get("strategy_intent"),
+            "strategy_reason": preview.get("strategy_reason"),
+            "strategy_metadata_status": (
+                (row or {}).get("strategy_metadata_status")
+                if row
+                else "NOT_RECORDED"
+                if not dry_run
+                else "DRY_RUN"
+            ),
         }
-        if warnings:
-            payload["warnings"] = warnings
+        if effective_warnings:
+            payload["warnings"] = effective_warnings
+        if strategy_metadata_error:
+            payload["strategy_metadata_error"] = strategy_metadata_error
+        if not dry_run:
+            payload["metadata_persisted"] = (
+                payload["strategy_metadata_status"] == "RECORDED"
+            )
+            payload["ok"] = bool(payload["metadata_persisted"])
         if result is not None:
             payload["result"] = result
         if deleted_stop_loss_id:
@@ -413,6 +455,95 @@ class CoreBridgeMixin:
             raise PermissionError(
                 "Live trading is blocked for this MCP session. Explicitly authorize live mode first."
             )
+
+    def require_mcp_metadata_write(self, confirmed: bool) -> None:
+        if confirmed and not self.mcp_write_enabled:
+            raise PermissionError(
+                "TUI MCP mode is read-only. Enable R/W to change local strategy metadata."
+            )
+
+    def position_strategy_live_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        refresh: bool = True,
+        prune_stale: bool = False,
+    ) -> dict[str, Any]:
+        """Refresh and audit the complete tracked state for one exact account."""
+
+        _portfolio, position_items = self.filtered_portfolio_items(
+            avanza,
+            account_id,
+            refresh=refresh,
+        )
+        stop_items = self.filtered_stoploss_items(
+            avanza,
+            account_id,
+            refresh=refresh,
+        )
+        _orders_payload, open_order_items = self.filtered_open_order_items(
+            avanza,
+            account_id,
+            refresh=refresh,
+            require_raw=True,
+        )
+        positions = [
+            position_mcp_dict(item, self.realtime_status_for_position(item))
+            for item in position_items
+        ]
+        stoplosses = [self.stoploss_mcp_row(item) for item in stop_items]
+        active_stoplosses = [
+            row
+            for row in stoplosses
+            if str(row.get("status") or "").strip().upper() == "ACTIVE"
+        ]
+        open_orders = [open_order_mcp_dict(item) for item in open_order_items]
+        failed_statuses = {
+            "ERROR",
+            "FAILED",
+            "REJECTED",
+            "FAULTY",
+            "FELAKTIG",
+        }
+        stop_errors = [
+            row
+            for row in stoplosses
+            if str(row.get("status") or "").strip().upper() in failed_statuses
+        ]
+        order_errors = [
+            row
+            for row in open_orders
+            if str(row.get("Status") or "").strip().upper() in failed_statuses
+        ]
+        position_strategy = self.position_strategy_summary(
+            account_id,
+            positions,
+            active_stoplosses,
+            open_orders,
+            prune_stale=prune_stale,
+        )
+        stoploss_strategy = self.stoploss_strategy_summary(
+            account_id,
+            active_stoplosses,
+        )
+        complete = bool(
+            position_strategy["complete"] and stoploss_strategy["complete"]
+            and not stop_errors
+            and not order_errors
+        )
+        return {
+            "account_id": account_id,
+            "complete": complete,
+            "review_required": not complete,
+            "position_strategy": position_strategy,
+            "stoploss_strategy": stoploss_strategy,
+            "open_order_count": len(open_orders),
+            "stop_error_count": len(stop_errors),
+            "order_error_count": len(order_errors),
+            "stop_errors": stop_errors,
+            "order_errors": order_errors,
+        }
 
     def handle_mcp_tool_call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         marker = self.mcp_stock_marker_for_call(arguments)
@@ -729,6 +860,12 @@ class CoreBridgeMixin:
                 authenticated=authenticated,
                 compact=bool(arguments.get("compact", True)),
                 cookie=cookie,
+                coverage_target_percent=(
+                    float(arguments["coverage_target_percent"])
+                    if arguments.get("coverage_target_percent") is not None
+                    else None
+                ),
+                coverage_targets=arguments.get("coverage_targets"),
             )
 
         if tool == "tv_auth_watchlist":
@@ -889,6 +1026,373 @@ class CoreBridgeMixin:
                 compact=bool(arguments.get("compact", False)),
                 refresh=bool(arguments.get("refresh", False)),
             )
+
+        if tool == "avanza_stoploss_strategy_audit":
+            snapshot = self.stoploss_snapshot(
+                avanza,
+                account_id,
+                status="ACTIVE",
+                compact=bool(arguments.get("compact", True)),
+                refresh=True,
+            )
+            return {
+                "broker_mutation": False,
+                "tenant_session_id": self.active_session_id,
+                **snapshot,
+            }
+
+        if tool == "avanza_stoploss_strategy_register_batch":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_metadata_write(confirmed)
+            requested_items = arguments.get("items")
+            if not isinstance(requested_items, list) or not requested_items:
+                raise ValueError("items must be a non-empty array.")
+
+            broker_items = self.filtered_stoploss_items(
+                avanza,
+                account_id,
+                refresh=True,
+            )
+            broker_rows = [self.stoploss_mcp_row(item) for item in broker_items]
+            active_rows = [
+                row
+                for row in broker_rows
+                if str(row.get("status") or "").upper() == "ACTIVE"
+            ]
+            rows_by_id = {
+                str(row.get("stop_loss_id") or ""): row
+                for row in active_rows
+                if row.get("stop_loss_id")
+            }
+            candidates: list[dict[str, Any]] = []
+            previews: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for index, requested in enumerate(requested_items):
+                if not isinstance(requested, dict):
+                    raise ValueError(f"items[{index}] must be an object.")
+                stop_loss_id = str(requested.get("stop_loss_id") or "").strip()
+                if stop_loss_id in seen_ids:
+                    raise ValueError(
+                        f"items[{index}] duplicates stop_loss_id {stop_loss_id}."
+                    )
+                seen_ids.add(stop_loss_id)
+                row = rows_by_id.get(stop_loss_id)
+                if row is None:
+                    raise ValueError(
+                        f"items[{index}] stop_loss_id {stop_loss_id!r} is not an "
+                        "active stop in the exact account."
+                    )
+                expected = {
+                    "account_id": account_id,
+                    "stop_loss_id": stop_loss_id,
+                    "orderbook_id": str(requested.get("order_book_id") or "").strip(),
+                    "side": str(requested.get("side") or "").strip().upper(),
+                    "volume": requested.get("volume"),
+                    "trigger_type": row.get("trigger_type"),
+                    "trigger_value": row.get("trigger_value"),
+                    "trigger_value_type": row.get("trigger_value_type"),
+                    "order_price": row.get("order_price"),
+                    "order_price_type": row.get("order_price_type"),
+                    "valid_until": row.get("valid_until"),
+                }
+                expected_fingerprint = stoploss_strategy_fingerprint(expected)
+                actual_fingerprint = stoploss_strategy_fingerprint(row)
+                mismatches = [
+                    field
+                    for field in (
+                        "account_id",
+                        "stop_loss_id",
+                        "orderbook_id",
+                        "side",
+                        "volume",
+                    )
+                    if expected_fingerprint.get(field)
+                    != actual_fingerprint.get(field)
+                ]
+                if mismatches:
+                    raise ValueError(
+                        f"items[{index}] does not exactly match live stop "
+                        f"{stop_loss_id}: {', '.join(mismatches)}."
+                    )
+                preview = {
+                    "account_id": row["account_id"],
+                    "order_book_id": row["orderbook_id"],
+                    "parent_stop_loss_id": "0",
+                    "stop_loss_trigger": {
+                        "type": row["trigger_type"],
+                        "value": row["trigger_value"],
+                        "value_type": row["trigger_value_type"],
+                        "valid_until": row["valid_until"],
+                    },
+                    "stop_loss_order_event": {
+                        "type": row["side"],
+                        "volume": row["volume"],
+                        "price": row["order_price"],
+                        "price_type": row["order_price_type"],
+                    },
+                }
+                validate_mcp_stoploss_strategy_intent(
+                    requested,
+                    preview,
+                    live=True,
+                )
+                candidates.append(
+                    {
+                        "row": row,
+                        "strategy_intent": preview["strategy_intent"],
+                        "strategy_reason": preview["strategy_reason"],
+                    }
+                )
+                previews.append(
+                    {
+                        "index": index,
+                        "stop_loss_id": stop_loss_id,
+                        "account_id": row["account_id"],
+                        "orderbook_id": row["orderbook_id"],
+                        "stock": row["stock"],
+                        "side": row["side"],
+                        "volume": row["volume"],
+                        "strategy_intent": preview["strategy_intent"],
+                        "strategy_reason": preview["strategy_reason"],
+                    }
+                )
+
+            if not confirmed:
+                return {
+                    "dry_run": True,
+                    "broker_mutation": False,
+                    "account_id": account_id,
+                    "count": len(previews),
+                    "items": previews,
+                }
+
+            entries = self.persist_existing_stoploss_strategies(
+                candidates,
+                source="MCP_REVIEWED_BACKFILL",
+            )
+            reconcile = self.stoploss_strategy_summary(
+                account_id,
+                broker_rows,
+                prune_missing=bool(arguments.get("prune_stale", False)),
+            )
+            active_snapshot = self.stoploss_snapshot(
+                avanza,
+                account_id,
+                status="ACTIVE",
+                compact=True,
+            )
+            return {
+                "ok": bool(active_snapshot["strategy_metadata"]["complete"]),
+                "dry_run": False,
+                "broker_mutation": False,
+                "account_id": account_id,
+                "registered_count": len(entries),
+                "prune_stale": bool(arguments.get("prune_stale", False)),
+                "reconcile": reconcile,
+                "strategy_metadata": active_snapshot["strategy_metadata"],
+                "stoplosses": active_snapshot["stoplosses"],
+            }
+
+        if tool == "avanza_position_strategy_audit":
+            return {
+                "broker_mutation": False,
+                "tenant_session_id": self.active_session_id,
+                **self.position_strategy_live_snapshot(
+                    avanza,
+                    account_id,
+                    refresh=True,
+                ),
+            }
+
+        if tool == "avanza_position_strategy_register_batch":
+            confirmed = bool(arguments.get("confirm", False))
+            self.require_mcp_metadata_write(confirmed)
+            requested_items = arguments.get("items")
+            if not isinstance(requested_items, list) or not requested_items:
+                raise ValueError("items must be a non-empty array.")
+
+            live_snapshot = self.position_strategy_live_snapshot(
+                avanza,
+                account_id,
+                refresh=True,
+            )
+            if not live_snapshot["stoploss_strategy"]["complete"]:
+                raise ValueError(
+                    "Cannot baseline position plans while active stop-loss "
+                    "strategy metadata is incomplete."
+                )
+            if (
+                live_snapshot["stop_error_count"]
+                or live_snapshot["order_error_count"]
+            ):
+                raise ValueError(
+                    "Cannot baseline position plans while failed/error broker "
+                    "rows remain."
+                )
+            live_states = live_snapshot["position_strategy"]["positions"]
+            states_by_orderbook = {
+                str(row.get("orderbook_id") or ""): row
+                for row in live_states
+                if row.get("orderbook_id")
+            }
+            candidates: list[dict[str, Any]] = []
+            previews: list[dict[str, Any]] = []
+            seen_orderbooks: set[str] = set()
+            live_fields = (
+                "account_id",
+                "orderbook_id",
+                "holding",
+                "active_buy_volume",
+                "active_sell_volume",
+                "active_buy_count",
+                "active_sell_count",
+                "open_buy_volume",
+                "open_sell_volume",
+                "open_buy_count",
+                "open_sell_count",
+            )
+            plan_fields = (
+                "instrument",
+                "ticker",
+                "venue",
+                "strategy_class",
+                "horizon",
+                "thesis",
+                "gate",
+                "audit_status",
+                "recommendation",
+                "priority",
+                "bucket",
+                "stance",
+                "next_gate",
+                "proposed_correction",
+                "source_snapshot_at",
+            )
+            for index, requested in enumerate(requested_items):
+                if not isinstance(requested, dict):
+                    raise ValueError(f"items[{index}] must be an object.")
+                orderbook_id = str(
+                    requested.get("order_book_id")
+                    or requested.get("orderbook_id")
+                    or ""
+                ).strip()
+                if not orderbook_id:
+                    raise ValueError(f"items[{index}].order_book_id is required.")
+                missing_live_fields = [
+                    field
+                    for field in live_fields
+                    if field not in {"account_id", "orderbook_id"}
+                    and requested.get(field) is None
+                ]
+                if missing_live_fields:
+                    raise ValueError(
+                        f"items[{index}] requires exact live fields: "
+                        + ", ".join(missing_live_fields)
+                        + "."
+                    )
+                if orderbook_id in seen_orderbooks:
+                    raise ValueError(
+                        f"items[{index}] duplicates order_book_id {orderbook_id}."
+                    )
+                seen_orderbooks.add(orderbook_id)
+                live_state = states_by_orderbook.get(orderbook_id)
+                if live_state is None:
+                    raise ValueError(
+                        f"items[{index}] order_book_id {orderbook_id!r} is not "
+                        "currently held and has no active stop or open order in "
+                        "the exact account."
+                    )
+                expected = {
+                    "account_id": account_id,
+                    "orderbook_id": orderbook_id,
+                    **{
+                        field: requested.get(field)
+                        for field in live_fields
+                        if field not in {"account_id", "orderbook_id"}
+                    },
+                }
+                expected_fingerprint = position_strategy_live_fingerprint(expected)
+                actual_fingerprint = position_strategy_live_fingerprint(live_state)
+                mismatches = [
+                    field
+                    for field in live_fields
+                    if expected_fingerprint.get(field)
+                    != actual_fingerprint.get(field)
+                ]
+                if mismatches:
+                    raise ValueError(
+                        f"items[{index}] does not exactly match live position "
+                        f"{orderbook_id}: {', '.join(mismatches)}."
+                    )
+                requested_instrument = str(
+                    requested.get("instrument") or ""
+                ).strip()
+                live_instrument = str(live_state.get("stock") or "").strip()
+                if (
+                    not requested_instrument
+                    or requested_instrument.casefold() != live_instrument.casefold()
+                ):
+                    raise ValueError(
+                        f"items[{index}].instrument must exactly match live "
+                        f"instrument {live_instrument!r}."
+                    )
+                candidate = {
+                    "live_state": live_state,
+                    **{field: requested.get(field) for field in plan_fields},
+                }
+                candidates.append(candidate)
+                previews.append(
+                    {
+                        "index": index,
+                        "account_id": account_id,
+                        "orderbook_id": orderbook_id,
+                        "instrument": live_instrument,
+                        "holding": actual_fingerprint["holding"],
+                        "active_buy_volume": actual_fingerprint[
+                            "active_buy_volume"
+                        ],
+                        "active_sell_volume": actual_fingerprint[
+                            "active_sell_volume"
+                        ],
+                        "open_buy_volume": actual_fingerprint["open_buy_volume"],
+                        "open_sell_volume": actual_fingerprint[
+                            "open_sell_volume"
+                        ],
+                        "strategy_class": requested.get("strategy_class"),
+                        "priority": requested.get("priority"),
+                        "next_gate": requested.get("next_gate"),
+                    }
+                )
+
+            if not confirmed:
+                return {
+                    "dry_run": True,
+                    "broker_mutation": False,
+                    "account_id": account_id,
+                    "count": len(previews),
+                    "items": previews,
+                }
+
+            self.ensure_position_strategy_registry_writable()
+            entries = self.persist_existing_position_strategies(
+                candidates,
+                source="MCP_REVIEWED_CLEAN_SHEET",
+            )
+            post_audit = self.position_strategy_live_snapshot(
+                avanza,
+                account_id,
+                refresh=True,
+                prune_stale=bool(arguments.get("prune_stale", False)),
+            )
+            return {
+                "ok": bool(post_audit["complete"]),
+                "dry_run": False,
+                "broker_mutation": False,
+                "account_id": account_id,
+                "registered_count": len(entries),
+                "prune_stale": bool(arguments.get("prune_stale", False)),
+                **post_audit,
+            }
 
         if tool == "avanza_open_orders":
             return self.open_orders_snapshot(
@@ -1094,6 +1598,15 @@ class CoreBridgeMixin:
                 account_id,
                 exclude_orderbook_ids=excludes,
                 exclude_eth=bool(arguments.get("exclude_eth", False)),
+                coverage_target_percent=(
+                    float(arguments["coverage_target_percent"])
+                    if arguments.get("coverage_target_percent") is not None
+                    else None
+                ),
+                coverage_targets=arguments.get("coverage_targets"),
+                exclude_non_stop_eligible=bool(
+                    arguments.get("exclude_non_stop_eligible", True)
+                ),
             )
 
         if tool == "avanza_sold_today_buyback_state":
@@ -1110,6 +1623,12 @@ class CoreBridgeMixin:
                 account_id,
                 since=parse_optional_iso_date(arguments.get("since"), label="since"),
                 exclude_eth=bool(arguments.get("exclude_eth", True)),
+                coverage_target_percent=(
+                    float(arguments["coverage_target_percent"])
+                    if arguments.get("coverage_target_percent") is not None
+                    else None
+                ),
+                coverage_targets=arguments.get("coverage_targets"),
             )
 
         if tool == "avanza_verify_no_raw_failed_orders":
@@ -1126,7 +1645,12 @@ class CoreBridgeMixin:
                 orderbook_ids=ids,
                 full_holding=bool(arguments.get("full_holding", True)),
                 exclude_eth=bool(arguments.get("exclude_eth", True)),
-                coverage_target_percent=float(arguments.get("coverage_target_percent", 100.0)),
+                coverage_target_percent=(
+                    float(arguments["coverage_target_percent"])
+                    if arguments.get("coverage_target_percent") is not None
+                    else None
+                ),
+                coverage_targets=arguments.get("coverage_targets"),
                 exclude_orderbook_ids=[str(item) for item in (arguments.get("exclude_orderbook_ids") or [])],
                 exclude_non_stop_eligible=bool(arguments.get("exclude_non_stop_eligible", True)),
             )
@@ -1437,6 +1961,7 @@ class CoreBridgeMixin:
             self.require_mcp_write(confirmed)
             trigger, order_event, preview = build_stop_loss_preview(arguments)
             warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
+            warnings.extend(validate_mcp_stoploss_strategy_intent(arguments, preview, live=confirmed))
             if not confirmed:
                 payload = self.stoploss_mutation_response(
                     dry_run=True,
@@ -1446,6 +1971,7 @@ class CoreBridgeMixin:
                 )
                 payload["summary"] = format_stop_loss_request(preview)
                 return payload
+            self.ensure_stoploss_strategy_registry_writable()
             result = avanza.place_stop_loss_order(
                 parent_stop_loss_id=preview["parent_stop_loss_id"],
                 account_id=preview["account_id"],
@@ -1477,6 +2003,7 @@ class CoreBridgeMixin:
                 item_args = {**item, "account_id": parent_account_id}
                 trigger, order_event, preview = build_stop_loss_preview(item_args)
                 warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
+                warnings.extend(validate_mcp_stoploss_strategy_intent(item_args, preview, live=confirmed))
                 prepared.append((trigger, order_event, preview, warnings))
                 if not confirmed:
                     dry_run_results.append(
@@ -1498,6 +2025,7 @@ class CoreBridgeMixin:
                     "results": dry_run_results,
                 }
 
+            self.ensure_stoploss_strategy_registry_writable()
             results: list[dict[str, Any]] = []
             for index, (trigger, order_event, preview, warnings) in enumerate(prepared):
                 try:
@@ -1522,6 +2050,14 @@ class CoreBridgeMixin:
                         payload["error"] = "Readback orderbook_id mismatch; stopping batch."
                         results.append(payload)
                         break
+                    if payload.get("strategy_metadata_status") != "RECORDED":
+                        payload["ok"] = False
+                        payload["error"] = (
+                            "Broker stop was placed, but durable strategy metadata "
+                            "was not verified; stopping batch."
+                        )
+                        results.append(payload)
+                        break
                     payload["ok"] = True
                     results.append(payload)
                 except Exception as exc:
@@ -1542,6 +2078,41 @@ class CoreBridgeMixin:
                 for item in results
                 if isinstance(item, dict) and item.get("orderbook_id")
             ]
+            verification_target_volumes: dict[str, float] = {}
+            verification_target_intents: dict[str, set[str]] = {}
+            for item in results:
+                if not isinstance(item, dict) or not item.get("ok"):
+                    continue
+                index = int(item.get("index", -1))
+                if not 0 <= index < len(prepared):
+                    continue
+                preview = prepared[index][2]
+                order_event = preview.get("stop_loss_order_event")
+                order_event = order_event if isinstance(order_event, dict) else {}
+                if str(order_event.get("type") or "").upper() != "SELL":
+                    continue
+                orderbook_id = str(preview.get("order_book_id") or "")
+                if not orderbook_id:
+                    continue
+                verification_target_volumes[orderbook_id] = (
+                    verification_target_volumes.get(orderbook_id, 0.0)
+                    + float(order_event.get("volume") or 0.0)
+                )
+                intent = str(preview.get("strategy_intent") or "SPECIAL_APPROVED")
+                verification_target_intents.setdefault(orderbook_id, set()).add(intent)
+            verification_targets = [
+                {
+                    "orderbook_id": orderbook_id,
+                    "target_sell_volume": volume,
+                    "strategy_intent": (
+                        next(iter(verification_target_intents[orderbook_id]))
+                        if len(verification_target_intents.get(orderbook_id, set())) == 1
+                        else "SPECIAL_APPROVED"
+                    ),
+                    "strategy_reason": "Aggregate confirmed SELL volume placed by this batch.",
+                }
+                for orderbook_id, volume in verification_target_volumes.items()
+            ]
             return {
                 "dry_run": False,
                 "account_id": parent_account_id,
@@ -1555,6 +2126,7 @@ class CoreBridgeMixin:
                     orderbook_ids=touched_ids,
                     full_holding=False,
                     exclude_eth=False,
+                    coverage_targets=verification_targets,
                 ),
             }
 
@@ -1852,8 +2424,17 @@ class CoreBridgeMixin:
             if not confirmed:
                 return {"dry_run": True, "request": request}
             result = avanza.delete_stop_loss_order(request["account_id"], request["stop_loss_id"])
+            metadata_cleanup_error = ""
+            try:
+                metadata_removed = self.remove_stoploss_strategy(
+                    request["account_id"],
+                    request["stop_loss_id"],
+                )
+            except Exception as exc:
+                metadata_removed = False
+                metadata_cleanup_error = str(exc)
             self.record_event("trading", "live_stoploss_delete", {"request": request, "result": result})
-            return {
+            payload = {
                 "dry_run": False,
                 "action": "delete",
                 "stop_loss_id": request["stop_loss_id"],
@@ -1861,7 +2442,11 @@ class CoreBridgeMixin:
                 "status": "DELETED",
                 "request": request,
                 "result": result,
+                "strategy_metadata_removed": metadata_removed,
             }
+            if metadata_cleanup_error:
+                payload["strategy_metadata_cleanup_error"] = metadata_cleanup_error
+            return payload
 
         if tool in {"avanza_stoploss_replace", "avanza_stoploss_edit"}:
             confirmed = bool(arguments.get("confirm", False))
@@ -1869,6 +2454,7 @@ class CoreBridgeMixin:
             stop_loss_id = str(arguments["stop_loss_id"])
             trigger, order_event, preview = build_stop_loss_preview(arguments)
             warnings = self.apply_stoploss_valid_days_safety(preview, live=confirmed)
+            warnings.extend(validate_mcp_stoploss_strategy_intent(arguments, preview, live=confirmed))
             deprecated_alias = tool == "avanza_stoploss_replace"
             request = {
                 "stop_loss_id": stop_loss_id,
@@ -1888,6 +2474,7 @@ class CoreBridgeMixin:
                 if deprecated_alias:
                     payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."
                 return payload
+            self.ensure_stoploss_strategy_registry_writable()
             # Place the replacement BEFORE deleting the old stop so a failed
             # placement can never leave the position unprotected.
             place_result = avanza.place_stop_loss_order(
@@ -1897,32 +2484,67 @@ class CoreBridgeMixin:
                 stop_loss_trigger=trigger,
                 stop_loss_order_event=order_event,
             )
-            try:
-                delete_result = avanza.delete_stop_loss_order(preview["account_id"], stop_loss_id)
-                protection_state = "replaced"
-            except Exception as exc:
-                delete_result = {"error": str(exc)}
+            payload = self.stoploss_mutation_response(
+                dry_run=False,
+                action="edit",
+                preview=preview,
+                result=place_result,
+                warnings=warnings,
+                deleted_stop_loss_id=stop_loss_id,
+                deprecated_alias=deprecated_alias,
+            )
+            if not payload.get("metadata_persisted"):
+                delete_result = {
+                    "skipped": True,
+                    "reason": (
+                        "Replacement strategy metadata was not verified; the old "
+                        "stop was deliberately retained."
+                    ),
+                }
                 protection_state = "duplicate_protection"
-                warnings = [
-                    *warnings,
-                    f"Replacement placed, but deleting old stop-loss {stop_loss_id} failed: {exc}. "
-                    "BOTH stops may be active — review and delete manually.",
-                ]
+                payload["ok"] = False
+                payload.setdefault("warnings", []).append(
+                    f"Replacement placed, but old stop-loss {stop_loss_id} was "
+                    "retained because durable metadata for the replacement was "
+                    "not verified. BOTH stops may be active."
+                )
+            else:
+                try:
+                    delete_result = avanza.delete_stop_loss_order(
+                        preview["account_id"],
+                        stop_loss_id,
+                    )
+                    protection_state = "replaced"
+                except Exception as exc:
+                    delete_result = {"error": str(exc)}
+                    protection_state = "duplicate_protection"
+                    payload["ok"] = False
+                    payload.setdefault("warnings", []).append(
+                        f"Replacement placed, but deleting old stop-loss "
+                        f"{stop_loss_id} failed: {exc}. BOTH stops may be active."
+                    )
             result = {"delete": delete_result, "place": place_result, "protection_state": protection_state}
             self.record_event(
                 "trading",
                 "live_stoploss_edit",
                 {"request": request, "result": result, "used_deprecated_alias": deprecated_alias},
             )
-            payload = self.stoploss_mutation_response(
-                dry_run=False,
-                action="edit",
-                preview=preview,
-                result=result,
-                warnings=warnings,
-                deleted_stop_loss_id=stop_loss_id,
-                deprecated_alias=deprecated_alias,
-            )
+            payload["result"] = result
+            payload["protection_state"] = protection_state
+            if protection_state == "replaced":
+                try:
+                    payload["replaced_strategy_metadata_removed"] = self.remove_stoploss_strategy(
+                        preview["account_id"],
+                        stop_loss_id,
+                    )
+                except Exception as exc:
+                    payload["replaced_strategy_metadata_removed"] = False
+                    payload["strategy_metadata_cleanup_error"] = str(exc)
+                    payload.setdefault("warnings", []).append(
+                        "The old broker stop was deleted, but its local strategy "
+                        f"metadata could not be removed: {exc}"
+                    )
+                    payload["ok"] = False
             payload["request"] = request
             if deprecated_alias:
                 payload["warning"] = "avanza_stoploss_replace is deprecated; use avanza_stoploss_edit."

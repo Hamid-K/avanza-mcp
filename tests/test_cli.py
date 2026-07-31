@@ -1037,6 +1037,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "order_price": 1,
                     "order_price_type": "%",
                     "volume": 10,
+                    "strategy_intent": "TACTICAL_HARVEST",
+                    "strategy_reason": "Unit-test tactical protection edit.",
                     "confirm": True,
                 },
             )
@@ -1654,10 +1656,35 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     assert len(state["non_active_or_error_stops"]) == 1
     assert state["open_orders"][0]["Order ID"] == "ord-acn"
     assert state["protection"]["sell_protection_gap"] == 2
+    assert state["protection"]["mechanical_full_holding_sell_gap"] == 2
+    assert state["protection"]["failed_sell_stop_volume"] == 1
+    assert state["protection"]["failed_buy_stop_volume"] == 0
     assert all(row["stock"] == "ACN" for row in state["recent_transactions"])
 
     gaps = app.execute_mcp_tool("avanza_protection_gaps", {"account_id": "acc-1", "exclude_eth": True})
     assert [row["orderbook_id"] for row in gaps["gaps"]] == ["ob-acn"]
+    assert gaps["coverage_policy"] == "CURRENT_ACTIVE_SELL_BASELINE"
+    assert gaps["gaps"][0]["adjusted_protection_gap"] == 0
+    assert gaps["gaps"][0]["issue_types"] == ["FAILED_SELL_STOP"]
+
+    exact_gaps = app.execute_mcp_tool(
+        "avanza_protection_gaps",
+        {
+            "account_id": "acc-1",
+            "exclude_eth": True,
+            "coverage_targets": [
+                {
+                    "orderbook_id": "ob-acn",
+                    "target_sell_volume": 4,
+                    "strategy_intent": "TACTICAL_HARVEST",
+                    "strategy_reason": "Protect only the approved tactical slice.",
+                }
+            ],
+        },
+    )
+    assert exact_gaps["coverage_policy"] == "EXACT_STRATEGY_TARGETS"
+    assert exact_gaps["gaps"][0]["adjusted_protection_gap"] == 1
+    assert "MISSING_TARGET_SELL_VOLUME" in exact_gaps["gaps"][0]["issue_types"]
 
     buybacks = app.execute_mcp_tool("avanza_sold_today_buyback_state", {"account_id": "acc-1", "date": today})
     acn = next(row for row in buybacks["items"] if row["orderbook_id"] == "ob-acn")
@@ -1671,6 +1698,99 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
 
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
+    assert recent["review_items"][0]["strategy_classification_required"] is True
+    assert recent["review_items"][0]["needs_sell_action"] is False
+
+    exact_recent = app.execute_mcp_tool(
+        "avanza_recent_fills_needing_protection",
+        {
+            "account_id": "acc-1",
+            "since": today,
+            "coverage_targets": [
+                {
+                    "orderbook_id": "ob-acn",
+                    "target_sell_volume": 4,
+                    "strategy_intent": "TACTICAL_HARVEST",
+                    "strategy_reason": "Protect only the approved tactical slice.",
+                }
+            ],
+        },
+    )
+    assert exact_recent["review_items"][0]["strategy_classification_required"] is False
+    assert exact_recent["review_items"][0]["needs_sell_action"] is True
+
+
+def test_protection_gaps_require_explicit_strategy_target_for_core_holdings():
+    from avanza_mcp.records import instrument_is_eth_like
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrument": {
+                            "name": "Long-Term Core",
+                            "type": "STOCK",
+                            "orderbook": {"id": "ob-core"},
+                        },
+                        "volume": {"value": 10, "unit": "st"},
+                        "value": {"value": 1000, "unit": "SEK"},
+                    }
+                ],
+                "withoutOrderbook": [],
+            }
+
+        def get_all_stop_losses(self):
+            return []
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+
+    default = app.execute_mcp_tool(
+        "avanza_protection_gaps",
+        {"account_id": "acc-1"},
+    )
+    assert default["coverage_policy"] == "CURRENT_ACTIVE_SELL_BASELINE"
+    assert default["gaps"] == []
+
+    mechanical = app.execute_mcp_tool(
+        "avanza_protection_gaps",
+        {"account_id": "acc-1", "coverage_target_percent": 100},
+    )
+    assert mechanical["coverage_policy"] == "EXPLICIT_MECHANICAL_PERCENTAGE"
+    assert mechanical["gaps"][0]["adjusted_protection_gap"] == 10
+
+    with pytest.raises(ValueError, match="strategy_intent"):
+        app.execute_mcp_tool(
+            "avanza_protection_gaps",
+            {
+                "account_id": "acc-1",
+                "coverage_targets": [
+                    {"orderbook_id": "ob-core", "target_sell_volume": 2}
+                ],
+            },
+        )
+
+    exact = app.execute_mcp_tool(
+        "avanza_protection_gaps",
+        {
+            "account_id": "acc-1",
+            "coverage_targets": [
+                {
+                    "orderbook_id": "ob-core",
+                    "target_sell_volume": 2,
+                    "strategy_intent": "PROFIT_PROTECTION",
+                    "strategy_reason": "Two-share tactical profit sleeve.",
+                }
+            ],
+        },
+    )
+    assert exact["gaps"][0]["adjusted_protection_gap"] == 2
+    assert exact["gaps"][0]["target_strategy_intent"] == "PROFIT_PROTECTION"
+    assert instrument_is_eth_like("", "791709") is True
 
 
 def test_mcp_account_read_cache_reuses_large_avanza_lists():
@@ -1770,12 +1890,32 @@ def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
 
     placed = app.execute_mcp_tool(
         "avanza_stoploss_set",
-        {"account_id": "acc-1", "order_book_id": "ob-acn", "trigger_value": 3, "trigger_value_type": "%", "valid_until": TEST_VALID_UNTIL, "order_price": 99, "order_price_type": "%", "volume": 5, "confirm": True},
+        {
+            "account_id": "acc-1",
+            "order_book_id": "ob-acn",
+            "trigger_value": 3,
+            "trigger_value_type": "%",
+            "valid_until": TEST_VALID_UNTIL,
+            "order_price": 99,
+            "order_price_type": "%",
+            "volume": 5,
+            "strategy_intent": "TACTICAL_HARVEST",
+            "strategy_reason": "Unit-test tactical slice.",
+            "confirm": True,
+        },
     )
     assert placed["dry_run"] is False
     assert placed["stop_loss_id"] == "sl-new"
     assert placed["readback"]["stock"] == "ACN"
     assert placed["order_valid_days"] == 1
+    assert placed["strategy_metadata_status"] == "RECORDED"
+    assert placed["metadata_persisted"] is True
+    persisted = app.execute_mcp_tool(
+        "avanza_stoplosses",
+        {"account_id": "acc-1", "status": "ACTIVE", "refresh": True},
+    )
+    assert persisted["strategy_metadata"]["complete"] is True
+    assert persisted["stoplosses"][0]["strategy_intent"] == "TACTICAL_HARVEST"
 
     batch = app.execute_mcp_tool(
         "avanza_stoploss_set_batch",
@@ -1784,6 +1924,293 @@ def test_mcp_stoploss_mutation_response_includes_readback_and_batch_dry_run():
     assert batch["dry_run"] is True
     assert batch["results"][0]["stop_loss_id"] is None
     assert batch["results"][0]["orderbook_id"] == "ob-acn"
+    assert any("strategy_intent" in warning for warning in batch["results"][0]["warnings"])
+
+
+def test_mcp_stoploss_strategy_intent_blocks_missing_or_misclassified_live_rows():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def place_stop_loss_order(self, **_kwargs):
+            raise AssertionError("Strategy-intent validation must block placement.")
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.mcp_write_enabled = True
+    app.active_session_id = "test-session"
+    app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
+
+    base = {
+        "account_id": "acc-1",
+        "order_book_id": "ob-acn",
+        "trigger_type": "FOLLOW_DOWNWARDS",
+        "trigger_value": 1,
+        "trigger_value_type": "%",
+        "valid_until": TEST_VALID_UNTIL,
+        "order_type": "buy",
+        "order_price": 100.5,
+        "order_price_type": "%",
+        "volume": 2,
+    }
+
+    with pytest.raises(ValueError, match="strategy_intent is required"):
+        app.execute_mcp_tool("avanza_stoploss_set", {**base, "confirm": True})
+
+    with pytest.raises(ValueError, match="DEEP_RESIDUAL must be a fixed BUY"):
+        app.execute_mcp_tool(
+            "avanza_stoploss_set",
+            {
+                **base,
+                "strategy_intent": "DEEP_RESIDUAL",
+                "strategy_reason": "Preserve the unfilled residual below the prior sale.",
+            },
+        )
+
+    fixed_residual = app.execute_mcp_tool(
+        "avanza_stoploss_set",
+        {
+            **base,
+            "trigger_type": "LESS_OR_EQUAL",
+            "trigger_value": 90,
+            "trigger_value_type": "MONETARY",
+            "order_price": 90.5,
+            "order_price_type": "MONETARY",
+            "strategy_intent": "DEEP_RESIDUAL",
+            "strategy_reason": "Preserve the unfilled residual below the prior sale.",
+        },
+    )
+    assert fixed_residual["request"]["strategy_intent"] == "DEEP_RESIDUAL"
+    assert fixed_residual["request"]["strategy_reason"].startswith("Preserve")
+
+
+def test_mcp_stoploss_strategy_backfill_is_exact_local_only_and_restart_durable():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    row = {
+        "id": "sl-deep",
+        "status": "ACTIVE",
+        "account": {"id": "acc-1", "name": "Main"},
+        "orderbook": {"id": "ob-acn", "name": "ACN"},
+        "trigger": {
+            "type": "LESS_OR_EQUAL",
+            "value": 90.0,
+            "valueType": "MONETARY",
+            "validUntil": TEST_VALID_UNTIL,
+        },
+        "order": {
+            "type": "BUY",
+            "volume": 2,
+            "price": 90.5,
+            "priceType": "MONETARY",
+        },
+    }
+
+    class FakeAvanza:
+        def get_all_stop_losses(self):
+            return [row]
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.active_session_id = "test-session"
+
+    before = app.execute_mcp_tool(
+        "avanza_stoploss_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    assert before["strategy_metadata"]["missing_count"] == 1
+
+    spec = {
+        "stop_loss_id": "sl-deep",
+        "order_book_id": "ob-acn",
+        "side": "BUY",
+        "volume": 2,
+        "strategy_intent": "DEEP_RESIDUAL",
+        "strategy_reason": "Exact fixed residual from a reviewed sold slice.",
+    }
+    dry_run = app.execute_mcp_tool(
+        "avanza_stoploss_strategy_register_batch",
+        {"account_id": "acc-1", "items": [spec]},
+    )
+    assert dry_run["dry_run"] is True
+    assert dry_run["broker_mutation"] is False
+
+    with pytest.raises(PermissionError, match="Enable R/W"):
+        app.execute_mcp_tool(
+            "avanza_stoploss_strategy_register_batch",
+            {"account_id": "acc-1", "items": [spec], "confirm": True},
+        )
+
+    app.mcp_write_enabled = True
+    registered = app.execute_mcp_tool(
+        "avanza_stoploss_strategy_register_batch",
+        {
+            "account_id": "acc-1",
+            "items": [spec],
+            "confirm": True,
+            "prune_stale": True,
+        },
+    )
+    assert app.live_trading_allowed_for_session is False
+    assert registered["broker_mutation"] is False
+    assert registered["ok"] is True
+    assert registered["strategy_metadata"]["recorded_count"] == 1
+
+    restarted = AvanzaTradingTui()
+    restarted.avanza = FakeAvanza()
+    restarted.selected_account_id = "acc-1"
+    restarted.active_session_id = "test-session"
+    after_restart = restarted.execute_mcp_tool(
+        "avanza_stoploss_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    assert after_restart["strategy_metadata"]["complete"] is True
+    assert after_restart["stoplosses"][0]["strategy_intent"] == "DEEP_RESIDUAL"
+
+    with pytest.raises(ValueError, match="volume"):
+        restarted.execute_mcp_tool(
+            "avanza_stoploss_strategy_register_batch",
+            {
+                "account_id": "acc-1",
+                "items": [{**spec, "volume": 3}],
+            },
+        )
+
+
+def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    live_holding = {"value": 10}
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "pos-1",
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrument": {
+                            "name": "Test Corp",
+                            "orderbook": {
+                                "id": "ob-1",
+                                "quote": {"isRealTime": True},
+                            },
+                        },
+                        "volume": {"value": live_holding["value"], "unit": "st"},
+                        "value": {"value": 1000, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 100, "unit": "SEK"},
+                        "acquiredValue": {"value": 1000, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 0, "unit": "%"},
+                            "absolute": {"value": 0, "unit": "SEK"},
+                        },
+                    }
+                ],
+                "withoutOrderbook": [],
+                "cashPositions": [],
+            }
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.active_session_id = "test-session"
+
+    before = app.execute_mcp_tool(
+        "avanza_position_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    assert before["complete"] is False
+    assert before["position_strategy"]["missing_orderbook_ids"] == ["ob-1"]
+
+    spec = {
+        "order_book_id": "ob-1",
+        "instrument": "Test Corp",
+        "ticker": "TEST",
+        "venue": "NYSE",
+        "holding": 10,
+        "active_buy_volume": 0,
+        "active_sell_volume": 0,
+        "active_buy_count": 0,
+        "active_sell_count": 0,
+        "open_buy_volume": 0,
+        "open_sell_volume": 0,
+        "open_buy_count": 0,
+        "open_sell_count": 0,
+        "strategy_class": "CORE_COMPOUNDER",
+        "horizon": "12-36m",
+        "thesis": "Reviewed durable thesis.",
+        "gate": "No tight core SELL.",
+        "audit_status": "VALID_CURRENT_PLAN",
+        "recommendation": "Keep the reviewed holding and plan.",
+        "priority": "A",
+        "bucket": "CORE_RESTORATION",
+        "stance": "KEEP",
+        "next_gate": "Review after the next material event.",
+        "source_snapshot_at": "2026-07-31T01:28:25+02:00",
+    }
+    dry_run = app.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {"account_id": "acc-1", "items": [spec]},
+    )
+    assert dry_run["dry_run"] is True
+    assert dry_run["broker_mutation"] is False
+
+    with pytest.raises(PermissionError, match="Enable R/W"):
+        app.execute_mcp_tool(
+            "avanza_position_strategy_register_batch",
+            {"account_id": "acc-1", "items": [spec], "confirm": True},
+        )
+
+    app.mcp_write_enabled = True
+    registered = app.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {
+            "account_id": "acc-1",
+            "items": [spec],
+            "confirm": True,
+            "prune_stale": True,
+        },
+    )
+    assert app.live_trading_allowed_for_session is False
+    assert registered["broker_mutation"] is False
+    assert registered["ok"] is True
+    assert registered["position_strategy"]["recorded_count"] == 1
+
+    restarted = AvanzaTradingTui()
+    restarted.avanza = FakeAvanza()
+    restarted.selected_account_id = "acc-1"
+    restarted.active_session_id = "test-session"
+    after_restart = restarted.execute_mcp_tool(
+        "avanza_position_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    assert after_restart["complete"] is True
+    assert (
+        after_restart["position_strategy"]["positions"][0][
+            "position_strategy"
+        ]["strategy_class"]
+        == "CORE_COMPOUNDER"
+    )
+
+    live_holding["value"] = 11
+    drifted = restarted.execute_mcp_tool(
+        "avanza_position_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    assert drifted["complete"] is False
+    assert drifted["position_strategy"]["holding_drift_count"] == 1
+    with pytest.raises(ValueError, match="holding"):
+        restarted.execute_mcp_tool(
+            "avanza_position_strategy_register_batch",
+            {"account_id": "acc-1", "items": [spec]},
+        )
 
 
 def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
@@ -3154,6 +3581,19 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     movers_properties = tool_map["avanza_market_movers"]["inputSchema"]["properties"]
     assert "tenant_session_id" not in movers_properties
     assert "session_id" not in movers_properties
+    protection_properties = tool_map["avanza_protection_gaps"]["inputSchema"]["properties"]
+    assert "coverage_targets" in protection_properties
+    assert "coverage_target_percent" in protection_properties
+    assert (
+        protection_properties["coverage_targets"]["items"]["properties"]["strategy_intent"]["enum"]
+        == [
+            "PROFIT_PROTECTION",
+            "RISK_OFF_EXIT",
+            "SPECIAL_APPROVED",
+            "TACTICAL_HARVEST",
+            "THESIS_BREAK_EXIT",
+        ]
+    )
     assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])
@@ -4310,7 +4750,177 @@ def test_avanza_tv_preopen_portfolio_bundle_merges_read_only_state(monkeypatch):
     assert result["rows"][0]["tradingview_symbol"] == "NASDAQ:NVDA"
     assert result["rows"][0]["tradingview"]["premarket_change_pct"] == 2.0
     assert result["rows"][0]["protection"]["sell_protection_gap"] == 1.0
-    assert result["rows"][0]["flags"]["sell_protection_gap"] is True
+    assert result["rows"][0]["flags"]["sell_protection_gap"] is False
+    assert result["rows"][0]["flags"]["mechanical_full_holding_sell_gap"] is True
+    assert result["coverage_policy"] == "CURRENT_ACTIVE_SELL_BASELINE"
+
+    explicit = app.execute_mcp_tool(
+        "avanza_tv_preopen_portfolio_bundle",
+        {
+            "account_id": "acc-1",
+            "authenticated": False,
+            "compact": True,
+            "coverage_targets": [
+                {
+                    "orderbook_id": "4478",
+                    "target_sell_volume": 5,
+                    "strategy_intent": "PROFIT_PROTECTION",
+                    "strategy_reason": "Five-share approved tactical sleeve.",
+                }
+            ],
+        },
+    )
+    assert explicit["rows"][0]["flags"]["sell_protection_gap"] is True
+    assert explicit["rows"][0]["protection"]["adjusted_protection_gap"] == 1
+
+
+def test_avanza_tv_portfolio_resolves_exact_orderbook_metadata_and_refreshes_exchange(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "apple-position",
+                        "account": {"id": "acc-1", "name": "Test"},
+                        "instrument": {"name": "Apple", "orderbook": {"id": "3323"}},
+                        "volume": {"value": 5, "unit": "st"},
+                        "value": {"value": 10_000, "unit": "SEK"},
+                    },
+                    {
+                        "id": "palantir-position",
+                        "account": {"id": "acc-1", "name": "Test"},
+                        "instrument": {"name": "Palantir Technologies", "orderbook": {"id": "1138439"}},
+                        "volume": {"value": 5, "unit": "st"},
+                        "value": {"value": 10_000, "unit": "SEK"},
+                    },
+                ],
+                "withoutOrderbook": [],
+            }
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+        def get_market_data(self, _orderbook_id):
+            return {"quote": {"buy": 100.0, "sell": 100.1, "last": 100.05}}
+
+        def search_for_stock(self, query, _limit):
+            rows = {
+                "Apple": {
+                    "name": "Apple (AAPL)",
+                    "id": "3323",
+                    "marketPlaceName": "NASDAQ",
+                    "countryCode": "US",
+                },
+                "Palantir Technologies": {
+                    "name": "Palantir Technologies (PLTR)",
+                    "id": "1138439",
+                    "marketPlaceName": "NASDAQ",
+                    "countryCode": "US",
+                },
+            }
+            row = rows.get(str(query))
+            return {"stocks": [row] if row else []}
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_preopen(symbol, **kwargs):
+        calls.append((symbol, kwargs["exchange"]))
+        return {
+            "symbol": f'{kwargs["exchange"]}:{symbol}',
+            "quote": {},
+            "technicals": {},
+            "liquidity": {},
+            "events": {},
+        }
+
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_preopen_symbol_snapshot", fake_preopen)
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.accounts = [{"id": "acc-1", "name": {"defaultName": "Test"}, "type": "ISK", "status": "ACTIVE"}]
+    app.selected_account_id = "acc-1"
+
+    result = app.execute_mcp_tool(
+        "avanza_tv_preopen_portfolio_bundle",
+        {"account_id": "acc-1", "authenticated": False, "compact": True},
+    )
+
+    assert calls == [("AAPL", "NASDAQ"), ("PLTR", "NASDAQ")]
+    assert [row["tradingview_symbol"] for row in result["rows"]] == [
+        "NASDAQ:AAPL",
+        "NASDAQ:PLTR",
+    ]
+    assert result["unsafe_for_execution"] is False
+
+
+def test_avanza_tv_portfolio_does_not_fabricate_symbol_from_fund_name(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [],
+                "withoutOrderbook": [
+                    {
+                        "id": "fund-position",
+                        "account": {"id": "acc-1", "name": "Test"},
+                        "instrument": {"name": "Avanza Zero", "orderbook": {"id": "41567"}},
+                        "volume": {"value": 5, "unit": "st"},
+                        "value": {"value": 10_000, "unit": "SEK"},
+                    }
+                ],
+            }
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+        def get_market_data(self, _orderbook_id):
+            return {}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+    def unexpected_preopen(*_args, **_kwargs):
+        raise AssertionError("TradingView must not be called with a fabricated company-name symbol")
+
+    monkeypatch.setattr(
+        "avanza_mcp.external.tradingview_data.tradingview_preopen_symbol_snapshot",
+        unexpected_preopen,
+    )
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.accounts = [{"id": "acc-1", "name": {"defaultName": "Test"}, "type": "ISK", "status": "ACTIVE"}]
+    app.selected_account_id = "acc-1"
+
+    result = app.execute_mcp_tool(
+        "avanza_tv_preopen_portfolio_bundle",
+        {"account_id": "acc-1", "authenticated": False, "compact": True},
+    )
+
+    row = result["rows"][0]
+    assert row["tradingview_symbol"] is None
+    assert row["flags"]["technical_mapping_unavailable"] is True
+    assert "metadata unresolved" in row["tradingview_error"]
+    assert result["unsafe_for_execution"] is True
+
+
+def test_tradingview_exchange_from_market_prioritizes_exact_venue():
+    from avanza_mcp.core.snapshots import tradingview_exchange_from_market
+
+    assert tradingview_exchange_from_market("NASDAQ Stockholm") == "OMXSTO"
+    assert tradingview_exchange_from_market("NYSE Arca") == "NYSEARCA"
+    assert tradingview_exchange_from_market("NYSE American") == "NYSEAMERICAN"
+    assert tradingview_exchange_from_market("New York Stock Exchange") == "NYSE"
 
 
 def test_tradingview_session_lifecycle_helpers(tmp_path, monkeypatch):

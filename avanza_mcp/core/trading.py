@@ -26,6 +26,7 @@ from avanza_mcp.stoploss_rules import (
     normalize_stoploss_order_valid_days,
     stoploss_triggered_order_expiry,
 )
+from avanza_mcp.strategy_intent import validate_mcp_stoploss_strategy_intent
 
 
 def build_stop_loss_request_from_fields(fields: dict[str, Any]) -> tuple[StopLossTrigger, StopLossOrderEvent, dict[str, Any]]:
@@ -73,6 +74,8 @@ def build_stop_loss_request_from_fields(fields: dict[str, Any]) -> tuple[StopLos
             "price_type": order_event.price_type.value,
             "short_selling_allowed": order_event.short_selling_allowed,
         },
+        "strategy_intent": fields.get("strategy_intent"),
+        "strategy_reason": fields.get("strategy_reason"),
         "warnings": [],
     }
     return trigger, order_event, preview
@@ -170,6 +173,12 @@ class CoreTradingMixin:
         source: str = "tui",
     ) -> Any:
         avanza = self.require_connection()
+        self.ensure_stoploss_strategy_registry_writable()
+        strategy_warnings = validate_mcp_stoploss_strategy_intent(
+            preview,
+            preview,
+            live=True,
+        )
         self.write_log("[red]Placing live stop-loss request:[/red]")
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
@@ -186,16 +195,58 @@ class CoreTradingMixin:
                 stop_loss_trigger=trigger,
                 stop_loss_order_event=order_event,
             )
-            try:
-                delete_result = avanza.delete_stop_loss_order(account_id, replace_stoploss_id)
-                protection_state = "replaced"
-            except Exception as exc:
-                delete_result = {"error": str(exc)}
+            readback = self.stoploss_readback_match(avanza, preview, result)
+            metadata_error = ""
+            if readback is not None:
+                try:
+                    self.persist_stoploss_strategy_from_preview(
+                        preview,
+                        readback,
+                        source=f"{source.upper()}_EDIT",
+                    )
+                    readback = self.enrich_stoploss_strategy_row(readback)
+                except Exception as exc:
+                    metadata_error = str(exc)
+            else:
+                metadata_error = "Exact replacement readback was unavailable or ambiguous."
+
+            if metadata_error:
+                delete_result = {
+                    "skipped": True,
+                    "reason": (
+                        "Replacement metadata was not verified; old stop retained."
+                    ),
+                }
                 protection_state = "duplicate_protection"
                 self.write_log(
-                    f"[yellow]Warning:[/yellow] replacement stop-loss placed, but deleting the old one "
-                    f"({replace_stoploss_id}) failed: {exc}. BOTH stops may now be active — review and delete manually."
+                    "[yellow]Warning:[/yellow] replacement stop-loss placed, but "
+                    f"the old one ({replace_stoploss_id}) was retained because "
+                    f"strategy metadata was not verified: {metadata_error}."
                 )
+            else:
+                try:
+                    delete_result = avanza.delete_stop_loss_order(
+                        account_id,
+                        replace_stoploss_id,
+                    )
+                    protection_state = "replaced"
+                except Exception as exc:
+                    delete_result = {"error": str(exc)}
+                    protection_state = "duplicate_protection"
+                    self.write_log(
+                        "[yellow]Warning:[/yellow] replacement stop-loss placed, "
+                        f"but deleting the old one ({replace_stoploss_id}) failed: "
+                        f"{exc}. BOTH stops may now be active."
+                    )
+            metadata_cleanup_error = ""
+            if protection_state == "replaced":
+                try:
+                    self.remove_stoploss_strategy(
+                        account_id,
+                        replace_stoploss_id,
+                    )
+                except Exception as exc:
+                    metadata_cleanup_error = str(exc)
             self.record_event(
                 "trading",
                 f"live_stoploss_replace_from_{source}",
@@ -205,10 +256,25 @@ class CoreTradingMixin:
                     "protection_state": protection_state,
                     "request": preview,
                     "result": result,
+                    "strategy_metadata_error": metadata_error,
+                    "strategy_metadata_cleanup_error": metadata_cleanup_error,
                 },
             )
             if isinstance(result, dict):
-                result = {**result, "replaced_stop_loss_id": replace_stoploss_id, "protection_state": protection_state}
+                result = {
+                    **result,
+                    "replaced_stop_loss_id": replace_stoploss_id,
+                    "protection_state": protection_state,
+                    "readback": readback,
+                    "strategy_metadata_status": (
+                        (readback or {}).get("strategy_metadata_status")
+                        if readback
+                        else "NOT_RECORDED"
+                    ),
+                    "strategy_metadata_error": metadata_error or None,
+                    "strategy_metadata_cleanup_error": metadata_cleanup_error or None,
+                    "strategy_warnings": strategy_warnings,
+                }
         else:
             result = avanza.place_stop_loss_order(
                 parent_stop_loss_id="0",
@@ -217,7 +283,41 @@ class CoreTradingMixin:
                 stop_loss_trigger=trigger,
                 stop_loss_order_event=order_event,
             )
-            self.record_event("trading", f"live_stoploss_set_from_{source}", {"request": preview, "result": result})
+            readback = self.stoploss_readback_match(avanza, preview, result)
+            metadata_error = ""
+            if readback is not None:
+                try:
+                    self.persist_stoploss_strategy_from_preview(
+                        preview,
+                        readback,
+                        source=f"{source.upper()}_SET",
+                    )
+                    readback = self.enrich_stoploss_strategy_row(readback)
+                except Exception as exc:
+                    metadata_error = str(exc)
+            else:
+                metadata_error = "Exact live stop-loss readback was unavailable or ambiguous."
+            self.record_event(
+                "trading",
+                f"live_stoploss_set_from_{source}",
+                {
+                    "request": preview,
+                    "result": result,
+                    "strategy_metadata_error": metadata_error,
+                },
+            )
+            if isinstance(result, dict):
+                result = {
+                    **result,
+                    "readback": readback,
+                    "strategy_metadata_status": (
+                        (readback or {}).get("strategy_metadata_status")
+                        if readback
+                        else "NOT_RECORDED"
+                    ),
+                    "strategy_metadata_error": metadata_error or None,
+                    "strategy_warnings": strategy_warnings,
+                }
         return result
 
     def submit_paper_order(self, preview: dict[str, Any], instrument: str, *, source: str = "tui") -> dict[str, Any]:
@@ -263,6 +363,21 @@ class CoreTradingMixin:
         kind = target.get("kind", "")
         if kind == "Stop-loss":
             result = avanza.delete_stop_loss_order(account_id, identifier)
+            try:
+                metadata_removed = self.remove_stoploss_strategy(
+                    account_id,
+                    identifier,
+                )
+                metadata_error = ""
+            except Exception as exc:
+                metadata_removed = False
+                metadata_error = str(exc)
+            if isinstance(result, dict):
+                result = {
+                    **result,
+                    "strategy_metadata_removed": metadata_removed,
+                    "strategy_metadata_cleanup_error": metadata_error or None,
+                }
             event_name = f"live_stoploss_cancel_from_{source}"
         else:
             result = avanza.delete_order(account_id, identifier)

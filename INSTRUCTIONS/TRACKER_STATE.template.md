@@ -18,10 +18,13 @@ This is the live working ledger for stop-loss coverage, buy-back state, recent s
 |---|---|
 | Refresh scope | Update this file after every material portfolio review, heartbeat repair pass, stop-loss mutation, buy order mutation, triggered sell, filled buy-back, or tracker-state change. |
 | Account independence | Track each loaded account separately. A buy-back in one account does not cover another account. |
-| Tracker status | Every one-share/unit tracker must be classified as `NO BUY-BACK`, `GLIDE/DEEP ONLY`, `HAS PERSISTENT BUY STOP`, `HAS FIXED BUY ORDER`, `HOLD TRACKER ONLY`, or `THESIS BROKEN / AVOID`. Prefer `HAS PERSISTENT BUY STOP` for fixed buy-back ladders that should survive market close. |
-| Cash drift | If buying power is high while market stance is constructive, deep/gliding-only buy-backs are not enough. Add or propose near-current, below-sale, and deeper stages unless the thesis is broken. |
-| Recent sells | Every material recent sell needs an active same-account buy-back plan or an explicit no-reentry reason. |
-| Stops | Sell-side stop coverage normally should equal current holding minus one tracker unit. Status `ERROR` is unprotected. |
+| Tracker status | Every one-share/unit tracker must be classified as `REBUILD`, `PARTIAL PARTICIPATION`, `DEEP RESIDUAL`, `HOLD CURRENT EXPOSURE`, `REVIEW ONLY`, or `THESIS BROKEN / NO REENTRY`. A tracker never authorizes a BUY by itself. |
+| Cash drift | Compare buying power with all conditional BUY notional. Optional growth must preserve at least `2%` post-conditional account-capital headroom unless an equal-or-larger lower-ranked commitment is displaced first. |
+| Recent sells | Every material recent sell needs a forward-looking classification. Historical loss, missed upside, and the prior sale price never make full same-ticker recovery mandatory. |
+| Stops | Record the exact approved tactical/profit-harvest `Antal` and retained-core floor. `Holding - 1` is only a mechanical marker-preserving maximum. Recovered/current shares default to core and receive no automatic SELL. Status `ERROR` is unprotected. |
+| Whole-position plans | Require an exact `avanza_position_strategy_audit` after live refresh. Any holding, stop, open-order, missing-plan, stale-plan, or registry drift remains review-blocking until the position plan is explicitly reconciled. |
+| Active-order plans | When an exact implementation ledger exists, every recovery, factor, capacity, and displacement artifact must use the same live-source timestamp and reconcile exact stop IDs, sides, counts, statuses, and notional. Any contradiction or stale estimated-order source remains review-blocking. |
+| Historical transaction identity | If transaction IDs are unavailable, retain raw and exact-text-deduplicated floor views. Label the identity caveat, use the floor for churn grading, preserve the raw upper-bound view, and block any decision that changes materially between the two. |
 | Crypto-linked products | Crypto-linked buy-backs and sell stops must be reviewed as one combined strategy. Avanza stops/orders cannot guarantee closed-market or gap protection. |
 
 ## Session Snapshot
@@ -34,6 +37,7 @@ This is the live working ledger for stop-loss coverage, buy-back state, recent s
 | Account summary | `<per-account total value / buying power summary, or omit in public template>` |
 | Strategy note | `<short current-state note>` |
 | Repair readback | `<stop-loss/open-order counts by account>` |
+| Strategy-plan audit | `<per-account recorded/missing/mismatch/stale counts>` |
 | Cash caveat | Buy-side stop-losses do not reserve buying power the way regular buy orders do. Displayed buying power must be compared with conditional buy-stop notional. |
 
 ## Account `<ACCOUNT_LABEL_A>`

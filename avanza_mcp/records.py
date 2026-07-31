@@ -721,6 +721,8 @@ def transaction_amount(item: dict[str, Any]) -> float | None:
 
 
 def instrument_is_eth_like(name: Any, orderbook_id: Any = "") -> bool:
+    if str(orderbook_id or "").strip() == "791709":
+        return True
     text = compact_filter_text(f"{name} {orderbook_id}")
     return any(token in text for token in ("ethereum", "ether", "ethusd", "etheur", "eth xbt"))
 
@@ -873,11 +875,18 @@ def summarize_stop_protection(position: dict[str, Any] | None, stoplosses: list[
         for item in stoplosses
         if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "BUY"
     )
-    failed_volume = sum(
+    failed_statuses = {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+    failed_sell_volume = sum(
         stop_loss_volume(item)
         for item in stoplosses
-        if str(item.get("status", "")).upper() in {"ERROR", "FAILED", "REJECTED"}
+        if str(item.get("status", "")).upper() in failed_statuses and stop_loss_side(item) == "SELL"
     )
+    failed_buy_volume = sum(
+        stop_loss_volume(item)
+        for item in stoplosses
+        if str(item.get("status", "")).upper() in failed_statuses and stop_loss_side(item) == "BUY"
+    )
+    failed_volume = failed_sell_volume + failed_buy_volume
     gap = max(holding_volume - active_sell_volume, 0.0)
     overcoverage = max(active_sell_volume - holding_volume, 0.0)
     return {
@@ -885,9 +894,13 @@ def summarize_stop_protection(position: dict[str, Any] | None, stoplosses: list[
         "active_sell_stop_volume": active_sell_volume,
         "active_buy_stop_volume": active_buy_volume,
         "failed_stop_volume": failed_volume,
+        "failed_sell_stop_volume": failed_sell_volume,
+        "failed_buy_stop_volume": failed_buy_volume,
         "sell_protection_gap": gap,
+        "mechanical_full_holding_sell_gap": gap,
         "sell_overcoverage": overcoverage,
         "is_fully_sell_protected": holding_volume <= active_sell_volume if holding_volume > 0 else True,
+        "coverage_semantics": "MECHANICAL_FULL_HOLDING_ONLY",
     }
 
 

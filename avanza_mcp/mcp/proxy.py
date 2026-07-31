@@ -73,25 +73,68 @@ def mcp_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def read_mcp_message(stream: Any) -> dict[str, Any] | None:
+MCP_STDIO_NEWLINE = "newline"
+MCP_STDIO_CONTENT_LENGTH = "content-length"
+
+
+def read_mcp_message_frame(
+    stream: Any,
+) -> tuple[dict[str, Any] | None, str]:
+    """Read standard newline-delimited MCP, with legacy framing fallback."""
+
+    first_line = stream.readline()
+    while first_line in (b"\r\n", b"\n"):
+        first_line = stream.readline()
+    if first_line == b"":
+        return None, MCP_STDIO_NEWLINE
+
+    stripped = first_line.strip()
+    if stripped.startswith((b"{", b"[")):
+        payload = json.loads(stripped.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Expected an MCP JSON-RPC object.")
+        return payload, MCP_STDIO_NEWLINE
+
     headers: dict[str, str] = {}
+    line = first_line
     while True:
-        line = stream.readline()
-        if line == b"":
-            return None
         if line in (b"\r\n", b"\n"):
             break
-        key, _, value = line.decode("utf-8").partition(":")
+        key, separator, value = line.decode("utf-8").partition(":")
+        if not separator:
+            raise ValueError("Invalid MCP stdio frame.")
         headers[key.lower()] = value.strip()
+        line = stream.readline()
+        if line == b"":
+            return None, MCP_STDIO_CONTENT_LENGTH
+
     length = int(headers.get("content-length", "0"))
     if length <= 0:
-        return None
-    return json.loads(stream.read(length).decode("utf-8"))
+        raise ValueError("Invalid MCP Content-Length frame.")
+    payload = json.loads(stream.read(length).decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Expected an MCP JSON-RPC object.")
+    return payload, MCP_STDIO_CONTENT_LENGTH
 
 
-def write_mcp_message(stream: Any, payload: dict[str, Any]) -> None:
+def read_mcp_message(stream: Any) -> dict[str, Any] | None:
+    payload, _framing = read_mcp_message_frame(stream)
+    return payload
+
+
+def write_mcp_message(
+    stream: Any,
+    payload: dict[str, Any],
+    *,
+    framing: str = MCP_STDIO_NEWLINE,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+    if framing == MCP_STDIO_CONTENT_LENGTH:
+        stream.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
+    elif framing == MCP_STDIO_NEWLINE:
+        stream.write(body + b"\n")
+    else:
+        raise ValueError(f"Unsupported MCP stdio framing: {framing}")
     stream.flush()
 
 
@@ -108,7 +151,7 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
     output_stream = sys.stdout.buffer
 
     while True:
-        message = read_mcp_message(input_stream)
+        message, framing = read_mcp_message_frame(input_stream)
         if message is None:
             return
         method = message.get("method")
@@ -129,13 +172,25 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
                             "serverInfo": {"name": "avanza_cli", "version": APP_VERSION},
                         },
                     ),
+                    framing=framing,
                 )
             elif method == "notifications/initialized":
                 continue
             elif method == "ping":
-                write_mcp_message(output_stream, mcp_success(message_id, {}))
+                write_mcp_message(
+                    output_stream,
+                    mcp_success(message_id, {}),
+                    framing=framing,
+                )
             elif method == "tools/list":
-                write_mcp_message(output_stream, mcp_success(message_id, {"tools": mcp_server.mcp_tools_catalog()}))
+                write_mcp_message(
+                    output_stream,
+                    mcp_success(
+                        message_id,
+                        {"tools": mcp_server.mcp_tools_catalog()},
+                    ),
+                    framing=framing,
+                )
             elif method == "tools/call":
                 tool_name = str(params.get("name", ""))
                 arguments = params.get("arguments") or {}
@@ -143,8 +198,20 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
                     raise ValueError("arguments must be an object.")
                 session = load_mcp_session(session_file)
                 payload = call_mcp_bridge(session, tool_name, arguments)
-                write_mcp_message(output_stream, mcp_success(message_id, mcp_tool_response(payload)))
+                write_mcp_message(
+                    output_stream,
+                    mcp_success(message_id, mcp_tool_response(payload)),
+                    framing=framing,
+                )
             else:
-                write_mcp_message(output_stream, mcp_error(message_id, -32601, f"Unknown method: {method}"))
+                write_mcp_message(
+                    output_stream,
+                    mcp_error(message_id, -32601, f"Unknown method: {method}"),
+                    framing=framing,
+                )
         except Exception as exc:
-            write_mcp_message(output_stream, mcp_error(message_id, -32000, str(exc)))
+            write_mcp_message(
+                output_stream,
+                mcp_error(message_id, -32000, str(exc)),
+                framing=framing,
+            )

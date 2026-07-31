@@ -34,7 +34,7 @@ These instructions capture the user's trading workflow preferences for future LL
 - A tracker should not be marked as adequately monitored just because a deep buy-back exists. Classify each tracker as `NO BUY-BACK`, `GLIDE/DEEP ONLY`, `HAS PERSISTENT BUY STOP`, `HAS FIXED BUY ORDER`, `HOLD TRACKER ONLY`, or `THESIS BROKEN / AVOID`.
 - For fixed tracker buy-back ladders that should survive market close, prefer persistent buy-side stop-losses over ordinary same-day regular buy orders. A same-day regular buy order is intraday-only and must be marked as such in `INSTRUCTIONS/TRACKER_STATE.md`, or converted before close.
 - Buy-side stop-losses do not reserve buying power the way regular open buy orders do. Do not treat a higher buying-power number as free cash until conditional buy-stop notional has been estimated.
-- If market stance is constructive and buying power is building, flag sell-heavy drift. Require either near-current, below-sale, and deeper buy-back stages for intact theses, or an explicit risk-off/no-reentry decision.
+- If market stance is constructive and buying power is building, flag sell-heavy drift. For intact theses, propose an exact participation-plus-residual plan or document an explicit wait/risk-off decision; do not force a near-current row merely because cash exists.
 - Update the tracker state file at the end of every review/action turn that changes or discovers stop coverage, buy-back coverage, recent sells, or tracker status.
 
 ## Avanza MCP Operating Rules
@@ -69,7 +69,7 @@ These instructions capture the user's trading workflow preferences for future LL
 - Use `session_id` only where paper-ledger tools require it for paper strategy grouping.
 - Use `avanza_sessions` to list loaded authenticated TUI sessions before cross-account analysis. Then call `avanza_accounts` for each tenant session and build an explicit account map.
 - For single-instrument trading checks, prefer focused tools before large dumps: `avanza_position`, `avanza_instrument_state`, `avanza_instrument_stoplosses`, `avanza_instrument_open_orders`, and `avanza_instrument_transactions`.
-- For portfolio-level protection checks, prefer compact summary tools: `avanza_protection_gaps`, `avanza_sold_today_buyback_state`, `avanza_recent_fills_needing_protection`, `avanza_verify_no_raw_failed_orders`, and `avanza_verify_protection`.
+- For portfolio-level protection checks, prefer compact summary tools: `avanza_protection_gaps`, `avanza_sold_today_buyback_state`, `avanza_recent_fills_needing_protection`, `avanza_verify_no_raw_failed_orders`, and `avanza_verify_protection`. Pass exact strategy-classified SELL targets for actionable coverage; default/current-active-baseline mode must not infer a full-core exit.
 - For multi-account portfolio reviews, read each account explicitly with `tenant_session_id` plus `account_id`. Use focused tools when possible; use broad tools such as `avanza_portfolio`, `avanza_stoplosses`, `avanza_open_orders`, `avanza_ongoing_orders`, `avanza_transactions`, `avanza_live_snapshot`, `avanza_realtime_quotes`, and `avanza_account_performance` only when the full account view is needed.
 - `avanza_select_session` and `avanza_select_account` are read-only context switches. Prefer explicit scoped reads over switching context when reviewing multiple accounts.
 - For mutations, never depend on whatever account happens to be selected in the UI. Pass the intended `tenant_session_id` and `account_id` when the tool supports them, include `confirm: true` only after explicit current-thread authorization, verify readback on the same scoped account, and revoke live authorization afterward.
@@ -94,6 +94,11 @@ These instructions capture the user's trading workflow preferences for future LL
 - Use `avanza_stoploss_edit` as the default MCP command for updating an existing stop-loss.
 - Use `avanza_stoploss_set` only for creating a new stop-loss.
 - Use `avanza_stoploss_delete` only for deleting an existing stop-loss.
+- Every live MCP stop set/batch item must include `strategy_intent` and a concise `strategy_reason`. Preserve intent during courtage migration; `DEEP_RESIDUAL` must remain a fixed monetary `LESS_OR_EQUAL` BUY unless a fresh exact strategy change is approved.
+- Run `avanza_stoploss_strategy_audit` for both scoped accounts before returning a clean monitoring result. Every active row must have `strategy_metadata_status=RECORDED`; `MISSING`, `STALE_MISMATCH`, or `REGISTRY_UNAVAILABLE` blocks mutation for that row and must be reported or reconciled first.
+- Run `avanza_position_strategy_audit` for both scoped accounts after every live refresh and before a clean result or broker mutation. Every tracked account/orderbook must be `RECORDED` with zero holding, stop-exposure, open-order, missing-plan, stale-plan, or registry-availability issue.
+- A fill or approved order change intentionally creates whole-position drift. Review the new state against thesis, strategy class, event gate, capacity, friction, and position intent before rebaselining; never auto-accept drift merely because it came from an expected fill.
+- Both local strategy registries record reviewed intent only. Neither is standing authorization to place, edit, delete, or replace a broker order.
 - Default every stop-loss set/edit payload to `order_valid_days = 1` and keep it explicit in proposals/mutations unless a specific market-safe exception is proven.
 
 ### External Data MCP Standard (TradingView / Zacks / SEC / FRED)
@@ -131,6 +136,25 @@ These instructions capture the user's trading workflow preferences for future LL
   - upcoming earnings,
   - analyst expectations and TradingView-style metrics when available,
   - sector/theme exposure and portfolio concentration.
+
+## Portfolio Stability And Recovery Standard
+
+- `holding - 1` is only a mechanical marker-preserving SELL ceiling. It must never determine the strategic SELL volume.
+- A mechanical full-holding protection gap is diagnostic only. It is never trade authorization and must not be reported as a strategic SELL gap unless the instrument has an explicit exact protected `Antal` or the user deliberately requested a percentage audit.
+- Use exact-target mode for actionable SELL coverage. Default/current-active-baseline mode may surface failed SELL rows and overcoverage, but it must not infer that an unprotected core needs a SELL stop.
+- For an intact-thesis quality or long-term core, retain at least `75%` as core by default and cap any tactical/profit-harvest slice at `25%`. For a volatile high-beta or recovery name, retain at least `50%` as core and cap the tactical slice at `50%`. A larger SELL requires a named thesis break, risk-off/full-exit decision, or fresh exact approval.
+- A recovered or newly bought share is `CORE / HOLD` unless an approved plan explicitly classifies an exact `Antal` as tactical. Do not reflexively place another SELL on every recovery fill.
+- After one tactical stop/rebuild cycle, do not arm a substantially similar cycle for five regular sessions unless a verified new catalyst, thesis change, support failure, or fresh exact approval resets the decision.
+- Before a tactical round trip, model commission, spread, FX, slippage, and higher-price recovery risk. Expected benefit must reasonably exceed the complete modeled friction by at least `3x`.
+- Treat a non-locked ticket as economically immaterial execution noise when its modeled `3x` full-friction hurdle is at least `20%` and its post-fill notional is below `0.02%` of account capital. Cancel or consolidate it rather than paying minimum courtage for negligible impact, unless a named exception or exact current-thread decision preserves it. This execution-hygiene cleanup is not capacity harvesting.
+- Apply a rolling 20-session churn brake. If equity turnover exceeds `3x` account value or commissions exceed `0.20%` of account value, freeze new discretionary stop/rebuy cycles pending a postmortem.
+- Historical realized loss, missed upside, and commission damage are process evidence, never same-ticker BUY authority. Recover at portfolio level by ranking forward thesis quality, technical/event state, exposure need, concentration, capacity, and full friction. Do not average down or increase a target merely to get back to break-even.
+- When the transaction source exposes no stable transaction ID, retain both the raw ledger and an exact-text-deduplicated conservative floor. Label both explicitly: raw rows can contain API duplicates, while exact-text deduplication can remove genuinely separate identical fills. Use the conservative floor for churn grades and historical damage diagnostics, preserve the raw view as the upper-bound source record, and never present either interpretation as exact. If a strategy conclusion changes between the two views, mark it data-blocked rather than choosing the convenient result.
+- Keep `Mini` as the standing courtage class for predominantly small tickets. Calculate the cheapest class for an exact larger ticket only when needed, enter that order, and return to `Mini`. Do not replace a trailing row merely to migrate courtage because replacement resets its high-water or low-water state.
+- BUY stops do not reserve buying power. Estimate every conditional BUY plus open/raw order notional and a reasonable FX/fee/spread/slippage buffer. If post-conditional headroom is below `2%` of total account capital, optional growth is blocked until an equal-or-lower-ranked conditional commitment is removed or reduced.
+- Require an independent current strategy for every held instrument: catalyst, decision, add gate, sell/exit gate, thesis invalidation, risk-budget rule, factor/theme context, friction and loss-recovery rules, and next review. Generic “keep current holding,” “monitor normally,” or undated “review later” text is incomplete and blocks a clean result.
+- A strategy master or registry is analysis and audit metadata only. Refresh official evidence plus exact live holdings, quote/spread/technicals, orders/errors, capacity, factors, and friction at the decision gate; never treat a dated plan as standing trade authorization.
+- When an exact active-order implementation ledger exists, every downstream recovery, factor, capacity, and displacement artifact must carry the same live-source timestamp and reconcile its exact stop IDs, sides, row counts, statuses, and modeled notional. A stale estimated-order source or revived older keep/replace/cancel decision blocks clean state. The ledger remains analysis/audit context and never mutation authority.
 
 ## Structural Momentum / Theme Re-Rating Gate
 
@@ -232,10 +256,10 @@ The user does not want vague stop-loss tables. Always show the exact `Max ned / 
 
 ## Volume Rule
 
-- For stop-loss sell volume, the user usually wants to sell `total holding - 1`.
-- Keep one share/unit in the portfolio for tracking and easier buy-back monitoring.
-- Example: if holding is `2878`, stop-loss `Antal` should normally be `2877`.
-- If an instrument does not support this cleanly, explain the exception before acting.
+- Classify every protected `Antal` before creating or accepting a SELL: `CORE / HIGH-CONVICTION HOLD`, `TRADING / TACTICAL SLICE`, `PROFIT-HARVEST SLICE`, `TRACKER / MARKER ONLY`, `EXIT / THESIS BROKEN`, or a named exception.
+- `holding - 1` is the absolute mechanical ceiling only for an explicitly classified tactical/profit-harvest slice. It is not a target.
+- Preserve one marker share/unit by default when one current share/unit is worth `15,000 SEK` or less. For higher-priced instruments, document the marker exception.
+- A core SELL requires an exact retained-core decision plus either same-account paired recovery for the protected `Antal`, an explicit tactical/no-auto-rebuild classification, or an explicit no-reentry/risk-off decision.
 
 ## Tracker Buy-Back Gate
 
@@ -253,7 +277,7 @@ A one-share or one-unit tracker is not passive clutter. It is an active reminder
   - or a thesis-broken position to avoid.
 - Do not let a tracker remain unreviewed when a catalyst is near. If the tracker has an upcoming report, recent report, strong volume/relative-strength move, analyst revision, product/customer news, or sector read-through, force an explicit action choice: staged add before event, buy-back only on exact pullback/reclaim levels, hold tracker only, or avoid because the thesis is broken.
 - `Hold tracker only` is allowed only after explicitly comparing the clue cluster, account cash/risk, expected report setup, and missed-upside risk. It must include a concrete reason and a future trigger; otherwise propose a controlled add or pullback entry.
-- `GLIDE/DEEP ONLY` is not enough for an intact tracker or recently sold slice when the account has cash and the market stance is not explicitly risk-off. Add a small fixed near-current or below-sale persistent buy-stop, or document a concrete no-reentry reason.
+- `GLIDE/DEEP ONLY` can be the correct state when a tracker is in technical breakdown, event-gated, overextended, capacity-blocked, inside the churn brake, or intentionally capped as speculative exposure. Document the concrete gate and next check; do not force a near-current row merely because cash exists.
 - In every portfolio review, separately list trackers/recently reduced names that need a buy-back decision. Stop-loss repair tables are not enough.
 - Every stop-triggered sale creates a buy-back decision state for the sold `Antal`, even when the account still has a meaningful remaining holding. Do not limit this workflow to one-share trackers.
 - If a recent sale reduced exposure, review transaction history to determine the sold `Antal`, sold price, realized result, remaining `Antal`, and whether current price/catalyst setup justifies rebuilding some or all of the sold exposure.
@@ -274,11 +298,11 @@ A one-share or one-unit tracker is not passive clutter. It is an active reminder
 Weak fundamentals do not cancel the obligation to evaluate a tactical trade when a tracker or recently sold name is moving on squeeze, retail-flow, sector-sympathy, or narrative catalysts.
 
 - This gate must run before normal stop-loss maintenance. Protection repair is not enough if the account has only a marker while the asset is making the move the marker was meant to catch.
-- If a tracker/recently sold name is up sharply, has abnormal volume, appears in market movers/heatmaps, trends on retail channels, or has a fresh narrative catalyst, force a tactical decision even if the long-term business quality is poor.
-- Separate the two questions explicitly: `investment thesis` versus `trade setup`. A poor long-term thesis can still justify a small, tightly protected momentum tranche or a close pullback/continuation ladder.
-- Do not let "bad fundamentals", "meme risk", "too speculative", or "already extended" become a silent no-action default. Convert that risk into smaller `Antal`, tighter sell protection, and exact no-chase limits.
-- For one-share/tiny trackers with active squeeze behavior, deep crash-only buy-backs are not enough. Add or propose a closer tactical ladder if the setup is still live; keep deeper ladders only as separate crash re-entry plans.
-- When declining to enter a tracker that is already squeezing, the report must include the price/volume level that would invalidate the no-buy stance and the maximum chase price where a small tactical entry would still be allowed.
+- If a tracker/recently sold name is up sharply, has abnormal volume, appears in market movers/heatmaps, trends on retail channels, or has a fresh narrative catalyst, force a documented decision even if no trade qualifies.
+- Separate `investment thesis` from `trade setup`. A poor long-term thesis does not become BUY authority merely because momentum is strong; any proposed tactical tranche must still clear the churn, capacity, concentration, and `3x` full-friction gates.
+- Do not let "bad fundamentals", "meme risk", "too speculative", or "already extended" become an unexplained no-action default. Convert the evidence into an explicit avoid, marker-only, wait-for-reversal, or exact small tactical proposal.
+- A one-share/tiny tracker with squeeze behavior does not automatically require a closer ladder. Use a close participation row only after a named setup and exact approval; otherwise keep the deliberate deep/marker state and document the trigger that would change it.
+- When declining to enter a tracker that is already squeezing, include the evidence or price/volume state that would invalidate the no-buy stance. Do not invent a mandatory chase price.
 - If the tracker doubles or moves another `20%+` after a no-buy call, treat it as a missed tactical gate and update memory immediately.
 
 ## Coordinated Sell/Buy-Back Bands
@@ -290,7 +314,7 @@ Active sell-side protection and active buy-back orders for the same instrument a
 - Require a deliberate dead-zone between the sell/stop-sale level and the first re-entry level for volatile trackers, crypto trackers, high-beta names, and names sold after a spike. The first buy-back should normally be meaningfully below the recent sale level.
 - For volatile trackers and crypto-linked products, prefer staged deeper buy-backs over one large order. A useful default is three or four tranches separated by wide enough drops to avoid churn, such as `12% / 18% / 26% / 34%`, adjusted for current volatility, spread, and thesis risk.
 - Total buy-back `Antal` should normally tie to the recently sold `Antal` or an explicit target exposure. If the proposed buy-back volume is higher or lower, say why.
-- Existing sell-side stops protect only current holdings. If a buy-back fills, create or recommend new sell-side protection only for the filled `Antal`; do not create sell stops for unfilled future buy-backs.
+- Existing sell-side stops protect only current holdings. If a buy-back fills, classify the filled shares before any SELL decision; they are `CORE / HOLD` by default. Create SELL protection only for an explicitly approved tactical/profit-harvest `Antal`, and never for unfilled future buy-backs.
 - If both sell stops and buy-back stops are active, the final report must say whether the combination can churn, and why the spacing prevents selling weakness and then buying back too close to the sale.
 - If the MCP/tooling cannot enforce an absolute maximum buy-back price separately from the stop-loss `Kurs`, state that limitation and compensate with wider trigger spacing or smaller first tranches.
 
@@ -536,7 +560,7 @@ Lesson:
 
 Preferred volatile-tracker strategy:
 
-- For high-profit/high-exposure volatile assets, prefer a staged stop-loss ladder over one full-position stop.
+- For an explicitly approved volatile tactical/profit-harvest slice, a staged stop-loss ladder can be preferable to one stop for that exact slice. Do not infer that the full holding belongs in the ladder.
 - The purpose is to protect profit in levels while keeping upside exposure if only the first tier triggers.
 - A useful generic ladder pattern from prior analysis was:
 
@@ -547,10 +571,10 @@ Preferred volatile-tracker strategy:
 | 3 | `12% / 98%` | Crash protection with better fill chance |
 
 - The third tier can use `12% / 98%` instead of `12% / 99%` because a 12% drawdown is no longer normal noise; fill reliability becomes more important than the last 1% of price.
-- When splitting a position into tiers, the order volumes must sum to `total holding - 1`, so one tracking unit remains.
-- Split tier volumes from the current live holding size, not from stale examples. For three equal tiers, divide `total holding - 1` as evenly as possible and leave one tracking unit.
-- Do not create a ladder on top of an existing full-position stop. Replace the existing single stop with the ladder to avoid volume conflicts.
-- When calculating tier volumes, account for reduced holdings after earlier tiers execute. The combined active stop volume must not exceed the position size minus the one tracking unit.
+- When splitting an approved tactical slice into tiers, the order volumes must sum to the exact approved tactical `Antal`, not `holding - 1`.
+- Split tier volumes from the approved current tactical slice, never from stale examples or the mechanical marker ceiling.
+- Do not create a ladder on top of an overlapping existing stop. Replace or remove the conflicting row only after exact approval and paired recovery review.
+- The combined active SELL volume must not exceed the approved tactical/profit-harvest `Antal` or the current marker-adjusted mechanical ceiling, whichever is lower.
 
 ## Communication Style
 
@@ -585,6 +609,6 @@ Before creating or changing stop-losses:
 13. If adding is proposed, include target SEK exposure, staged entry logic, and matching protection.
 14. Calculate effective drop for every proposed stop.
 15. Confirm the stop does not accidentally sell below entry when the intent is profit protection.
-16. Set `Antal = total - 1` unless the user says otherwise.
+16. Set `Antal` only to the exact approved tactical/profit-harvest slice. `Holding - 1` is a mechanical ceiling, never a strategic target.
 17. Use paper mode first unless live action was explicitly authorized.
 18. Verify created/updated/deleted stop-losses after execution, and state any event/gap risk that still remains after the repair.

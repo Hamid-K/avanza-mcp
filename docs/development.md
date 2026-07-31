@@ -35,6 +35,11 @@ After this, both `git commit` and `git push` will fail unless `scripts/verify.sh
 
 Use small commits. A commit should describe one coherent change and include matching documentation or tests when behavior changes.
 
+Every behavior-changing code commit must update `CHANGELOG.md` in the same
+tracked change. Do not leave source or test changes only in the working tree;
+after the quality gates pass, commit and push them unless the user explicitly
+requests a local-only change.
+
 Version source of truth is `pyproject.toml` (`project.version`). The runtime surfaces this version in CLI/TUI/MCP.
 
 For each release:

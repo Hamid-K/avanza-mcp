@@ -49,6 +49,8 @@ def test_kernel_state_matches_tui_state(monkeypatch, tmp_path):
         "live_trading_allowed_for_session", "paper_mode_enabled",
         "latest_portfolio_data", "latest_stoploss_items", "latest_open_order_items",
         "update_status_outdated", "live_refresh_inflight",
+        "stoploss_strategy_registry_path",
+        "position_strategy_registry_path",
     ):
         assert getattr(kernel, attr) == getattr(app, attr), attr
     assert kernel.paper_session_path == app.paper_session_path
@@ -251,6 +253,7 @@ def test_stoploss_replacement_places_before_deleting():
     kernel.active_session_id = "s1"
     kernel.selected_account_id = "a1"
     calls = []
+    valid_until = date.today() + timedelta(days=5)
 
     class FakeAvanza:
         def place_stop_loss_order(self, **kwargs):
@@ -261,21 +264,46 @@ def test_stoploss_replacement_places_before_deleting():
             calls.append(("delete", stop_loss_id))
             return {"deleted": True}
 
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "new-1",
+                    "status": "ACTIVE",
+                    "account": {"id": "a1", "name": "Main"},
+                    "orderbook": {"id": "123", "name": "Test"},
+                    "trigger": {
+                        "type": "FOLLOW_DOWNWARDS",
+                        "value": 5.0,
+                        "valueType": "PERCENTAGE",
+                        "validUntil": valid_until.isoformat(),
+                    },
+                    "order": {
+                        "type": "SELL",
+                        "volume": 10,
+                        "price": 2.0,
+                        "priceType": "PERCENTAGE",
+                    },
+                }
+            ]
+
     kernel.avanza = FakeAvanza()
     trigger, order_event, preview = build_stop_loss_request_from_fields(
         {
             "account_id": "a1", "order_book_id": "123",
-            "valid_until": date.today() + timedelta(days=5),
+            "valid_until": valid_until,
             "trigger_type": "follow_downwards", "trigger_value": 5.0,
             "trigger_value_type": "percentage", "order_type": "sell",
             "order_price": 2.0, "volume": 10, "order_valid_days": 1,
             "order_price_type": "percentage",
+            "strategy_intent": "TACTICAL_HARVEST",
+            "strategy_reason": "Unit-test tactical slice.",
         }
     )
     result = kernel.submit_live_stop_loss(trigger, order_event, preview, replace_stoploss_id="old-1", source="test")
     assert calls == ["place", ("delete", "old-1")]  # place strictly first
     assert result["protection_state"] == "replaced"
     assert result["replaced_stop_loss_id"] == "old-1"
+    assert result["strategy_metadata_status"] == "RECORDED"
 
 
 def test_stoploss_replacement_place_failure_keeps_old_stop():
@@ -303,6 +331,8 @@ def test_stoploss_replacement_place_failure_keeps_old_stop():
             "trigger_value_type": "percentage", "order_type": "sell",
             "order_price": 2.0, "volume": 10, "order_valid_days": 1,
             "order_price_type": "percentage",
+            "strategy_intent": "TACTICAL_HARVEST",
+            "strategy_reason": "Unit-test tactical slice.",
         }
     )
     with pytest.raises(RuntimeError, match="duplicate stop rejected"):
@@ -316,6 +346,7 @@ def test_stoploss_replacement_delete_failure_reports_duplicate_protection():
     kernel = make_kernel()
     kernel.active_session_id = "s1"
     kernel.selected_account_id = "a1"
+    valid_until = date.today() + timedelta(days=5)
 
     class FakeAvanza:
         def place_stop_loss_order(self, **kwargs):
@@ -324,15 +355,39 @@ def test_stoploss_replacement_delete_failure_reports_duplicate_protection():
         def delete_stop_loss_order(self, account_id, stop_loss_id):
             raise RuntimeError("delete timed out")
 
+        def get_all_stop_losses(self):
+            return [
+                {
+                    "id": "new-1",
+                    "status": "ACTIVE",
+                    "account": {"id": "a1", "name": "Main"},
+                    "orderbook": {"id": "123", "name": "Test"},
+                    "trigger": {
+                        "type": "FOLLOW_DOWNWARDS",
+                        "value": 5.0,
+                        "valueType": "PERCENTAGE",
+                        "validUntil": valid_until.isoformat(),
+                    },
+                    "order": {
+                        "type": "SELL",
+                        "volume": 10,
+                        "price": 2.0,
+                        "priceType": "PERCENTAGE",
+                    },
+                }
+            ]
+
     kernel.avanza = FakeAvanza()
     trigger, order_event, preview = build_stop_loss_request_from_fields(
         {
             "account_id": "a1", "order_book_id": "123",
-            "valid_until": date.today() + timedelta(days=5),
+            "valid_until": valid_until,
             "trigger_type": "follow_downwards", "trigger_value": 5.0,
             "trigger_value_type": "percentage", "order_type": "sell",
             "order_price": 2.0, "volume": 10, "order_valid_days": 1,
             "order_price_type": "percentage",
+            "strategy_intent": "TACTICAL_HARVEST",
+            "strategy_reason": "Unit-test tactical slice.",
         }
     )
     result = kernel.submit_live_stop_loss(trigger, order_event, preview, replace_stoploss_id="old-1", source="test")

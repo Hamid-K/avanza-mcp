@@ -4,6 +4,7 @@ from datetime import date, timedelta
 TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 
 from avanza_mcp.mcp.proxy import (
+    MCP_STDIO_CONTENT_LENGTH,
     mcp_error,
     mcp_success,
     mcp_tool_response,
@@ -612,6 +613,15 @@ def test_mcp_message_framing_round_trip():
     stream = io.BytesIO()
     payload = mcp_success(1, {"tools": []})
     write_mcp_message(stream, payload)
+    stream.seek(0)
+
+    assert read_mcp_message(stream) == payload
+
+
+def test_mcp_message_legacy_content_length_round_trip():
+    stream = io.BytesIO()
+    payload = mcp_success(1, {"tools": []})
+    write_mcp_message(stream, payload, framing=MCP_STDIO_CONTENT_LENGTH)
     stream.seek(0)
 
     assert read_mcp_message(stream) == payload

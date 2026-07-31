@@ -19,6 +19,7 @@ from avanza_mcp.stoploss_rules import (
     normalize_stoploss_order_valid_days,
     validate_valid_until,
 )
+from avanza_mcp.strategy_intent import validate_mcp_stoploss_strategy_intent
 from avanza_mcp.tui.layout import selected_table_row_key
 from datetime import date
 from textual.widgets import Button, DataTable, Input, Select, Static, Switch
@@ -131,6 +132,8 @@ class TradingMixin:
                 "order_valid_days": self.input_int_value("order-valid-days", "Order valid days"),
                 "order_price_type": self.input_value("order-price-type"),
                 "short_selling_allowed": self.switch_value("short-selling-allowed"),
+                "strategy_intent": self.input_value("strategy-intent"),
+                "strategy_reason": self.input_value("strategy-reason"),
             }
         )
 
@@ -155,6 +158,8 @@ class TradingMixin:
         self.pending_stoploss_edit_id = None
         self.query_one("#stoploss-modal-title", Static).update("New Stop-Loss")
         self.query_one("#place-confirm", Input).value = ""
+        self.query_one("#strategy-intent", Select).value = Select.BLANK
+        self.query_one("#strategy-reason", Input).value = ""
         self.query_one("#place-live", Button).label = "Create Paper Stop-Loss" if self.paper_mode_enabled else "Submit Live Stop-Loss"
 
     def selected_stoploss_item(self) -> dict[str, Any]:
@@ -220,6 +225,14 @@ class TradingMixin:
             )
         self.query_one("#trigger-on-market-maker-quote", Switch).value = bool(trigger.get("triggerOnMarketMakerQuote", False))
         self.query_one("#short-selling-allowed", Switch).value = bool(order.get("shortSellingAllowed", False))
+        strategy_row = self.stoploss_mcp_row(item)
+        strategy_intent = str(strategy_row.get("strategy_intent") or "")
+        self.query_one("#strategy-intent", Select).value = (
+            strategy_intent if strategy_intent else Select.BLANK
+        )
+        self.query_one("#strategy-reason", Input).value = str(
+            strategy_row.get("strategy_reason") or ""
+        )
         self.query_one("#place-confirm", Input).value = ""
         self.query_one("#place-live", Button).label = "Update Paper Stop-Loss" if self.paper_mode_enabled else "Update Live Stop-Loss"
         self.query_one("#stoploss-modal").display = True
@@ -227,8 +240,17 @@ class TradingMixin:
 
     def handle_dry_run(self) -> None:
         _, _, preview = self.build_stop_loss_request()
-        self.apply_stoploss_valid_days_safety(preview, live=False)
+        warnings = self.apply_stoploss_valid_days_safety(preview, live=False)
+        warnings.extend(
+            validate_mcp_stoploss_strategy_intent(
+                preview,
+                preview,
+                live=False,
+            )
+        )
         self.write_log("[yellow]Review-only stop-loss request. No paper or live order is created:[/yellow]")
+        for warning in warnings:
+            self.write_log(f"[yellow]Warning:[/yellow] {warning}")
         for line in stop_loss_request_log_lines(preview):
             self.write_log(line)
 

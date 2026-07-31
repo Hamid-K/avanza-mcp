@@ -317,6 +317,42 @@ def test_stoploss_dry_run_and_paper_place(with_session, runtime):
     assert len(stoplosses["paper_items"]) == 1
 
 
+def test_live_stoploss_review_requires_strategy_intent_and_reason(
+    with_session,
+    runtime,
+):
+    from datetime import date, timedelta
+
+    body = {
+        "order_book_id": "1234",
+        "volume": 2,
+        "trigger_type": "less_or_equal",
+        "trigger_value": 90.0,
+        "trigger_value_type": "monetary",
+        "valid_until": (date.today() + timedelta(days=10)).isoformat(),
+        "order_type": "buy",
+        "order_price": 90.5,
+        "order_price_type": "monetary",
+        "order_valid_days": 1,
+    }
+    runtime.kernel.paper_mode_enabled = False
+    missing = with_session.post("/api/stoplosses/dry-run", json=body)
+    assert missing.status_code == 400
+    assert "strategy_intent is required" in missing.json()["detail"]
+
+    reviewed = with_session.post(
+        "/api/stoplosses/dry-run",
+        json={
+            **body,
+            "strategy_intent": "DEEP_RESIDUAL",
+            "strategy_reason": "Exact fixed residual from a reviewed sold slice.",
+        },
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["preview"]["strategy_intent"] == "DEEP_RESIDUAL"
+    runtime.kernel.paper_mode_enabled = True
+
+
 def test_paper_cancel_flow(with_session):
     review = with_session.post("/api/orders/dry-run", json=_order_body()).json()
     order = with_session.post("/api/orders/place", json={"review_id": review["review_id"]}).json()["order"]
@@ -832,8 +868,11 @@ def test_paper_mode_disable_requires_acknowledge(with_session, runtime):
 def test_verification_failure_surfaces_at_transport_level(with_session, runtime):
     """Issue #2 P1: nested verification failure must not look like a clean ok."""
     kernel = runtime.kernel
-    # the FakeAvanza portfolio holds TestStock with no stop-loss -> a real gap
-    response = kernel.handle_mcp_tool_call("avanza_verify_protection", {"account_id": "acc-1"})
+    # Full-holding coverage is a mechanical diagnostic and must be requested explicitly.
+    response = kernel.handle_mcp_tool_call(
+        "avanza_verify_protection",
+        {"account_id": "acc-1", "coverage_target_percent": 100},
+    )
     assert response["ok"] is True  # the CALL succeeded
     assert response["verification_ok"] is False  # ...but verification did not
     assert response["result"]["gaps"]
@@ -859,7 +898,10 @@ def test_verification_failure_surfaces_at_transport_level(with_session, runtime)
         context.avanza = protected
         context.account_snapshots.clear()
         context.latest_stoploss_items = []
-    response = kernel.handle_mcp_tool_call("avanza_verify_protection", {"account_id": "acc-1"})
+    response = kernel.handle_mcp_tool_call(
+        "avanza_verify_protection",
+        {"account_id": "acc-1", "coverage_target_percent": 100},
+    )
     assert response["ok"] is True
     assert response["verification_ok"] is True
     assert response["result"]["gaps"] == []

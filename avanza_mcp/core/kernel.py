@@ -37,9 +37,11 @@ from avanza_mcp.config import (
     LOG_CATEGORY_FILES,
 )
 from avanza_mcp.core.bridge import CoreBridgeMixin
+from avanza_mcp.core.position_strategy import CorePositionStrategyMixin
 from avanza_mcp.core.refresh import CoreRefreshMixin
 from avanza_mcp.core.sessions import CoreSessionsMixin
 from avanza_mcp.core.snapshots import CoreSnapshotsMixin
+from avanza_mcp.core.stoploss_strategy import CoreStopLossStrategyMixin
 from avanza_mcp.core.trading import CoreTradingMixin
 from avanza_mcp.models import AccountDataSnapshot, AvanzaTenantSession
 from avanza_mcp.paper import load_paper_session, save_paper_session
@@ -51,6 +53,8 @@ if TYPE_CHECKING:
 
 
 class TradingKernel(
+    CorePositionStrategyMixin,
+    CoreStopLossStrategyMixin,
     CoreBridgeMixin,
     CoreSnapshotsMixin,
     CoreSessionsMixin,
@@ -77,6 +81,8 @@ class TradingKernel(
         self.selected_account_id: str | None = None
         self.shutdown_event = threading.Event()
         self.state_lock = threading.RLock()
+        self.init_stoploss_strategy_state()
+        self.init_position_strategy_state()
         self.mcp_scope_original_session_id: str | None = None
         self.mcp_scope_depth = 0
         self.live_refresh_deferred_by_mcp_scope = False

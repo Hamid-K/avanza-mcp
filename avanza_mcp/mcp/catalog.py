@@ -8,6 +8,10 @@ from avanza_mcp.config import (
     TRADINGVIEW_WATCHLIST_ROW_LIMIT,
     TRANSACTION_TYPE_CHOICES,
 )
+from avanza_mcp.strategy_intent import (
+    SELL_STOPLOSS_STRATEGY_INTENTS,
+    STOPLOSS_STRATEGY_INTENTS,
+)
 
 MCP_COMPACT_FILTER_PROPERTIES = {
     "account_id": {"type": "string"},
@@ -17,6 +21,7 @@ MCP_COMPACT_FILTER_PROPERTIES = {
     "side": {"type": "string", "enum": ["BUY", "SELL", "buy", "sell"]},
     "status": {"type": "string"},
     "compact": {"type": "boolean", "default": False},
+    "refresh": {"type": "boolean", "default": False},
 }
 
 MCP_DATE_FILTER_PROPERTIES = {
@@ -27,6 +32,91 @@ MCP_DATE_FILTER_PROPERTIES = {
     "from": {"type": "string"},
     "to": {"type": "string"},
 }
+
+MCP_SELL_COVERAGE_PROPERTIES = {
+    "coverage_target_percent": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100,
+        "description": (
+            "Explicit mechanical percentage target. Omit unless a full/partial holding "
+            "coverage audit is intentionally requested."
+        ),
+    },
+    "coverage_targets": {
+        "type": "array",
+        "description": (
+            "Exact strategy-classified SELL targets. Non-zero targets require intent and reason."
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                "orderbook_id": {"type": ["string", "integer"]},
+                "target_sell_volume": {"type": "number", "minimum": 0},
+                "strategy_intent": {
+                    "type": "string",
+                    "enum": sorted(SELL_STOPLOSS_STRATEGY_INTENTS),
+                },
+                "strategy_reason": {"type": "string"},
+            },
+            "required": ["orderbook_id", "target_sell_volume"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+MCP_POSITION_STRATEGY_ITEM_PROPERTIES = {
+    "order_book_id": {"type": ["string", "integer"]},
+    "instrument": {"type": "string"},
+    "ticker": {"type": ["string", "null"]},
+    "venue": {"type": ["string", "null"]},
+    "holding": {"type": "number", "minimum": 0},
+    "active_buy_volume": {"type": "number", "minimum": 0},
+    "active_sell_volume": {"type": "number", "minimum": 0},
+    "active_buy_count": {"type": "integer", "minimum": 0},
+    "active_sell_count": {"type": "integer", "minimum": 0},
+    "open_buy_volume": {"type": "number", "minimum": 0},
+    "open_sell_volume": {"type": "number", "minimum": 0},
+    "open_buy_count": {"type": "integer", "minimum": 0},
+    "open_sell_count": {"type": "integer", "minimum": 0},
+    "strategy_class": {"type": "string"},
+    "horizon": {"type": "string"},
+    "thesis": {"type": "string"},
+    "gate": {"type": "string"},
+    "audit_status": {"type": "string"},
+    "recommendation": {"type": "string"},
+    "priority": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+    "bucket": {"type": "string"},
+    "stance": {"type": "string"},
+    "next_gate": {"type": "string"},
+    "proposed_correction": {"type": ["string", "null"]},
+    "source_snapshot_at": {"type": "string"},
+}
+MCP_POSITION_STRATEGY_REQUIRED_FIELDS = [
+    "order_book_id",
+    "instrument",
+    "ticker",
+    "venue",
+    "holding",
+    "active_buy_volume",
+    "active_sell_volume",
+    "active_buy_count",
+    "active_sell_count",
+    "open_buy_volume",
+    "open_sell_volume",
+    "open_buy_count",
+    "open_sell_count",
+    "strategy_class",
+    "horizon",
+    "thesis",
+    "gate",
+    "audit_status",
+    "recommendation",
+    "priority",
+    "bucket",
+    "stance",
+    "next_gate",
+]
 
 
 MCP_TOOLS = [
@@ -327,6 +417,7 @@ MCP_TOOLS = [
                 "cookie": {"type": "string"},
                 "sessionid": {"type": "string"},
                 "sessionid_sign": {"type": "string"},
+                **MCP_SELL_COVERAGE_PROPERTIES,
             },
             "additionalProperties": False,
         },
@@ -500,10 +591,113 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_stoplosses",
-        "description": "List stop-loss orders for the selected account, optionally filtered by instrument, side, or status.",
+        "description": "List stop-loss orders with durable strategy intent and missing/mismatch metadata audit, optionally filtered by instrument, side, or status.",
         "inputSchema": {
             "type": "object",
             "properties": MCP_COMPACT_FILTER_PROPERTIES,
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoploss_strategy_audit",
+        "description": "Refresh active broker stop-losses and audit whether every exact row has matching durable local strategy metadata. Read-only at Avanza.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "compact": {"type": "boolean", "default": True},
+            },
+            "required": ["account_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_stoploss_strategy_register_batch",
+        "description": "Dry-run or atomically register strategy metadata for exact active broker stop rows. This changes only the local registry, never Avanza; confirm=true requires MCP R/W but not live-trading authorization.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_session_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+                "prune_stale": {"type": "boolean", "default": False},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "stop_loss_id": {"type": "string"},
+                            "order_book_id": {"type": "string"},
+                            "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                            "volume": {"type": "number"},
+                            "strategy_intent": {
+                                "type": "string",
+                                "enum": list(STOPLOSS_STRATEGY_INTENTS),
+                            },
+                            "strategy_reason": {"type": "string"},
+                        },
+                        "required": [
+                            "stop_loss_id",
+                            "order_book_id",
+                            "side",
+                            "volume",
+                            "strategy_intent",
+                            "strategy_reason",
+                        ],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["account_id", "items"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_position_strategy_audit",
+        "description": (
+            "Refresh exact holdings, active stop exposure, regular open orders, "
+            "and stop-intent metadata for one account, then fail closed on any "
+            "missing or stale reviewed position plan. Read-only at Avanza."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_session_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+            },
+            "required": ["account_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_position_strategy_register_batch",
+        "description": (
+            "Dry-run or atomically register reviewed strategy plans for exact "
+            "live account-position states. Changes only the private local "
+            "registry, never Avanza; confirm=true requires MCP R/W but not "
+            "live-trading authorization."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_session_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+                "prune_stale": {"type": "boolean", "default": False},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": MCP_POSITION_STRATEGY_ITEM_PROPERTIES,
+                        "required": MCP_POSITION_STRATEGY_REQUIRED_FIELDS,
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["account_id", "items"],
             "additionalProperties": False,
         },
     },
@@ -644,13 +838,19 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_protection_gaps",
-        "description": "Return positions whose active sell stop-loss volume is below current holding, plus error stops.",
+        "description": (
+            "Audit exact strategy-classified SELL targets, failed SELL stops, and overcoverage. "
+            "By default it preserves current active SELL volume as the baseline and does not "
+            "infer full-holding protection for core positions."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "account_id": {"type": "string"},
                 "exclude_orderbook_ids": {"type": "array", "items": {"type": ["string", "integer"]}},
                 "exclude_eth": {"type": "boolean", "default": False},
+                "exclude_non_stop_eligible": {"type": "boolean", "default": True},
+                **MCP_SELL_COVERAGE_PROPERTIES,
             },
             "additionalProperties": False,
         },
@@ -670,13 +870,18 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_recent_fills_needing_protection",
-        "description": "Return recently bought non-ETH instruments whose active sell protection is below current holding.",
+        "description": (
+            "Review recent BUY fills without assuming they require full-holding SELL stops. "
+            "Missing SELL coverage is reported only against an explicit percentage or exact "
+            "strategy-classified target."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "account_id": {"type": "string"},
                 "since": {"type": "string"},
                 "exclude_eth": {"type": "boolean", "default": True},
+                **MCP_SELL_COVERAGE_PROPERTIES,
             },
             "additionalProperties": False,
         },
@@ -695,7 +900,10 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_verify_protection",
-        "description": "Compact post-mutation check that positions are covered by active sell stop-losses.",
+        "description": (
+            "Compact post-mutation check against exact strategy SELL targets. Without explicit "
+            "targets, it checks failed SELL rows and overcoverage without inferring a full-holding exit."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -703,6 +911,12 @@ MCP_TOOLS = [
                 "orderbook_ids": {"type": "array", "items": {"type": ["string", "integer"]}},
                 "full_holding": {"type": "boolean", "default": True},
                 "exclude_eth": {"type": "boolean", "default": True},
+                "exclude_orderbook_ids": {
+                    "type": "array",
+                    "items": {"type": ["string", "integer"]},
+                },
+                "exclude_non_stop_eligible": {"type": "boolean", "default": True},
+                **MCP_SELL_COVERAGE_PROPERTIES,
             },
             "additionalProperties": False,
         },
@@ -988,7 +1202,7 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_stoploss_set",
-        "description": "Dry-run or place a stop-loss order. Live placement requires TUI R/W mode and confirm=true.",
+        "description": "Dry-run or place a stop-loss order. Live placement requires TUI R/W mode, confirm=true, strategy_intent, and strategy_reason.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1005,6 +1219,8 @@ MCP_TOOLS = [
                 "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                 "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                 "short_selling_allowed": {"type": "boolean", "default": False},
+                "strategy_intent": {"type": "string", "enum": list(STOPLOSS_STRATEGY_INTENTS)},
+                "strategy_reason": {"type": "string"},
                 "confirm": {"type": "boolean", "default": False},
             },
             "required": [
@@ -1019,7 +1235,7 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_stoploss_set_batch",
-        "description": "Place multiple stop-loss orders with per-item validation/readback. Live placement requires TUI R/W mode, live authorization, and confirm=true.",
+        "description": "Place multiple stop-loss orders with per-item validation/readback. Every live item requires strategy_intent and strategy_reason in addition to TUI R/W mode, live authorization, and confirm=true.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1044,6 +1260,8 @@ MCP_TOOLS = [
                             "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                             "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                             "short_selling_allowed": {"type": "boolean", "default": False},
+                            "strategy_intent": {"type": "string", "enum": list(STOPLOSS_STRATEGY_INTENTS)},
+                            "strategy_reason": {"type": "string"},
                         },
                         "required": ["order_book_id", "trigger_value", "order_price", "volume"],
                         "additionalProperties": False,
@@ -1151,7 +1369,7 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_stoploss_edit",
-        "description": "Dry-run or edit an existing stop-loss (delete old + place new). Supports gliding triggers.",
+        "description": "Dry-run or edit an existing stop-loss (place new + delete old). Live MCP placement requires strategy_intent and strategy_reason.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1169,6 +1387,8 @@ MCP_TOOLS = [
                 "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                 "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                 "short_selling_allowed": {"type": "boolean", "default": False},
+                "strategy_intent": {"type": "string", "enum": list(STOPLOSS_STRATEGY_INTENTS)},
+                "strategy_reason": {"type": "string"},
                 "confirm": {"type": "boolean", "default": False},
             },
             "required": [
@@ -1203,6 +1423,10 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_account_performance",
     "avanza_portfolio",
     "avanza_stoplosses",
+    "avanza_stoploss_strategy_audit",
+    "avanza_stoploss_strategy_register_batch",
+    "avanza_position_strategy_audit",
+    "avanza_position_strategy_register_batch",
     "avanza_open_orders",
     "avanza_open_orders_raw",
     "avanza_ongoing_orders",

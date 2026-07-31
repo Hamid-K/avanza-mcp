@@ -1,5 +1,6 @@
 """Read-only MCP snapshot providers backing the data tools."""
 
+import math
 import os
 import re
 import time
@@ -52,9 +53,9 @@ from avanza_mcp.records import (
     position_mcp_dict,
     position_volume,
     stop_loss_matches_filters,
-    stop_loss_mcp_dict,
     stop_loss_order_book_id,
     stop_loss_side,
+    stop_loss_stock_name,
     stop_loss_trigger_percent,
     stop_loss_volume,
     summarize_sold_transactions,
@@ -62,6 +63,7 @@ from avanza_mcp.records import (
     transaction_history_dict_row,
     transaction_matches_instrument_filters,
     transaction_order_book_id,
+    transaction_stock_name,
     transaction_volume,
     transactions_items,
 )
@@ -76,9 +78,100 @@ from avanza_mcp.rendering import (
     open_order_order_book_id,
     position_order_book_id,
 )
+from avanza_mcp.strategy_intent import SELL_STOPLOSS_STRATEGY_INTENTS
 from avanza_mcp.utils import nested_value
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+
+
+def tradingview_exchange_from_market(market: Any) -> str:
+    market_name = re.sub(r"[^A-Z0-9]+", " ", str(market or "").upper()).strip()
+    if not market_name:
+        return ""
+    if "STOCKHOLM" in market_name or "XSTO" in market_name:
+        return "OMXSTO"
+    if "NYSE ARCA" in market_name:
+        return "NYSEARCA"
+    if "NYSE AMERICAN" in market_name:
+        return "NYSEAMERICAN"
+    if "NEW YORK STOCK EXCHANGE" in market_name or "NYSE" in market_name:
+        return "NYSE"
+    if "NASDAQ" in market_name:
+        return "NASDAQ"
+    return ""
+
+
+def normalize_sell_coverage_targets(value: Any) -> dict[str, dict[str, Any]]:
+    """Normalize exact, strategy-classified SELL coverage targets."""
+
+    if value in (None, []):
+        return {}
+    if not isinstance(value, list):
+        raise ValueError("coverage_targets must be an array of exact per-instrument targets.")
+
+    targets: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"coverage_targets[{index}] must be an object.")
+        orderbook_id = str(item.get("orderbook_id") or "").strip()
+        if not orderbook_id:
+            raise ValueError(f"coverage_targets[{index}].orderbook_id is required.")
+        if orderbook_id in targets:
+            raise ValueError(f"Duplicate coverage target for orderbook_id {orderbook_id}.")
+        try:
+            target_volume = float(item.get("target_sell_volume"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"coverage_targets[{index}].target_sell_volume must be a number."
+            ) from exc
+        if not math.isfinite(target_volume) or target_volume < 0:
+            raise ValueError(
+                f"coverage_targets[{index}].target_sell_volume must be finite and non-negative."
+            )
+
+        strategy_intent = (
+            str(item.get("strategy_intent") or "")
+            .strip()
+            .upper()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
+        strategy_reason = str(item.get("strategy_reason") or "").strip()
+        if target_volume > 0:
+            if strategy_intent not in SELL_STOPLOSS_STRATEGY_INTENTS:
+                choices = ", ".join(sorted(SELL_STOPLOSS_STRATEGY_INTENTS))
+                raise ValueError(
+                    f"coverage_targets[{index}].strategy_intent must classify the SELL target "
+                    f"as one of: {choices}."
+                )
+            if not strategy_reason:
+                raise ValueError(
+                    f"coverage_targets[{index}].strategy_reason is required for a non-zero SELL target."
+                )
+
+        targets[orderbook_id] = {
+            "orderbook_id": orderbook_id,
+            "target_sell_volume": target_volume,
+            "strategy_intent": strategy_intent or None,
+            "strategy_reason": strategy_reason or None,
+        }
+    return targets
+
+
+def resolve_sell_coverage_policy(
+    coverage_target_percent: float | None,
+    coverage_targets: dict[str, dict[str, Any]],
+) -> tuple[str, float | None]:
+    if coverage_target_percent is not None and coverage_targets:
+        raise ValueError("Use either coverage_target_percent or coverage_targets, not both.")
+    if coverage_targets:
+        return "EXACT_STRATEGY_TARGETS", None
+    if coverage_target_percent is None:
+        return "CURRENT_ACTIVE_SELL_BASELINE", None
+    target_percent = float(coverage_target_percent)
+    if not math.isfinite(target_percent) or not 0 <= target_percent <= 100:
+        raise ValueError("coverage_target_percent must be between 0 and 100.")
+    return "EXPLICIT_MECHANICAL_PERCENTAGE", target_percent / 100.0
 
 
 class CoreSnapshotsMixin:
@@ -518,17 +611,16 @@ class CoreSnapshotsMixin:
     def tradingview_symbol_for_position(self, position: dict[str, Any]) -> tuple[str, str, list[str]]:
         warnings: list[str] = []
         orderbook_id = position_order_book_id(position)
-        metadata = self.orderbook_metadata_by_id.get(orderbook_id) or KNOWN_ORDERBOOK_METADATA.get(orderbook_id, {})
+        quote_payload = self.quote_payload_for_order_book(orderbook_id, refresh=False)
+        metadata = self.orderbook_metadata_for_quote(
+            orderbook_id,
+            quote_payload,
+            allow_remote_lookup=True,
+        )
         ticker = str(metadata.get("ticker") or metadata.get("display_symbol") or "").strip()
-        market_name = str(metadata.get("market") or "").strip().upper()
         exchange = str(metadata.get("exchange") or "").strip().upper()
         if not exchange:
-            if "NASDAQ" in market_name:
-                exchange = "NASDAQ"
-            elif "NYSE" in market_name:
-                exchange = "NYSE"
-            elif "STOCKHOLM" in market_name:
-                exchange = "OMXSTO"
+            exchange = tradingview_exchange_from_market(metadata.get("market"))
         instrument = position.get("instrument") if isinstance(position.get("instrument"), dict) else {}
         orderbook = instrument.get("orderbook") if isinstance(instrument.get("orderbook"), dict) else {}
         ticker = ticker or str(
@@ -544,11 +636,9 @@ class CoreSnapshotsMixin:
             if parsed:
                 ticker = parsed
         if not ticker:
-            ticker = re.sub(r"[^A-Z0-9.]+", "", stock_name.upper())
-            warnings.append("TradingView symbol was inferred from instrument name and may be wrong.")
+            warnings.append("TradingView ticker metadata is unresolved; no company-name fallback was used.")
         if not exchange:
-            exchange = TRADINGVIEW_DEFAULT_EXCHANGE
-            warnings.append("TradingView exchange was not available; defaulted to NASDAQ.")
+            warnings.append("TradingView exchange metadata is unresolved; no default venue was assumed.")
         return ticker, exchange, warnings
 
     def avanza_tv_preopen_portfolio_bundle_snapshot(
@@ -561,8 +651,15 @@ class CoreSnapshotsMixin:
         authenticated: bool = True,
         compact: bool = True,
         cookie: str = "",
+        coverage_target_percent: float | None = None,
+        coverage_targets: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         account_id = account_id or self.require_selected_account_id()
+        normalized_targets = normalize_sell_coverage_targets(coverage_targets)
+        coverage_policy, target_fraction = resolve_sell_coverage_policy(
+            coverage_target_percent,
+            normalized_targets,
+        )
         _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
         stoploss_items = self.filtered_stoploss_items(avanza, account_id)
         _orders_payload, open_orders = self.filtered_open_order_items(avanza, account_id)
@@ -587,20 +684,45 @@ class CoreSnapshotsMixin:
             token = tv_symbol_core(ticker)
             if include_symbol_tokens and token not in include_symbol_tokens:
                 continue
-            seen_symbols.add(token)
+            if token:
+                seen_symbols.add(token)
             tv_snapshot: dict[str, Any] | None = None
             tv_error = ""
-            try:
-                tv_snapshot = tv_data.tradingview_preopen_symbol_snapshot(
-                    ticker,
-                    market=market,
-                    exchange=exchange,
-                    authenticated=authenticated,
-                    cookie=cookie,
+            if not ticker or not exchange:
+                missing = []
+                if not ticker:
+                    missing.append("ticker")
+                if not exchange:
+                    missing.append("exchange")
+                tv_error = f"TradingView mapping unavailable: {', '.join(missing)} metadata unresolved."
+                errors.append(
+                    {
+                        "stock": str(nested_value(position, "instrument", "name") or ""),
+                        "orderbook_id": orderbook_id,
+                        "symbol": ticker or None,
+                        "error": tv_error,
+                    }
                 )
-            except Exception as exc:
-                tv_error = str(exc)
-                errors.append({"stock": str(nested_value(position, "instrument", "name") or ""), "symbol": ticker, "error": tv_error})
+            else:
+                try:
+                    tv_snapshot = tv_data.tradingview_preopen_symbol_snapshot(
+                        ticker,
+                        market=market,
+                        exchange=exchange,
+                        authenticated=authenticated,
+                        cookie=cookie,
+                    )
+                except Exception as exc:
+                    tv_error = str(exc)
+                    errors.append(
+                        {
+                            "stock": str(nested_value(position, "instrument", "name") or ""),
+                            "orderbook_id": orderbook_id,
+                            "symbol": ticker,
+                            "exchange": exchange,
+                            "error": tv_error,
+                        }
+                    )
             position_row = position_mcp_dict(position, self.realtime_status_for_position(position))
             protection = summarize_stop_protection(position, stops_by_orderbook.get(orderbook_id, []))
             instrument_orders = [open_order_mcp_dict(item) for item in orders_by_orderbook.get(orderbook_id, [])]
@@ -610,22 +732,56 @@ class CoreSnapshotsMixin:
                 if str(row.get("Status", "")).upper() in {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
             ]
             stock_name = str(position_row.get("stock") or "")
+            target_spec = normalized_targets.get(orderbook_id)
+            if target_spec is not None:
+                requested_target_volume = float(target_spec["target_sell_volume"])
+            elif target_fraction is not None:
+                requested_target_volume = protection["holding_volume"] * target_fraction
+            else:
+                requested_target_volume = protection["active_sell_stop_volume"]
+            effective_target_volume = min(
+                requested_target_volume,
+                protection["holding_volume"],
+            )
+            strategy_gap = max(
+                effective_target_volume - protection["active_sell_stop_volume"],
+                0.0,
+            )
+            protection.update(
+                {
+                    "coverage_policy": coverage_policy,
+                    "strategy_target_supplied": target_spec is not None,
+                    "target_sell_stop_volume": requested_target_volume,
+                    "effective_target_sell_stop_volume": effective_target_volume,
+                    "adjusted_protection_gap": strategy_gap,
+                }
+            )
             quote = tv_snapshot.get("quote", {}) if isinstance(tv_snapshot, dict) else {}
             liquidity = tv_snapshot.get("liquidity", {}) if isinstance(tv_snapshot, dict) else {}
             flags = {
                 "stale_avanza_quote": str(position_row.get("Real-time") or "").strip().lower() not in {"yes", "real-time", "realtime", "true"},
                 "tradingview_extended_hours_move": abs(float(quote.get("premarket_change_pct") or 0.0)) >= 1.0,
-                "sell_protection_gap": protection["sell_protection_gap"] > 0 and not instrument_is_eth_like(stock_name, orderbook_id),
+                "sell_protection_gap": strategy_gap > 0 and not instrument_is_eth_like(stock_name, orderbook_id),
+                "mechanical_full_holding_sell_gap": protection["mechanical_full_holding_sell_gap"] > 0,
+                "strategy_target_supplied": target_spec is not None,
+                "failed_sell_stop": protection["failed_sell_stop_volume"] > 0,
                 "eth_approved_exception": instrument_is_eth_like(stock_name, orderbook_id),
                 "raw_failed_orders": bool(failed_orders),
                 "high_volatility": abs(float(liquidity.get("volatility_week") or 0.0)) >= 5.0,
                 "oversized_exposure": False,
+                "technical_mapping_unavailable": not ticker or not exchange,
             }
             row = {
                 "account_id": account_id,
                 "stock": stock_name,
                 "orderbook_id": orderbook_id,
-                "tradingview_symbol": tv_snapshot.get("symbol") if isinstance(tv_snapshot, dict) else normalize_tv_symbol(ticker, exchange),
+                "tradingview_symbol": (
+                    tv_snapshot.get("symbol")
+                    if isinstance(tv_snapshot, dict)
+                    else normalize_tv_symbol(ticker, exchange)
+                    if ticker and exchange
+                    else None
+                ),
                 "mapping_warnings": symbol_warnings,
                 "position": position_row,
                 "protection": protection,
@@ -674,10 +830,17 @@ class CoreSnapshotsMixin:
             "market": market,
             "authenticated": authenticated,
             "compact": compact,
+            "coverage_policy": coverage_policy,
+            "coverage_target_percent": coverage_target_percent,
+            "coverage_targets": list(normalized_targets.values()),
             "rows": rows,
             "errors": errors,
-            "unsafe_for_execution": False,
-            "note": "Read-only pre-open review bundle. Avanza remains source of truth for account/orders/stops; TradingView supplies market context.",
+            "unsafe_for_execution": bool(errors),
+            "note": (
+                "Read-only pre-open review bundle. Avanza remains source of truth for "
+                "account/orders/stops; TradingView supplies market context. No full-holding "
+                "SELL target is inferred without an explicit percentage or exact strategy targets."
+            ),
         }
 
     def account_snapshot_for_cache(self, account_id: str) -> tuple[AccountDataSnapshot, AvanzaTenantSession | None]:
@@ -896,7 +1059,8 @@ class CoreSnapshotsMixin:
             status=status,
             refresh=refresh,
         )
-        rows = [stop_loss_mcp_dict(item) for item in items]
+        rows = [self.stoploss_mcp_row(item) for item in items]
+        strategy_metadata = self.stoploss_strategy_summary(account_id, rows)
         if compact:
             rows = [
                 {
@@ -913,12 +1077,20 @@ class CoreSnapshotsMixin:
                     "order_price": row["order_price"],
                     "order_price_type": row["order_price_type"],
                     "valid_until": row["valid_until"],
+                    "strategy_intent": row["strategy_intent"],
+                    "strategy_reason": row["strategy_reason"],
+                    "strategy_source": row["strategy_source"],
+                    "strategy_metadata_status": row["strategy_metadata_status"],
+                    "strategy_metadata_mismatches": row[
+                        "strategy_metadata_mismatches"
+                    ],
                 }
                 for row in rows
             ]
         return {
             "account_id": account_id or None,
             "stoplosses": rows,
+            "strategy_metadata": strategy_metadata,
         }
 
     def filtered_open_order_items(
@@ -1106,17 +1278,17 @@ class CoreSnapshotsMixin:
         )
         quote = self.orderbook_quotes_snapshot([orderbook_id], refresh=True)["quotes"][0]
         active_buy_stops = [
-            stop_loss_mcp_dict(item)
+            self.stoploss_mcp_row(item)
             for item in stoploss_items
             if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "BUY"
         ]
         active_sell_stops = [
-            stop_loss_mcp_dict(item)
+            self.stoploss_mcp_row(item)
             for item in stoploss_items
             if str(item.get("status", "")).upper() == "ACTIVE" and stop_loss_side(item) == "SELL"
         ]
         non_active_stops = [
-            stop_loss_mcp_dict(item)
+            self.stoploss_mcp_row(item)
             for item in stoploss_items
             if str(item.get("status", "")).upper() != "ACTIVE"
         ]
@@ -1141,6 +1313,10 @@ class CoreSnapshotsMixin:
             "failed_orders": failed_orders,
             "recent_transactions": transaction_snapshot["transactions"],
             "protection": summarize_stop_protection(position, stoploss_items),
+            "strategy_metadata": self.stoploss_strategy_summary(
+                account_id,
+                [*active_buy_stops, *active_sell_stops, *non_active_stops],
+            ),
         }
         if include_raw_orders:
             snapshot["open_orders_raw"] = payload_to_json_safe(open_order_items_for_instrument)
@@ -1153,52 +1329,169 @@ class CoreSnapshotsMixin:
         *,
         exclude_orderbook_ids: list[str] | None = None,
         exclude_eth: bool = False,
-        coverage_target_percent: float = 100.0,
-        exclude_non_stop_eligible: bool = False,
+        coverage_target_percent: float | None = None,
+        coverage_targets: list[dict[str, Any]] | None = None,
+        exclude_non_stop_eligible: bool = True,
     ) -> dict[str, Any]:
         account_id = account_id or self.require_selected_account_id()
         excludes = {str(item) for item in (exclude_orderbook_ids or [])}
-        target_fraction = max(0.0, min(float(coverage_target_percent), 100.0)) / 100.0
+        normalized_targets = normalize_sell_coverage_targets(coverage_targets)
+        coverage_policy, target_fraction = resolve_sell_coverage_policy(
+            coverage_target_percent,
+            normalized_targets,
+        )
         _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
         stoploss_items = self.filtered_stoploss_items(avanza, account_id)
+        positions_by_orderbook = {
+            position_order_book_id(position): position
+            for position in positions
+            if position_order_book_id(position)
+        }
         stoplosses_by_orderbook: dict[str, list[dict[str, Any]]] = {}
         for item in stoploss_items:
             stoplosses_by_orderbook.setdefault(stop_loss_order_book_id(item), []).append(item)
+
+        orderbook_ids = list(positions_by_orderbook)
+        orderbook_ids.extend(
+            orderbook_id
+            for orderbook_id in stoplosses_by_orderbook
+            if orderbook_id and orderbook_id not in positions_by_orderbook
+        )
+        orderbook_ids.extend(
+            orderbook_id
+            for orderbook_id in normalized_targets
+            if orderbook_id not in positions_by_orderbook
+            and orderbook_id not in stoplosses_by_orderbook
+        )
+
         rows: list[dict[str, Any]] = []
         skipped_non_eligible: list[dict[str, str]] = []
-        for position in positions:
-            orderbook_id = position_order_book_id(position)
-            stock = str(nested_value(position, "instrument", "name") or "")
+        for orderbook_id in orderbook_ids:
+            position = positions_by_orderbook.get(orderbook_id)
+            instrument_stops = stoplosses_by_orderbook.get(orderbook_id, [])
+            stock = (
+                str(nested_value(position, "instrument", "name") or "")
+                if isinstance(position, dict)
+                else next(
+                    (stop_loss_stock_name(item) for item in instrument_stops if stop_loss_stock_name(item)),
+                    "",
+                )
+            )
             if orderbook_id in excludes:
                 continue
             if exclude_eth and instrument_is_eth_like(stock, orderbook_id):
                 continue
-            if exclude_non_stop_eligible:
+            if exclude_non_stop_eligible and isinstance(position, dict):
                 instrument_type = str(nested_value(position, "instrument", "type") or "").upper()
                 if not orderbook_id or instrument_type in {"FUND", "MUTUAL_FUND", "EXCHANGE_TRADED_FUND"}:
                     skipped_non_eligible.append({"stock": stock, "orderbook_id": orderbook_id, "instrument_type": instrument_type})
                     continue
-            summary = summarize_stop_protection(position, stoplosses_by_orderbook.get(orderbook_id, []))
-            target_volume = summary["holding_volume"] * target_fraction
-            adjusted_gap = max(target_volume - summary["active_sell_stop_volume"], 0.0)
-            if adjusted_gap <= 0 and summary["failed_stop_volume"] <= 0:
+
+            summary = summarize_stop_protection(position, instrument_stops)
+            target_spec = normalized_targets.get(orderbook_id)
+            if target_spec is not None:
+                requested_target_volume = float(target_spec["target_sell_volume"])
+                target_source = "EXACT_STRATEGY_TARGET"
+            elif target_fraction is not None:
+                requested_target_volume = summary["holding_volume"] * target_fraction
+                target_source = "EXPLICIT_MECHANICAL_PERCENTAGE"
+            else:
+                requested_target_volume = summary["active_sell_stop_volume"]
+                target_source = "CURRENT_ACTIVE_SELL_BASELINE"
+
+            effective_target_volume = min(requested_target_volume, summary["holding_volume"])
+            adjusted_gap = max(
+                effective_target_volume - summary["active_sell_stop_volume"],
+                0.0,
+            )
+            issue_types: list[str] = []
+            if requested_target_volume > summary["holding_volume"]:
+                issue_types.append("TARGET_EXCEEDS_HOLDING")
+            if adjusted_gap > 0:
+                issue_types.append("MISSING_TARGET_SELL_VOLUME")
+            if summary["failed_sell_stop_volume"] > 0:
+                issue_types.append("FAILED_SELL_STOP")
+            if summary["sell_overcoverage"] > 0:
+                issue_types.append("SELL_OVERCOVERAGE")
+            if not issue_types:
                 continue
             rows.append(
                 {
                     "stock": stock,
                     "orderbook_id": orderbook_id,
                     **summary,
+                    "coverage_policy": coverage_policy,
                     "coverage_target_percent": coverage_target_percent,
-                    "target_sell_stop_volume": target_volume,
+                    "target_source": target_source,
+                    "strategy_target_supplied": target_spec is not None,
+                    "target_strategy_intent": (
+                        target_spec.get("strategy_intent") if target_spec else None
+                    ),
+                    "target_strategy_reason": (
+                        target_spec.get("strategy_reason") if target_spec else None
+                    ),
+                    "target_sell_stop_volume": requested_target_volume,
+                    "effective_target_sell_stop_volume": effective_target_volume,
                     "adjusted_protection_gap": adjusted_gap,
+                    "issue_types": issue_types,
                 }
             )
+
+        failed_statuses = {"ERROR", "FAILED", "REJECTED", "FAULTY", "FELAKTIG"}
+        failed_buy_stops = [
+            self.stoploss_mcp_row(item)
+            for item in stoploss_items
+            if str(item.get("status", "")).upper() in failed_statuses
+            and stop_loss_side(item) == "BUY"
+            and stop_loss_order_book_id(item) not in excludes
+            and not (
+                exclude_eth
+                and instrument_is_eth_like(
+                    stop_loss_stock_name(item),
+                    stop_loss_order_book_id(item),
+                )
+            )
+        ]
+        failed_sell_stops = [
+            self.stoploss_mcp_row(item)
+            for item in stoploss_items
+            if str(item.get("status", "")).upper() in failed_statuses
+            and stop_loss_side(item) == "SELL"
+            and stop_loss_order_book_id(item) not in excludes
+            and not (
+                exclude_eth
+                and instrument_is_eth_like(
+                    stop_loss_stock_name(item),
+                    stop_loss_order_book_id(item),
+                )
+            )
+        ]
+        strategy_rows = [self.stoploss_mcp_row(item) for item in stoploss_items]
+        strategy_metadata = self.stoploss_strategy_summary(account_id, strategy_rows)
+        strategy_metadata_issues = [
+            row
+            for row in strategy_rows
+            if row.get("strategy_metadata_status") != "RECORDED"
+        ]
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "account_id": account_id,
             "count": len(rows),
+            "coverage_policy": coverage_policy,
             "coverage_target_percent": coverage_target_percent,
+            "coverage_targets": list(normalized_targets.values()),
+            "strategy_aware": coverage_policy == "EXACT_STRATEGY_TARGETS",
+            "default_policy_note": (
+                "No full-holding SELL target is inferred. Exact strategy targets are required "
+                "to detect missing tactical SELL volume."
+                if coverage_policy == "CURRENT_ACTIVE_SELL_BASELINE"
+                else None
+            ),
             "gaps": rows,
+            "failed_buy_stops": failed_buy_stops,
+            "failed_sell_stops": failed_sell_stops,
+            "strategy_metadata": strategy_metadata,
+            "strategy_metadata_issues": strategy_metadata_issues,
             "skipped_non_stop_eligible": skipped_non_eligible,
         }
 
@@ -1329,6 +1622,8 @@ class CoreSnapshotsMixin:
         *,
         since: date | None = None,
         exclude_eth: bool = True,
+        coverage_target_percent: float | None = None,
+        coverage_targets: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         account_id = account_id or self.require_selected_account_id()
         since_date = since or date.today()
@@ -1339,24 +1634,117 @@ class CoreSnapshotsMixin:
             max_elements=5000,
         )
         items, _first_date = transactions_items(payload)
+        bought_transactions = [
+            item
+            for item in items
+            if transaction_matches_instrument_filters(
+                item,
+                account_id=account_id,
+                side="BUY",
+                executed_only=True,
+            )
+            and transaction_order_book_id(item)
+        ]
         bought_orderbooks = {
             transaction_order_book_id(item)
-            for item in items
-            if transaction_matches_instrument_filters(item, account_id=account_id, side="BUY", executed_only=True)
+            for item in bought_transactions
         }
-        protection = self.protection_gaps_snapshot(avanza, account_id, exclude_eth=exclude_eth)
+        bought_names = {
+            transaction_order_book_id(item): transaction_stock_name(item)
+            for item in bought_transactions
+        }
+        protection = self.protection_gaps_snapshot(
+            avanza,
+            account_id,
+            exclude_eth=exclude_eth,
+            coverage_target_percent=coverage_target_percent,
+            coverage_targets=coverage_targets,
+        )
         rows = [
             item
             for item in protection["gaps"]
             if str(item.get("orderbook_id") or "") in bought_orderbooks
         ]
+        gap_by_orderbook = {
+            str(item.get("orderbook_id") or ""): item
+            for item in rows
+        }
+        target_by_orderbook = {
+            str(item.get("orderbook_id") or ""): item
+            for item in protection.get("coverage_targets", [])
+        }
+
+        _portfolio_data, positions = self.filtered_portfolio_items(avanza, account_id)
+        positions_by_orderbook = {
+            position_order_book_id(position): position
+            for position in positions
+            if position_order_book_id(position)
+        }
+        stops_by_orderbook: dict[str, list[dict[str, Any]]] = {}
+        for item in self.filtered_stoploss_items(avanza, account_id):
+            stops_by_orderbook.setdefault(stop_loss_order_book_id(item), []).append(item)
+
+        review_items: list[dict[str, Any]] = []
+        for orderbook_id in sorted(bought_orderbooks):
+            position = positions_by_orderbook.get(orderbook_id)
+            stock = (
+                str(nested_value(position, "instrument", "name") or "")
+                if isinstance(position, dict)
+                else bought_names.get(orderbook_id, "")
+            )
+            if exclude_eth and instrument_is_eth_like(stock, orderbook_id):
+                continue
+            summary = summarize_stop_protection(
+                position,
+                stops_by_orderbook.get(orderbook_id, []),
+            )
+            target = target_by_orderbook.get(orderbook_id)
+            percentage_target_supplied = (
+                protection["coverage_policy"] == "EXPLICIT_MECHANICAL_PERCENTAGE"
+            )
+            gap = gap_by_orderbook.get(orderbook_id)
+            review_items.append(
+                {
+                    "stock": stock,
+                    "orderbook_id": orderbook_id,
+                    **summary,
+                    "coverage_policy": protection["coverage_policy"],
+                    "sell_target_is_explicit": bool(target) or percentage_target_supplied,
+                    "strategy_classification_required": (
+                        not target and not percentage_target_supplied
+                    ),
+                    "target_sell_stop_volume": (
+                        target.get("target_sell_volume")
+                        if target
+                        else summary["holding_volume"] * float(coverage_target_percent) / 100.0
+                        if percentage_target_supplied
+                        else None
+                    ),
+                    "needs_sell_action": bool(
+                        gap
+                        and "MISSING_TARGET_SELL_VOLUME" in gap.get("issue_types", [])
+                    ),
+                    "issue_types": gap.get("issue_types", []) if gap else [],
+                }
+            )
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "account_id": account_id,
             "since": since_date.isoformat(),
             "exclude_eth": exclude_eth,
+            "coverage_policy": protection["coverage_policy"],
+            "coverage_target_percent": coverage_target_percent,
+            "coverage_targets": protection.get("coverage_targets", []),
             "count": len(rows),
             "items": rows,
+            "review_count": len(review_items),
+            "review_items": review_items,
+            "default_policy_note": (
+                "A BUY fill does not automatically authorize a SELL stop. Classify the "
+                "position intent and pass an exact SELL target before treating it as a gap."
+                if protection["coverage_policy"] == "CURRENT_ACTIVE_SELL_BASELINE"
+                else None
+            ),
         }
 
     def verify_no_raw_failed_orders_snapshot(
@@ -1390,7 +1778,8 @@ class CoreSnapshotsMixin:
         orderbook_ids: list[str] | None = None,
         full_holding: bool = True,
         exclude_eth: bool = True,
-        coverage_target_percent: float = 100.0,
+        coverage_target_percent: float | None = None,
+        coverage_targets: list[dict[str, Any]] | None = None,
         exclude_orderbook_ids: list[str] | None = None,
         exclude_non_stop_eligible: bool = True,
     ) -> dict[str, Any]:
@@ -1402,6 +1791,7 @@ class CoreSnapshotsMixin:
             exclude_orderbook_ids=list(exclude_orderbook_ids or []),
             exclude_eth=exclude_eth,
             coverage_target_percent=coverage_target_percent,
+            coverage_targets=coverage_targets,
             exclude_non_stop_eligible=exclude_non_stop_eligible,
         )
         gaps = gaps_payload["gaps"]
@@ -1415,10 +1805,15 @@ class CoreSnapshotsMixin:
             "orderbook_ids": sorted(ids),
             "full_holding": full_holding,
             "exclude_eth": exclude_eth,
+            "coverage_policy": gaps_payload["coverage_policy"],
             "coverage_target_percent": coverage_target_percent,
+            "coverage_targets": gaps_payload.get("coverage_targets", []),
             "excluded_orderbook_ids": sorted({str(i) for i in (exclude_orderbook_ids or [])}),
             "exclude_non_stop_eligible": exclude_non_stop_eligible,
             "skipped_non_stop_eligible": gaps_payload.get("skipped_non_stop_eligible", []),
+            "failed_buy_stops": gaps_payload.get("failed_buy_stops", []),
+            "failed_sell_stops": gaps_payload.get("failed_sell_stops", []),
+            "default_policy_note": gaps_payload.get("default_policy_note"),
             "gaps": gaps,
         }
 
@@ -1560,15 +1955,21 @@ class CoreSnapshotsMixin:
 
     def _search_metadata_for_orderbook(self, orderbook_id: str) -> dict[str, Any]:
         avanza = self.require_connection()
-        try:
-            results = avanza.search_for_stock(orderbook_id, 15)
-        except Exception:
-            return {}
-        hits = flattened_search_hits(results)
-        rows = normalized_search_rows(hits, query=orderbook_id)
-        match = next((row for row in rows if str(row.get("orderbook_id") or "") == orderbook_id), None)
-        if not match and rows:
-            match = rows[0]
+        match: dict[str, Any] | None = None
+        stock_name = self.stock_name_for_order_book(orderbook_id)
+        for query in unique_strings([stock_name, orderbook_id]):
+            try:
+                results = avanza.search_for_stock(query, 15)
+            except Exception:
+                continue
+            hits = flattened_search_hits(results)
+            rows = normalized_search_rows(hits, query=query)
+            match = next(
+                (row for row in rows if str(row.get("orderbook_id") or "") == orderbook_id),
+                None,
+            )
+            if match is not None:
+                break
         if not isinstance(match, dict):
             return {}
         return {
@@ -1579,7 +1980,7 @@ class CoreSnapshotsMixin:
             "currency": str(match.get("currency") or "").strip() or None,
             "country_code": str(match.get("country") or "").strip() or None,
             "country": str(match.get("country") or "").strip() or None,
-            "instrument_type": str(match.get("instrument_type") or "").strip() or None,
+            "instrument_type": str(match.get("instrument_type") or "STOCK").strip() or None,
             "display_symbol": str(match.get("display_symbol") or "").strip()
             or display_symbol(str(match.get("ticker") or match.get("symbol") or ""), str(match.get("name") or "")),
         }
@@ -1631,7 +2032,7 @@ class CoreSnapshotsMixin:
             or not merged.get("instrument_type")
         )
         stale = checked_at is None or (now - checked_at) > timedelta(seconds=ORDERBOOK_METADATA_REFRESH_SECONDS)
-        if allow_remote_lookup and missing_core and stale:
+        if allow_remote_lookup and stale:
             merged = merged_orderbook_metadata(merged, self._search_metadata_for_orderbook(orderbook_id))
             if (
                 not merged.get("name")

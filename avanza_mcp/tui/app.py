@@ -26,6 +26,7 @@ from avanza_mcp.rendering import (
     trade_action_from_cell,
 )
 from avanza_mcp.stoploss_rules import max_valid_until_date
+from avanza_mcp.strategy_intent import STOPLOSS_STRATEGY_INTENTS
 from avanza_mcp.tui.layout import (
     ActivityPaneResizer,
     PaneResizer,
@@ -1011,6 +1012,16 @@ class AvanzaTradingTui(
                             placeholder="Order valid days",
                             id="order-valid-days",
                             type="integer",
+                        )
+                        yield Select(
+                            [(intent.replace("_", " ").title(), intent) for intent in STOPLOSS_STRATEGY_INTENTS],
+                            prompt="Strategy intent (required for live)",
+                            allow_blank=True,
+                            id="strategy-intent",
+                        )
+                        yield Input(
+                            placeholder="Strategy reason (required for live)",
+                            id="strategy-reason",
                         )
                         yield Switch(value=False, id="trigger-on-market-maker-quote")
                         yield Static("Trigger on market-maker quote")

@@ -322,7 +322,7 @@ For multi-session setups:
 | `tv_preopen_symbol_snapshot` | Return a compact TradingView pre-open/extended-hours snapshot for one symbol. |
 | `tv_preopen_batch_snapshot` | Return TradingView pre-open snapshots for a symbol list with per-symbol error isolation. |
 | `tv_scrape_heatmap` | Fetch TradingView market heatmap rows with exchange, OTC, liquidity, market-cap, price, and sort filters. |
-| `avanza_tv_preopen_portfolio_bundle` | Read-only bundle that merges Avanza portfolio/protection state with TradingView pre-open context. |
+| `avanza_tv_preopen_portfolio_bundle` | Read-only bundle that merges Avanza portfolio state with TradingView context; exact SELL targets are optional and never inferred from full holdings. |
 | `tv_auth_watchlist` | Best-effort TradingView watchlist monitor in authenticated mode (cookie/session required for private list context). |
 | `tv_auth_custom_lists` | Load authenticated TradingView custom tracking lists and rows from your TradingView profile session. |
 | `zacks_scrape_symbol` | Fetch Zacks rank via quote-feed and scrape symbol/report pages for Earnings ESP plus visible analysis text (best effort; HTML may be blocked). |
@@ -333,7 +333,11 @@ For multi-session setups:
 | `data_source_status` | Return current health, freshness, and safety flags for Avanza, TradingView, Zacks, FMP, Polygon, SEC, and FRED source integrations. |
 | `signal_context_bundle` | Build a compact cross-source signal bundle (TradingView technicals + SEC filings + optional Zacks/FMP/Polygon + optional FRED macro). |
 | `avanza_portfolio` | List portfolio positions, optionally filtered by one instrument and compact mode. |
-| `avanza_stoplosses` | List stop-loss orders, optionally filtered by instrument, side, status, and compact mode. |
+| `avanza_stoplosses` | List stop-loss orders with durable strategy intent and missing/mismatch metadata audit, optionally filtered by instrument, side, status, and compact mode. |
+| `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
+| `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
+| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
+| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
@@ -343,12 +347,12 @@ For multi-session setups:
 | `avanza_instrument_stoplosses` | Read stop-loss rows for one instrument/account. |
 | `avanza_instrument_open_orders` | Read open/pending regular orders for one instrument/account. |
 | `avanza_instrument_transactions` | Read transactions for one instrument/account. |
-| `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and protection summary. |
-| `avanza_protection_gaps` | Return positions whose active sell protection is below current holding. |
+| `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
+| `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments and missing buy-back coverage. |
-| `avanza_recent_fills_needing_protection` | Return recent filled buys whose active sell protection is below current holding. |
+| `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
-| `avanza_verify_protection` | Compact post-mutation check for sell-protection gaps. |
+| `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
 | `avanza_realtime_quotes` | Fetch real-time quote snapshot for selected account holdings (best with a 5s polling loop). |
 | `avanza_orderbook_quotes` | Fetch arbitrary quote snapshots for supplied orderbook IDs (supports 5s polling loops for 20-50 symbols). |
 | `avanza_market_movers` | Fetch Avanza market movers (gainers/losers) with optional country/market/turnover filters. |
@@ -366,8 +370,8 @@ For multi-session setups:
 | `avanza_scalp_watchlist_set` | Store/update a named scalp watchlist (orderbook IDs + optional labels) in local paper session state. |
 | `avanza_scalp_watchlist_get` | Load a named scalp watchlist and optionally include current quotes for all members. |
 | `avanza_paper_cancel` | Cancel a local paper order. |
-| `avanza_stoploss_set` | Dry-run or place a stop-loss order. |
-| `avanza_stoploss_set_batch` | Place multiple stop-loss orders with per-item validation and final readback. |
+| `avanza_stoploss_set` | Dry-run or place a stop-loss order; live MCP placement requires an auditable strategy intent and reason. |
+| `avanza_stoploss_set_batch` | Place multiple stop-loss orders with per-item strategy-intent validation and final readback. |
 | `avanza_order_set` | Dry-run or place a regular buy/sell order. |
 | `avanza_order_edit` | Dry-run or update an existing open order (price/volume/valid_until). |
 | `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order. |
@@ -379,6 +383,21 @@ For multi-session setups:
 Canonical naming note:
 - use `avanza_open_orders`
 - use `avanza_stoplosses`
+
+Stop-loss strategy metadata is stored locally in
+`.avanza_stoploss_strategy.json` with owner-only permissions. The registry is
+keyed by account and stop ID and fingerprints the complete broker row. Missing
+or changed broker fields produce `MISSING` or `STALE_MISMATCH`; the old intent
+is not trusted or silently transferred. This registry records why an order
+exists, but never authorizes a broker mutation.
+
+Reviewed whole-position plans are stored separately in
+`.avanza_position_strategy.json`, also with owner-only permissions. Each
+account-plus-orderbook record binds the intended thesis, horizon, priority,
+strategy gate, and reviewed aggregate holding/stop/open-order exposure to exact
+live state. A fill, holding change, stop edit, leftover order, missing plan, or
+stale plan makes `avanza_position_strategy_audit` fail closed until the change
+is reviewed. Rebaselining records a decision; it never authorizes a trade.
 
 ### TradingView/Zacks scrape mode notes
 
