@@ -234,6 +234,8 @@ Multi-session MCP behavior:
 | `avanza_select_session` | Switch active MCP/TUI tenant session context. |
 | `avanza_select_account` | Safely switch MCP or TUI selected account context. |
 | `avanza_account_performance` | Read Avanza account performance/development for the selected or supplied account_id over a chosen period. |
+| `avanza_instrument_chart` | Read authenticated daily or intraday Avanza OHLC history for one order book; read-only analysis input. |
+| `avanza_account_cost_attribution` | Replay cash-flow-adjusted account return with posted commission and modeled FX removed; read-only and fail-closed on truncated history. |
 | `tv_scrape_symbol_analytics` | Fetch TradingView symbol analytics and technical recommendation barometers from public scanner data. |
 | `tv_scrape_symbol_full` | Fetch rich TradingView symbol payload (scanner analytics + technical labels + symbol profile metadata) in LLM-friendly JSON. |
 | `tv_auth_session_start` | Open TradingView login page in browser and show session setup instructions for authenticated MCP usage. |

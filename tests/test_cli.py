@@ -20,7 +20,7 @@ from textual import events
 from textual.geometry import Size
 from textual.widgets import Button, DataTable, Input, Select, Static
 
-from avanza.constants import OrderType, StopLossPriceType, TimePeriod
+from avanza.constants import OrderType, Resolution, StopLossPriceType, TimePeriod, TransactionsDetailsType
 from rich.text import Text
 
 from avanza_mcp.cli import build_parser
@@ -3754,6 +3754,8 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
         ]
     )
     assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_instrument_chart" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_account_cost_attribution" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders_raw" for tool in tools["result"]["tools"])
@@ -3906,6 +3908,158 @@ def test_mcp_account_performance_allows_explicit_account_and_period():
     assert result["period"] == "YEAR_TO_DATE"
     assert result["raw_period"] == "THIS_YEAR"
     assert result["development_absolute"]["value"] == 100.0
+
+
+def test_mcp_instrument_chart_normalizes_daily_ohlc_and_stockholm_date():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.calls = []
+
+        def get_chart_data(self, orderbook_id, period, resolution):
+            self.calls.append((orderbook_id, period, resolution))
+            return {
+                "ohlc": [
+                    {
+                        "timestamp": 1778018400000,
+                        "open": 100.0,
+                        "high": 105.0,
+                        "low": 99.0,
+                        "close": 104.0,
+                        "totalVolumeTraded": 1234,
+                    }
+                ],
+                "metadata": {"resolution": Resolution.DAY},
+                "from": "2026-05-06",
+                "to": "2026-08-03",
+                "previousClosingPrice": 98.0,
+            }
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    result = app.execute_mcp_tool(
+        "avanza_instrument_chart",
+        {"orderbook_id": "4478", "period": "THREE_MONTHS", "resolution": "DAY"},
+    )
+
+    assert app.avanza.calls == [("4478", TimePeriod.THREE_MONTHS, Resolution.DAY)]
+    assert result["orderbook_id"] == "4478"
+    assert result["period"] == "THREE_MONTHS"
+    assert result["resolution"] == "DAY"
+    assert result["point_count"] == 1
+    assert result["points"][0] == {
+        "timestamp": 1778018400000,
+        "date": "2026-05-06",
+        "open": 100.0,
+        "high": 105.0,
+        "low": 99.0,
+        "close": 104.0,
+        "volume": 1234.0,
+    }
+
+
+def test_mcp_instrument_chart_rejects_unknown_resolution():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.avanza = object()
+
+    with pytest.raises(ValueError, match="Invalid chart resolution"):
+        app.execute_mcp_tool(
+            "avanza_instrument_chart",
+            {"orderbook_id": "4478", "period": "THREE_MONTHS", "resolution": "FORTNIGHT"},
+        )
+
+
+def test_mcp_account_cost_attribution_fetches_exact_account_history():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.transaction_calls = []
+
+        def get_account_performance_chart_data(self, account_ids, period):
+            assert account_ids == ["scrambled-acc-1"]
+            assert period == TimePeriod.THREE_MONTHS
+            return {
+                "absoluteSeries": [
+                    {"timestamp": 1778018400000, "performance": {"value": 0.0, "unit": "SEK"}},
+                    {"timestamp": 1778104800000, "performance": {"value": -10.0, "unit": "SEK"}},
+                    {"timestamp": 1778191200000, "performance": {"value": -20.0, "unit": "SEK"}},
+                ],
+                "relativeSeries": [
+                    {"timestamp": 1778018400000, "performance": {"value": 0.0, "unit": "percentage"}},
+                    {"timestamp": 1778104800000, "performance": {"value": -1.0, "unit": "percentage"}},
+                    {"timestamp": 1778191200000, "performance": {"value": -2.0, "unit": "percentage"}},
+                ],
+                "valueSeries": [
+                    {"timestamp": 1778018400000, "performance": {"value": 1000.0, "unit": "SEK"}},
+                    {"timestamp": 1778104800000, "performance": {"value": 990.0, "unit": "SEK"}},
+                    {"timestamp": 1778191200000, "performance": {"value": 980.0, "unit": "SEK"}},
+                ],
+            }
+
+        def get_transactions_details(
+            self,
+            transaction_details_types=None,
+            transactions_from=None,
+            transactions_to=None,
+            isin=None,
+            max_elements=1000,
+        ):
+            self.transaction_calls.append(
+                (transaction_details_types, transactions_from, transactions_to, isin, max_elements)
+            )
+            if TransactionsDetailsType.BUY not in transaction_details_types:
+                return {"firstTransactionDate": "2020-01-01", "transactions": []}
+            return {
+                "firstTransactionDate": "2020-01-01",
+                "transactions": [
+                    {
+                        "tradeDate": "2026-05-07",
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrumentName": "Example Inc",
+                        "type": "BUY",
+                        "volume": {"value": 1, "unit": "st"},
+                        "priceInTransactionCurrency": {"value": 1000, "unit": "SEK"},
+                        "amount": {"value": -1000, "unit": "SEK"},
+                        "commission": {"value": 10, "unit": "SEK"},
+                        "isin": "US0000000001",
+                    }
+                ],
+            }
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.accounts = [
+        {
+            "id": "acc-1",
+            "urlParameterId": "scrambled-acc-1",
+            "name": "Main",
+            "type": "ISK",
+        }
+    ]
+
+    result = app.execute_mcp_tool(
+        "avanza_account_cost_attribution",
+        {
+            "account_id": "acc-1",
+            "period": "THREE_MONTHS",
+            "start_date": "2026-05-06",
+            "fx_fee_rate": 0.0025,
+            "top_cost_days": 5,
+        },
+    )
+
+    assert result["account_id"] == "acc-1"
+    assert result["window"] == {"start": "2026-05-06", "end": "2026-05-08", "performance_points": 3}
+    assert result["returns"]["actual_percent"] == pytest.approx(-2.0)
+    assert result["costs"]["posted_commission_sek"] == pytest.approx(10.0)
+    assert result["lineage"]["transaction_truncation_risk"] is False
+    assert len(app.avanza.transaction_calls) == 2
 
 
 def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monkeypatch):

@@ -31,7 +31,9 @@ from avanza_mcp.market_data import (
     display_symbol,
     infer_country_from_metadata,
     infer_currency_from_metadata,
+    instrument_chart_summary_from_payload,
     map_account_performance_period,
+    map_instrument_chart_resolution,
     market_quote_change_percent,
     market_quote_first_text,
     market_quote_last,
@@ -43,6 +45,7 @@ from avanza_mcp.market_data import (
     trailing_parenthesized_symbol,
 )
 from avanza_mcp.models import AccountDataSnapshot, AvanzaTenantSession
+from avanza_mcp.performance_attribution import build_account_cost_attribution
 from avanza_mcp.records import (
     flattened_search_hits,
     instrument_is_eth_like,
@@ -242,6 +245,104 @@ class CoreSnapshotsMixin:
         account_id, scrambled_account_id = self.resolve_account_for_performance(avanza, requested_account_id)
         payload = avanza.get_account_performance_chart_data([scrambled_account_id], period_enum)
         return account_performance_summary_from_payload(payload, account_id, period_label, period_enum.value)
+
+    def instrument_chart_snapshot(
+        self,
+        avanza: Any,
+        orderbook_id: Any,
+        requested_period: Any,
+        requested_resolution: Any,
+    ) -> dict[str, Any]:
+        normalized_orderbook_id = str(orderbook_id or "").strip()
+        if not normalized_orderbook_id:
+            raise ValueError("orderbook_id is required.")
+        period_label, period_enum = map_account_performance_period(requested_period)
+        resolution_label, resolution_enum = map_instrument_chart_resolution(requested_resolution)
+        payload = avanza.get_chart_data(normalized_orderbook_id, period_enum, resolution_enum)
+        return instrument_chart_summary_from_payload(
+            payload,
+            orderbook_id=normalized_orderbook_id,
+            period=period_label,
+            resolution=resolution_label,
+        )
+
+    def account_cost_attribution_snapshot(
+        self,
+        avanza: Any,
+        requested_account_id: str,
+        requested_period: Any,
+        *,
+        start_date: date | None,
+        fx_fee_rate: float,
+        include_daily: bool,
+        top_cost_days: int,
+    ) -> dict[str, Any]:
+        performance = self.account_performance_snapshot(
+            avanza,
+            requested_account_id,
+            requested_period,
+        )
+        account_id = str(performance["account_id"])
+        candidate_points = [
+            point
+            for point in performance.get("chart_points", [])
+            if point.get("date")
+            and point.get("development_relative", {}).get("value") is not None
+            and point.get("account_value", {}).get("value") is not None
+            and (start_date is None or str(point["date"]) >= start_date.isoformat())
+        ]
+        if len(candidate_points) < 2:
+            raise ValueError("At least two account-performance points are required for attribution.")
+        effective_start = date.fromisoformat(str(candidate_points[0]["date"]))
+        effective_end = date.fromisoformat(str(candidate_points[-1]["date"]))
+
+        transactions = self.transactions_snapshot(
+            avanza,
+            account_id,
+            transactions_from=effective_start,
+            transactions_to=effective_end,
+            types=[TransactionsDetailsType.BUY, TransactionsDetailsType.SELL],
+            max_elements=20_000,
+            executed_only=True,
+            compact=False,
+        )
+        cash_events = self.transactions_snapshot(
+            avanza,
+            account_id,
+            transactions_from=effective_start,
+            transactions_to=effective_end,
+            types=[
+                TransactionsDetailsType.DIVIDEND,
+                TransactionsDetailsType.WITHDRAW,
+                TransactionsDetailsType.DEPOSIT,
+                TransactionsDetailsType.UNKNOWN,
+            ],
+            max_elements=20_000,
+            executed_only=False,
+            compact=False,
+        )
+        if transactions.get("truncation_risk") or cash_events.get("truncation_risk"):
+            raise RuntimeError("Transaction history reached the 20,000-row safety cap; attribution is incomplete.")
+
+        result = build_account_cost_attribution(
+            account_id=account_id,
+            performance_points=performance.get("chart_points", []),
+            transaction_rows=transactions.get("transactions", []),
+            cash_event_rows=cash_events.get("transactions", []),
+            start_date=start_date,
+            fx_fee_rate=fx_fee_rate,
+            include_daily=include_daily,
+            top_cost_days=top_cost_days,
+        )
+        result["period"] = performance["period"]
+        result["lineage"] = {
+            "performance_tool": "avanza_account_performance",
+            "transaction_tool": "avanza_transactions",
+            "transaction_first_available_date": transactions.get("first_available_date"),
+            "transaction_truncation_risk": False,
+            "cash_event_truncation_risk": False,
+        }
+        return result
 
     def data_source_status_snapshot(
         self,

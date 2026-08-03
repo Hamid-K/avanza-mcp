@@ -2,6 +2,7 @@
 
 from avanza_mcp.config import (
     ACCOUNT_PERFORMANCE_PERIOD_CHOICES,
+    INSTRUMENT_CHART_RESOLUTION_CHOICES,
     STOPLOSS_ORDER_VALID_DAYS_DEFAULT,
     TRADINGVIEW_DEFAULT_EXCHANGE,
     TRADINGVIEW_DEFAULT_MARKET,
@@ -192,6 +193,36 @@ MCP_TOOLS = [
             "properties": {
                 "account_id": {"type": "string"},
                 "period": {"type": "string", "enum": ACCOUNT_PERFORMANCE_PERIOD_CHOICES, "default": "SINCE_START"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_instrument_chart",
+        "description": "Read authenticated Avanza OHLC history for one order book and period. Read-only; intended for auditable performance and counterfactual analysis.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "orderbook_id": {"type": ["string", "integer"]},
+                "period": {"type": "string", "enum": ACCOUNT_PERFORMANCE_PERIOD_CHOICES, "default": "THREE_MONTHS"},
+                "resolution": {"type": "string", "enum": INSTRUMENT_CHART_RESOLUTION_CHOICES, "default": "DAY"},
+            },
+            "required": ["orderbook_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_account_cost_attribution",
+        "description": "Replay one account's Avanza cash-flow-adjusted return with posted commission and modeled FX removed. Read-only and fail-closed on truncated history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "period": {"type": "string", "enum": ACCOUNT_PERFORMANCE_PERIOD_CHOICES, "default": "THREE_MONTHS"},
+                "start_date": {"type": "string"},
+                "fx_fee_rate": {"type": "number", "minimum": 0, "maximum": 0.02, "default": 0.0025},
+                "include_daily": {"type": "boolean", "default": False},
+                "top_cost_days": {"type": "integer", "minimum": 0, "maximum": 100, "default": 10},
             },
             "additionalProperties": False,
         },
@@ -1444,6 +1475,8 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_accounts",
     "avanza_select_account",
     "avanza_account_performance",
+    "avanza_instrument_chart",
+    "avanza_account_cost_attribution",
     "avanza_portfolio",
     "avanza_stoplosses",
     "avanza_stoploss_strategy_audit",

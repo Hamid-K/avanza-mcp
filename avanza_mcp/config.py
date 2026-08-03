@@ -11,7 +11,7 @@ import re
 import tomllib
 from pathlib import Path
 
-from avanza.constants import TimePeriod, TransactionsDetailsType
+from avanza.constants import Resolution, TimePeriod, TransactionsDetailsType
 from rich.console import Console
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +62,7 @@ ACCOUNT_PERFORMANCE_PERIOD_CHOICES = [
     "THREE_YEARS",
     "SINCE_START",
 ]
+INSTRUMENT_CHART_RESOLUTION_CHOICES = [item.value for item in Resolution]
 LIVE_REFRESH_SECONDS = 5.0
 REALTIME_STATUS_REFRESH_SECONDS = 300.0
 QUOTE_CACHE_SECONDS = 8.0

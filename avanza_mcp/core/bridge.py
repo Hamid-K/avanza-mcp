@@ -9,6 +9,7 @@ from avanza_mcp import avanza_ext, config, utils
 from avanza_mcp.avanza_ext import estimate_avanza_fee
 from avanza_mcp.config import (
     APP_VERSION,
+    DEFAULT_FX_FEE_RATE,
     LIVE_REFRESH_SECONDS,
     TRADINGVIEW_DEFAULT_EXCHANGE,
     TRADINGVIEW_DEFAULT_MARKET,
@@ -698,6 +699,26 @@ class CoreBridgeMixin:
             requested_period = arguments.get("period", "SINCE_START")
             requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
             return self.account_performance_snapshot(avanza, requested_account_id, requested_period)
+
+        if tool == "avanza_instrument_chart":
+            return self.instrument_chart_snapshot(
+                avanza,
+                arguments.get("orderbook_id"),
+                arguments.get("period", "THREE_MONTHS"),
+                arguments.get("resolution", "DAY"),
+            )
+
+        if tool == "avanza_account_cost_attribution":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            return self.account_cost_attribution_snapshot(
+                avanza,
+                requested_account_id,
+                arguments.get("period", "THREE_MONTHS"),
+                start_date=parse_optional_iso_date(arguments.get("start_date"), label="start_date"),
+                fx_fee_rate=float(arguments.get("fx_fee_rate", DEFAULT_FX_FEE_RATE)),
+                include_daily=bool(arguments.get("include_daily", False)),
+                top_cost_days=int(arguments.get("top_cost_days", 10)),
+            )
 
         if tool == "tv_scrape_symbol_analytics":
             symbol = str(arguments["symbol"])

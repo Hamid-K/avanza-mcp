@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.27 - 2026-08-04
+
+- Added a read-only authenticated `avanza_instrument_chart` MCP tool for normalized OHLC history by order book, period, and resolution so portfolio attribution does not substitute third-party or guessed prices.
+- Corrected numeric Avanza chart timestamps to Europe/Stockholm calendar dates, preventing one-day cash-flow and transaction misalignment during CET/CEST.
+- Added a fail-closed `avanza_account_cost_attribution` replay that preserves Avanza's cash-flow-adjusted actual path while separately adding back posted commission and explicitly modeled FX; it reports monthly and worst-day damage without granting trade authority.
+
 ## 0.2.26 - 2026-08-03
 
 - Added a read-only recovery-reachability audit that flags fixed BUY rows beyond a configurable review distance, overly wide reversal gliders, and deep-only designs without treating mechanical thresholds as entry advice.

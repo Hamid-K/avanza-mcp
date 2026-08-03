@@ -3,8 +3,9 @@
 import re
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from avanza.constants import TimePeriod
+from avanza.constants import Resolution, TimePeriod
 
 from avanza_mcp import utils
 from avanza_mcp.config import (
@@ -14,6 +15,11 @@ from avanza_mcp.config import (
     MARKET_CURRENCY_HINTS,
 )
 from avanza_mcp.utils import first_unit_text, first_value_number, nested_value
+
+try:
+    STOCKHOLM_TIMEZONE = ZoneInfo("Europe/Stockholm")
+except ZoneInfoNotFoundError:  # pragma: no cover - platform fallback
+    STOCKHOLM_TIMEZONE = timezone.utc
 
 def trailing_parenthesized_symbol(text: str | None) -> str:
     source = str(text or "").strip()
@@ -76,6 +82,15 @@ def map_account_performance_period(period: Any) -> tuple[str, TimePeriod]:
     return canonical, mapped
 
 
+def map_instrument_chart_resolution(resolution: Any) -> tuple[str, Resolution]:
+    requested = normalize_period_name(resolution or "DAY")
+    for candidate in Resolution:
+        if requested in {candidate.name, normalize_period_name(candidate.value)}:
+            return candidate.value, candidate
+    choices = ", ".join(item.value for item in Resolution)
+    raise ValueError(f"Invalid chart resolution '{resolution}'. Choices: {choices}")
+
+
 def payload_to_dict(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
@@ -118,7 +133,7 @@ def chart_date_text(value: Any) -> str:
             timestamp = float(value)
             if timestamp > 10_000_000_000:
                 timestamp /= 1000.0
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
+            return datetime.fromtimestamp(timestamp, tz=STOCKHOLM_TIMEZONE).date().isoformat()
         except Exception:
             return str(value)
     text = str(value or "").strip()
@@ -127,6 +142,68 @@ def chart_date_text(value: Any) -> str:
     if "T" in text:
         return text.split("T", 1)[0]
     return text
+
+
+def instrument_chart_summary_from_payload(
+    payload: Any,
+    *,
+    orderbook_id: str,
+    period: str,
+    resolution: str,
+) -> dict[str, Any]:
+    payload_dict = payload_to_dict(payload)
+    raw_points = payload_dict.get("ohlc")
+    if not isinstance(raw_points, list):
+        raw_points = []
+
+    points: list[dict[str, Any]] = []
+    for raw_point in raw_points:
+        point = payload_to_dict(raw_point)
+        timestamp = point.get("timestamp")
+        if timestamp is None:
+            continue
+        points.append(
+            {
+                "timestamp": timestamp,
+                "date": chart_date_text(timestamp),
+                "open": utils.scalar_number(point.get("open")),
+                "high": utils.scalar_number(point.get("high")),
+                "low": utils.scalar_number(point.get("low")),
+                "close": utils.scalar_number(point.get("close")),
+                "volume": utils.scalar_number(
+                    point.get("totalVolumeTraded")
+                    if point.get("totalVolumeTraded") is not None
+                    else point.get("volume")
+                ),
+            }
+        )
+
+    metadata = payload_dict.get("metadata")
+    metadata_dict = payload_to_dict(metadata)
+    actual_resolution = metadata_dict.get("resolution")
+    if hasattr(actual_resolution, "value"):
+        actual_resolution = actual_resolution.value
+    actual_resolution = str(actual_resolution or resolution)
+
+    from_value = payload_dict.get("from")
+    if from_value is None:
+        from_value = payload_dict.get("from_")
+
+    return {
+        "orderbook_id": orderbook_id,
+        "period": period,
+        "requested_resolution": resolution,
+        "resolution": actual_resolution,
+        "from": from_value,
+        "to": payload_dict.get("to"),
+        "previous_closing_price": utils.scalar_number(
+            payload_dict.get("previousClosingPrice")
+            if payload_dict.get("previousClosingPrice") is not None
+            else payload_dict.get("previous_closing_price")
+        ),
+        "point_count": len(points),
+        "points": points,
+    }
 
 
 def normalize_relative_unit(unit: Any) -> str:
