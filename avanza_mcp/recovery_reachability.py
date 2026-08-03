@@ -18,6 +18,7 @@ def classify_buy_reachability(
     *,
     last_price: float | None,
     max_fixed_distance_percent: float = 15.0,
+    max_practical_fixed_distance_percent: float = 8.0,
     max_reversal_trigger_percent: float = 4.0,
 ) -> dict[str, Any]:
     """Classify one active BUY row without treating distance as trade advice."""
@@ -38,8 +39,10 @@ def classify_buy_reachability(
             if distance_percent < 0:
                 classification = "AT_OR_ABOVE_MARK"
                 issue = classification
-            elif distance_percent <= max_fixed_distance_percent:
+            elif distance_percent <= max_practical_fixed_distance_percent:
                 classification = "REACHABLE_FIXED_REVIEW"
+            elif distance_percent <= max_fixed_distance_percent:
+                classification = "SECONDARY_FIXED_REVIEW"
             else:
                 classification = "DEEP_FIXED_REVIEW"
                 issue = classification
@@ -65,6 +68,7 @@ def classify_buy_reachability(
         "reachability_classification": classification,
         "reachability_issue": issue,
         "max_fixed_distance_percent": float(max_fixed_distance_percent),
+        "max_practical_fixed_distance_percent": float(max_practical_fixed_distance_percent),
         "max_reversal_trigger_percent": float(max_reversal_trigger_percent),
         "trade_authority": False,
     }
@@ -75,6 +79,7 @@ def audit_buy_reachability(
     *,
     quotes_by_orderbook: dict[str, float | None],
     max_fixed_distance_percent: float = 15.0,
+    max_practical_fixed_distance_percent: float = 8.0,
     max_reversal_trigger_percent: float = 4.0,
 ) -> dict[str, Any]:
     """Audit all active BUY rows and reject deep-only recovery designs."""
@@ -91,6 +96,7 @@ def audit_buy_reachability(
             source,
             last_price=quotes_by_orderbook.get(orderbook_id),
             max_fixed_distance_percent=max_fixed_distance_percent,
+            max_practical_fixed_distance_percent=max_practical_fixed_distance_percent,
             max_reversal_trigger_percent=max_reversal_trigger_percent,
         )
         classified.append(row)
@@ -109,6 +115,11 @@ def audit_buy_reachability(
             row
             for row in items
             if row["reachability_classification"] == "DEEP_FIXED_REVIEW"
+        ]
+        secondary = [
+            row
+            for row in items
+            if row["reachability_classification"] == "SECONDARY_FIXED_REVIEW"
         ]
         wide = [
             row
@@ -129,6 +140,8 @@ def audit_buy_reachability(
         issues: list[str] = []
         if deep and not reachable:
             issues.append("DEEP_ONLY_RECOVERY")
+        elif secondary and not reachable:
+            issues.append("SECONDARY_ONLY_RECOVERY")
         if wide:
             issues.append("WIDE_REVERSAL_ROW")
         if unavailable:
@@ -150,6 +163,8 @@ def audit_buy_reachability(
                 "active_buy_count": len(items),
                 "active_buy_volume": sum(_number(row.get("volume")) or 0.0 for row in items),
                 "reachable_count": len(reachable),
+                "practical_count": len(reachable),
+                "secondary_count": len(secondary),
                 "deep_count": len(deep),
                 "wide_reversal_count": len(wide),
                 "issues": issues,
@@ -175,9 +190,10 @@ def audit_buy_reachability(
             key=lambda row: (str(row.get("stock") or ""), str(row.get("orderbook_id") or "")),
         ),
         "policy_note": (
-            "Distance thresholds are fail-closed review limits, not recommended entries. "
-            "A deep row cannot be the sole live recovery path; event, thesis, technical, "
-            "risk, capacity, and full-friction gates still determine any replacement."
+            "The practical fixed-price band is 8%; 8-15% is secondary review only and "
+            "over 15% is deep review. These are fail-closed review limits, not recommended "
+            "entries. A deep or secondary row cannot be the sole live recovery path; event, "
+            "thesis, technical, risk, capacity, and full-friction gates still determine any replacement."
         ),
         "broker_mutation": False,
         "trade_authority": False,

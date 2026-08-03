@@ -930,6 +930,7 @@ MCP_TOOLS = [
             "properties": {
                 "account_id": {"type": "string"},
                 "max_fixed_distance_percent": {"type": "number", "default": 15.0},
+                "max_practical_fixed_distance_percent": {"type": "number", "default": 8.0},
                 "max_reversal_trigger_percent": {"type": "number", "default": 4.0},
             },
             "additionalProperties": False,

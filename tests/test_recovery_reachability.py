@@ -38,6 +38,16 @@ def test_classifies_reachable_and_deep_fixed_buy_rows():
     assert deep["reachability_issue"] == "DEEP_FIXED_REVIEW"
 
 
+def test_classifies_secondary_fixed_row_outside_practical_band():
+    secondary = classify_buy_reachability(
+        _row(trigger_value=90),
+        last_price=100,
+    )
+    assert secondary["reachability_classification"] == "SECONDARY_FIXED_REVIEW"
+    assert secondary["distance_to_trigger_percent"] == 10
+    assert secondary["reachability_issue"] is None
+
+
 def test_classifies_reversal_trigger_width_without_inferring_entry():
     reachable = classify_buy_reachability(
         _row(
@@ -96,6 +106,17 @@ def test_audit_accepts_deep_residual_only_when_paired_with_reachable_path():
     assert report["issue_count"] == 0
     assert report["instruments"][0]["reachable_count"] == 1
     assert report["instruments"][0]["deep_count"] == 1
+
+
+def test_audit_blocks_secondary_only_recovery_without_practical_participation():
+    report = audit_buy_reachability(
+        [_row(trigger_value=90)],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+    assert report["complete"] is False
+    assert report["issue_count"] == 1
+    assert report["instruments"][0]["issues"] == ["SECONDARY_ONLY_RECOVERY"]
+    assert report["instruments"][0]["secondary_count"] == 1
 
 
 def test_audit_flags_wide_reversal_even_when_another_row_is_reachable():

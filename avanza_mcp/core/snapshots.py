@@ -1907,6 +1907,7 @@ class CoreSnapshotsMixin:
         account_id: str,
         *,
         max_fixed_distance_percent: float = 15.0,
+        max_practical_fixed_distance_percent: float = 8.0,
         max_reversal_trigger_percent: float = 4.0,
     ) -> dict[str, Any]:
         """Audit whether active BUY rows are plausible recovery paths."""
@@ -1935,6 +1936,7 @@ class CoreSnapshotsMixin:
             buy_rows,
             quotes_by_orderbook=quote_map,
             max_fixed_distance_percent=max_fixed_distance_percent,
+            max_practical_fixed_distance_percent=max_practical_fixed_distance_percent,
             max_reversal_trigger_percent=max_reversal_trigger_percent,
         )
         plan_registry = getattr(self, "position_strategy_registry", None)

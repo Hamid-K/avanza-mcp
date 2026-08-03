@@ -353,7 +353,7 @@ For multi-session setups:
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
-| `avanza_recovery_reachability` | Audit every active BUY row for fixed-price distance, reversal-trigger width, and deep-only recovery; thresholds are fail-closed review limits, never placement advice. |
+| `avanza_recovery_reachability` | Audit every active BUY row for practical fixed-price distance, secondary/deep residuals, reversal-trigger width, and recovery coverage; thresholds are fail-closed review limits, never placement advice. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
@@ -416,12 +416,14 @@ match. `--confirm` changes only the supplied clean sheet and master; it never
 changes Avanza or the private registry and never grants trade authority.
 
 Run `avanza_recovery_reachability` separately for each exact account after
-refreshing holdings and stops. Its default `15%` fixed-distance and `4%`
-reversal-width limits identify rows requiring instrument-level review; they do
-not recommend an entry. A deep row without reachable participation is blocked
-as practical recovery coverage. Event, thesis, technical, risk, factor,
-capacity, and full-friction gates still determine whether the correction is a
-nearer row or an explicit dormant review with no active BUY.
+refreshing holdings and stops. Its default `8%` fixed-distance band is
+practical participation; `8-15%` is secondary review only, `15%+` is deep
+review, and `4%` is the maximum default reversal width. These are review
+boundaries, not entry recommendations. A deep- or secondary-only row without
+practical participation is blocked as recovery coverage. Event, thesis,
+technical, risk, factor, capacity, and full-friction gates still determine
+whether a correction is a nearer row or an explicit dormant review with no
+active BUY.
 
 ```bash
 avanza-strategy-audit \

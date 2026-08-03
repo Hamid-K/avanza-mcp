@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.29 - 2026-08-04
+
+- Tightened recovery reachability semantics: fixed BUY rows within `8%` are practical participation, `8-15%` rows are secondary review only, and rows beyond `15%` are deep review. Secondary- or deep-only recovery now fails closed.
+
 ## 0.2.28 - 2026-08-04
 
 - Added a read-only frozen-starting-holdings attribution replay using authenticated Avanza daily charts, current holdings, transactions, dividends, and external cash events.

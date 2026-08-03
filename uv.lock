@@ -52,7 +52,7 @@ wheels = [
 
 [[package]]
 name = "avanza-mcp"
-version = "0.2.28"
+version = "0.2.29"
 source = { editable = "." }
 dependencies = [
     { name = "avanza-api" },

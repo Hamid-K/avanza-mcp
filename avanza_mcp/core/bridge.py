@@ -1662,6 +1662,9 @@ class CoreBridgeMixin:
                 max_fixed_distance_percent=float(
                     arguments.get("max_fixed_distance_percent", 15.0)
                 ),
+                max_practical_fixed_distance_percent=float(
+                    arguments.get("max_practical_fixed_distance_percent", 8.0)
+                ),
                 max_reversal_trigger_percent=float(
                     arguments.get("max_reversal_trigger_percent", 4.0)
                 ),

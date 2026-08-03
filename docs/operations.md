@@ -277,7 +277,7 @@ Multi-session MCP behavior:
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
-| `avanza_recovery_reachability` | Audit active BUY rows for fixed-price distance, reversal-trigger width, and deep-only recovery without granting trade authority. |
+| `avanza_recovery_reachability` | Audit active BUY rows for practical fixed-price distance, secondary/deep residuals, reversal-trigger width, and recovery coverage without granting trade authority. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
@@ -343,12 +343,14 @@ the broker or registry, and it must not be used to hide expected fill/order
 drift or turn reviewed metadata into trade instructions.
 
 After the exact position and stop audits, run
-`avanza_recovery_reachability` per account. The default `15%` fixed-price and
-`4%` reversal-trigger limits are review boundaries, not universal entry
-settings. A deep-only row or unpaired `DEEP_RESIDUAL` blocks practical recovery
-coverage. Either design instrument-specific reachable participation that
-passes every event/risk/friction gate, or record an explicit dormant gate and
-leave no misleading crash-only row as implemented recovery.
+`avanza_recovery_reachability` per account. The default `8%` fixed-price band
+is practical participation; `8-15%` is secondary review only, `15%+` is deep
+review, and `4%` is the maximum default reversal trigger. These are review
+boundaries, not universal entry settings. A deep- or secondary-only row or
+unpaired `DEEP_RESIDUAL` blocks practical recovery coverage. Either design
+instrument-specific reachable participation that passes every
+event/risk/friction gate, or record an explicit dormant gate and leave no
+misleading crash-only row as implemented recovery.
 
 ### TradingView pre-open workflow
 
