@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.26 - 2026-08-03
+
+- Added a read-only recovery-reachability audit that flags fixed BUY rows beyond a configurable review distance, overly wide reversal gliders, and deep-only designs without treating mechanical thresholds as entry advice.
+- Made deep residuals fail closed as practical recovery coverage unless a separate reachable participation path exists; every result remains analysis-only and carries no broker mutation or trade authority.
+- Replaced the obsolete crash-only ladder convention with instrument-calibrated reachable participation, secondary residual, and dormant event/reversal tranches, plus an economically constrained one-third SELL framework for sufficiently large positions.
+
+## 0.2.25 - 2026-08-03
+
+- Added a read-only, fail-closed semantic audit across the instrument master, account clean sheet, and private position registry, including exact 65-instrument/107-position coverage, live-fingerprint checks, source hashes, and field-level contradiction evidence.
+- Added a guarded analysis-only semantic synchronizer that requires matching live fingerprints and a documented reason before copying later reviewed account semantics into the clean sheet and master; it never changes the broker or private registry and never grants trade authority.
+- Added an explicit account-level semantic-plan schema to the strategy master so account-specific gates, statuses, theses, risk rules, and next reviews remain auditable without forcing aggregate prose onto both accounts.
+
 ## 0.2.24 - 2026-08-03
 
 - Made `avanza_sold_today_buyback_state` fail closed on economic sold-slice recovery: pre-existing or generic BUY stops and unattributed regular BUY orders remain visible as conditional exposure but no longer conceal a missing recovery row.

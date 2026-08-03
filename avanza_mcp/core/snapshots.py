@@ -78,6 +78,7 @@ from avanza_mcp.rendering import (
     open_order_order_book_id,
     position_order_book_id,
 )
+from avanza_mcp.recovery_reachability import audit_buy_reachability
 from avanza_mcp.strategy_intent import SELL_STOPLOSS_STRATEGY_INTENTS
 from avanza_mcp.utils import nested_value
 from datetime import date, datetime, timedelta, timezone
@@ -1689,6 +1690,56 @@ class CoreSnapshotsMixin:
             "account_id": account_id,
             "date": target_date.isoformat(),
             "items": rows,
+        }
+
+    def recovery_reachability_snapshot(
+        self,
+        avanza: Any,
+        account_id: str,
+        *,
+        max_fixed_distance_percent: float = 15.0,
+        max_reversal_trigger_percent: float = 4.0,
+    ) -> dict[str, Any]:
+        """Audit whether active BUY rows are plausible recovery paths."""
+
+        account_id = account_id or self.require_selected_account_id()
+        stoploss_items = self.filtered_stoploss_items(avanza, account_id)
+        buy_rows = [
+            self.stoploss_mcp_row(item)
+            for item in stoploss_items
+            if stop_loss_side(item) == "BUY"
+            and str(item.get("status", "")).upper() == "ACTIVE"
+        ]
+        orderbook_ids = sorted(
+            {
+                str(row.get("orderbook_id") or "").strip()
+                for row in buy_rows
+                if str(row.get("orderbook_id") or "").strip()
+            }
+        )
+        quotes = self.orderbook_quotes_snapshot(orderbook_ids, refresh=True)
+        quote_map = {
+            str(row.get("orderbook_id") or ""): row.get("last")
+            for row in quotes.get("quotes", [])
+        }
+        audit = audit_buy_reachability(
+            buy_rows,
+            quotes_by_orderbook=quote_map,
+            max_fixed_distance_percent=max_fixed_distance_percent,
+            max_reversal_trigger_percent=max_reversal_trigger_percent,
+        )
+        plan_registry = getattr(self, "position_strategy_registry", None)
+        if plan_registry is not None:
+            for row in audit["instruments"]:
+                plan = plan_registry.lookup(account_id, str(row.get("orderbook_id") or ""))
+                row["position_audit_status"] = (plan or {}).get("audit_status")
+                row["position_gate"] = (plan or {}).get("gate")
+                row["position_next_gate"] = (plan or {}).get("next_gate")
+        return {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "account_id": account_id,
+            "quote_timestamp": quotes.get("timestamp"),
+            **audit,
         }
 
     def recent_fills_needing_protection_snapshot(

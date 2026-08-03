@@ -350,6 +350,7 @@ For multi-session setups:
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
+| `avanza_recovery_reachability` | Audit every active BUY row for fixed-price distance, reversal-trigger width, and deep-only recovery; thresholds are fail-closed review limits, never placement advice. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
@@ -398,6 +399,37 @@ strategy gate, and reviewed aggregate holding/stop/open-order exposure to exact
 live state. A fill, holding change, stop edit, leftover order, missing plan, or
 stale plan makes `avanza_position_strategy_audit` fail closed until the change
 is reviewed. Rebaselining records a decision; it never authorizes a trade.
+
+Mechanical registry equality does not prove that analysis sources carry the
+same meaning. Use `avanza-strategy-audit` to compare every account-position
+semantic field and live fingerprint across an instrument master, clean sheet,
+and private registry. The command exits nonzero on missing coverage or any
+field contradiction and includes source SHA-256 hashes in its JSON result.
+
+`avanza-strategy-sync` is a separate guarded analysis-only maintenance command.
+It defaults to dry-run, requires a documented `--reason`, and refuses to
+synchronize semantics unless holdings and active BUY/SELL fingerprints already
+match. `--confirm` changes only the supplied clean sheet and master; it never
+changes Avanza or the private registry and never grants trade authority.
+
+Run `avanza_recovery_reachability` separately for each exact account after
+refreshing holdings and stops. Its default `15%` fixed-distance and `4%`
+reversal-width limits identify rows requiring instrument-level review; they do
+not recommend an entry. A deep row without reachable participation is blocked
+as practical recovery coverage. Event, thesis, technical, risk, factor,
+capacity, and full-friction gates still determine whether the correction is a
+nearer row or an explicit dormant review with no active BUY.
+
+```bash
+avanza-strategy-audit \
+  --master output/PORTFOLIO_INSTRUMENT_STRATEGY_MASTER_20260731.json \
+  --clean-sheet output/PORTFOLIO_CLEAN_SHEET_POST_MINI_20260731.json \
+  --registry .avanza_position_strategy.json \
+  --account-map Personal=5227886 \
+  --account-map DarkCell=7616265 \
+  --expected-instruments 65 \
+  --expected-positions 107
+```
 
 ### TradingView/Zacks scrape mode notes
 

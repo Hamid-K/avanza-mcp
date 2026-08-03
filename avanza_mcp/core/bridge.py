@@ -1621,6 +1621,18 @@ class CoreBridgeMixin:
                 tight_trigger_percent_max=float(arguments.get("tight_trigger_percent_max", 8.0)),
             )
 
+        if tool == "avanza_recovery_reachability":
+            return self.recovery_reachability_snapshot(
+                avanza,
+                account_id,
+                max_fixed_distance_percent=float(
+                    arguments.get("max_fixed_distance_percent", 15.0)
+                ),
+                max_reversal_trigger_percent=float(
+                    arguments.get("max_reversal_trigger_percent", 4.0)
+                ),
+            )
+
         if tool == "avanza_recent_fills_needing_protection":
             return self.recent_fills_needing_protection_snapshot(
                 avanza,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "avanza-mcp"
-version = "0.2.24"
+version = "0.2.26"
 description = "CLI/TUI Avanza toolkit with MCP bridge, paper trading, and stop-loss/order workflows built on avanza-api."
 authors = [
   {name = "Hamid Kashfi"},
@@ -28,6 +28,8 @@ dev = [
 
 [project.scripts]
 avanza-cli = "avanza_cli:main"
+avanza-strategy-audit = "avanza_mcp.strategy_semantic_audit:main"
+avanza-strategy-sync = "avanza_mcp.strategy_semantic_sync:main"
 
 [tool.setuptools]
 py-modules = ["avanza_cli"]

@@ -53,9 +53,9 @@ Standing trading conventions:
 - The sold `Antal` is the maximum missing slice to reconstruct, not a mandate to restore it. A remaining position in the same account and combined exposure both affect the forward target.
 - Weak fundamentals, squeeze activity, retail flow, sector sympathy, abnormal volume, and event risk must all be weighed together. A tactical setup still needs an exact risk budget, friction hurdle, and fresh approval.
 - Meme risk, weak fundamentals, or extension can justify a no-buy decision. Never manufacture a trade merely because a tracker is moving.
-- A deep residual may remain the correct plan during a squeeze when chasing would violate valuation, reversal, friction, or capacity gates.
+- A deep residual may remain a secondary tail plan during a squeeze, but it is not practical recovery coverage unless a separate reachable participation path exists. If current evidence does not justify that nearer path, record the exact event/reversal gate instead of calling the deep row implemented recovery.
 - Treat sell-side protection and buy-back orders for the same instrument as one coordinated strategy. For volatile trackers, crypto-linked products, high-beta names, and spike-sale buy-backs, list current holding, sell-stop `Antal`, buy-stop `Antal`, recent sold `Antal`/price, and current quote before changing orders.
-- Do not leave a shallow `FOLLOW_DOWNWARDS` buy-back that can buy near or above a recent stop-sale price while sell-side stops are still active. Require a dead-zone and prefer staged deeper buy-backs, such as `12% / 18% / 26% / 34%`, adjusted to volatility and thesis risk.
+- Do not leave a shallow `FOLLOW_DOWNWARDS` buy-back that can buy near or above a recent stop-sale price while sell-side stops are still active. Require a dead-zone, but do not replace participation with remote crash-only ladders. Treat a fixed BUY more than `15%` below market or a reversal glider wider than `4%` as a review issue; calibrate a reachable tranche from support, volatility, event state, and full friction, with any deeper residual secondary only.
 - Stop-loss tables must show exact `Max ned / Kurs / Antal`.
 - Always calculate effective drop:
   `effective_drop = 1 - ((1 - MaxNed/100) * (Kurs/100))`

@@ -1700,6 +1700,17 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     assert acn["missing_buyback_volume"] == 3
     assert acn["coverage_semantics"] == "POST_SALE_ATTRIBUTED_RECOVERY_ONLY"
 
+    reachability = app.execute_mcp_tool(
+        "avanza_recovery_reachability",
+        {"account_id": "acc-1"},
+    )
+    assert reachability["active_buy_count"] == 1
+    assert reachability["instrument_count"] == 1
+    assert reachability["review_required"] is True
+    assert reachability["instruments"][0]["issues"] == ["WIDE_REVERSAL_ROW"]
+    assert reachability["broker_mutation"] is False
+    assert reachability["trade_authority"] is False
+
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
     assert recent["review_items"][0]["strategy_classification_required"] is True

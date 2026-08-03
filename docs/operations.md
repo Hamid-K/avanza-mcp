@@ -274,6 +274,7 @@ Multi-session MCP behavior:
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
+| `avanza_recovery_reachability` | Audit active BUY rows for fixed-price distance, reversal-trigger width, and deep-only recovery without granting trade authority. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
@@ -322,6 +323,29 @@ exposure. `MISSING`, `STALE_MISMATCH`, or `REGISTRY_UNAVAILABLE` blocks a clean
 result and mutation until reviewed. Fills and intentional order changes create
 drift by design; do not silently rebaseline them. This registry is also audit
 metadata only and never trade authorization.
+
+Run `avanza-strategy-audit` after the live position/stop audits to prove that
+the instrument master, account clean sheet, and private registry have complete
+and identical reviewed semantics. Supply an explicit label-to-account mapping
+for every account. The JSON result records exact coverage, field-level issues,
+source SHA-256 hashes, `broker_mutation=false`, and `trade_authority=false`; any
+nonzero exit blocks a clean result.
+
+Use `avanza-strategy-sync` only after reviewing the reported contradictions and
+choosing the later authoritative account plan. It is dry-run by default,
+requires `--reason`, and verifies matching holdings plus active BUY/SELL volume
+and row counts before it can write. `--confirm` atomically updates only the
+clean sheet and master with account-specific semantic plans. It does not mutate
+the broker or registry, and it must not be used to hide expected fill/order
+drift or turn reviewed metadata into trade instructions.
+
+After the exact position and stop audits, run
+`avanza_recovery_reachability` per account. The default `15%` fixed-price and
+`4%` reversal-trigger limits are review boundaries, not universal entry
+settings. A deep-only row or unpaired `DEEP_RESIDUAL` blocks practical recovery
+coverage. Either design instrument-specific reachable participation that
+passes every event/risk/friction gate, or record an explicit dormant gate and
+leave no misleading crash-only row as implemented recovery.
 
 ### TradingView pre-open workflow
 

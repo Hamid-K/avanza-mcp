@@ -873,6 +873,23 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_recovery_reachability",
+        "description": (
+            "Read-only fail-closed audit of active BUY reachability. Flags fixed rows beyond "
+            "the review-distance limit, overly wide reversal gliders, and deep-only recovery "
+            "designs without treating the thresholds as placement advice."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "max_fixed_distance_percent": {"type": "number", "default": 15.0},
+                "max_reversal_trigger_percent": {"type": "number", "default": 4.0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_recent_fills_needing_protection",
         "description": (
             "Review recent BUY fills without assuming they require full-holding SELL stops. "
@@ -1445,6 +1462,7 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_instrument_state",
     "avanza_protection_gaps",
     "avanza_sold_today_buyback_state",
+    "avanza_recovery_reachability",
     "avanza_recent_fills_needing_protection",
     "avanza_verify_no_raw_failed_orders",
     "avanza_verify_protection",
