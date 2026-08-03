@@ -720,6 +720,19 @@ class CoreBridgeMixin:
                 top_cost_days=int(arguments.get("top_cost_days", 10)),
             )
 
+        if tool == "avanza_frozen_holdings_attribution":
+            requested_account_id = str(arguments.get("account_id") or self.selected_account_id or "")
+            requested_start_date = parse_optional_iso_date(arguments.get("start_date"), label="start_date")
+            if requested_start_date is None:
+                raise ValueError("start_date is required.")
+            return self.frozen_holdings_attribution_snapshot(
+                avanza,
+                requested_account_id,
+                arguments.get("period", "THREE_MONTHS"),
+                start_date=requested_start_date,
+                include_daily=bool(arguments.get("include_daily", False)),
+            )
+
         if tool == "tv_scrape_symbol_analytics":
             symbol = str(arguments["symbol"])
             exchange = str(arguments.get("exchange", TRADINGVIEW_DEFAULT_EXCHANGE))

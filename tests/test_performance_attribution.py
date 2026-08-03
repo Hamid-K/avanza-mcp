@@ -6,6 +6,7 @@ from avanza_mcp.performance_attribution import (
     build_account_cost_attribution,
     summarize_cash_events,
 )
+from avanza_mcp.frozen_holdings_attribution import build_frozen_holdings_attribution
 
 
 def point(day: str, relative: float, value: float) -> dict:
@@ -157,3 +158,56 @@ def test_cost_attribution_rejects_invalid_inputs():
             include_daily=False,
             top_cost_days=1,
         )
+
+
+def test_frozen_holdings_reconstructs_start_volume_and_cash_flow_adjusted_path():
+    result = build_frozen_holdings_attribution(
+        account_id="acc-1",
+        start_date=date(2026, 5, 6),
+        performance_points=[
+            point("2026-05-06", 0.0, 1000.0),
+            point("2026-05-07", 1.0, 1050.0),
+            point("2026-05-08", 2.0, 1100.0),
+        ],
+        portfolio_rows=[{"orderbook_id": "1", "stock": "Example", "volume": 10}],
+        transaction_rows=[
+            {"Trade Date": "2026-05-07", "Type": "BUY", "Volume": 2, "Order Book ID": "1"},
+            {"Trade Date": "2026-05-07", "Type": "SELL", "Volume": 1, "Order Book ID": "1"},
+        ],
+        cash_event_rows=[
+            {"Trade Date": "2026-05-07", "Type": "DEPOSIT", "Amount": "50 SEK"},
+            {"Trade Date": "2026-05-08", "Type": "DIVIDEND", "Amount": "5 SEK"},
+        ],
+        chart_points_by_orderbook={
+            "1": [
+                {"date": "2026-05-06", "close": 100},
+                {"date": "2026-05-07", "close": 110},
+                {"date": "2026-05-08", "close": 120},
+            ]
+        },
+        include_daily=True,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert result["reconstruction"]["reconstructed_start_instrument_count"] == 1
+    assert result["reconstruction"]["start_holdings_value_sek"] == pytest.approx(900.0)
+    assert result["reconstruction"]["start_cash_residual_sek"] == pytest.approx(100.0)
+    assert result["daily"][0]["external_flow_sek"] == pytest.approx(50.0)
+    assert result["daily"][1]["dividends_sek"] == pytest.approx(5.0)
+    assert result["returns"]["frozen_starting_holdings_percent"] == pytest.approx(18.08333333)
+
+
+def test_frozen_holdings_fails_closed_on_unknown_cash_event_and_missing_chart():
+    result = build_frozen_holdings_attribution(
+        account_id="acc-1",
+        start_date=date(2026, 5, 6),
+        performance_points=[point("2026-05-06", 0.0, 1000.0), point("2026-05-07", 1.0, 1010.0)],
+        portfolio_rows=[{"orderbook_id": "1", "stock": "Example", "volume": 10}],
+        transaction_rows=[],
+        cash_event_rows=[{"Trade Date": "2026-05-07", "Type": "UNKNOWN", "Amount": "10 SEK"}],
+        chart_points_by_orderbook={},
+        include_daily=False,
+    )
+
+    assert result["status"] == "BLOCKED_INCOMPLETE_HISTORY"
+    assert {item["issue"] for item in result["issues"]} == {"missing_chart_history", "Unsupported non-zero cash event type: UNKNOWN"}

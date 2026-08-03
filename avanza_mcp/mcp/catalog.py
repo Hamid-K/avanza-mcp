@@ -228,6 +228,21 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_frozen_holdings_attribution",
+        "description": "Reconstruct an account's frozen starting-holdings path using authenticated Avanza daily prices, transactions, and cash events. Read-only and fail-closed on missing history or unsupported cash events.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "string"},
+                "period": {"type": "string", "enum": ACCOUNT_PERFORMANCE_PERIOD_CHOICES, "default": "THREE_MONTHS"},
+                "start_date": {"type": "string"},
+                "include_daily": {"type": "boolean", "default": False},
+            },
+            "required": ["start_date"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "tv_scrape_symbol_analytics",
         "description": "Fetch TradingView symbol analytics and technical recommendation barometers from public scanner data.",
         "inputSchema": {
@@ -1477,6 +1492,7 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_account_performance",
     "avanza_instrument_chart",
     "avanza_account_cost_attribution",
+    "avanza_frozen_holdings_attribution",
     "avanza_portfolio",
     "avanza_stoplosses",
     "avanza_stoploss_strategy_audit",

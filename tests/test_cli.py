@@ -3756,6 +3756,7 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     assert any(tool["name"] == "avanza_account_performance" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_instrument_chart" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_account_cost_attribution" for tool in tools["result"]["tools"])
+    assert any(tool["name"] == "avanza_frozen_holdings_attribution" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_live_snapshot" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_orders_raw" for tool in tools["result"]["tools"])

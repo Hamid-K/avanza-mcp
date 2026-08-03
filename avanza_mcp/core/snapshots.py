@@ -4,9 +4,11 @@ import math
 import os
 import re
 import time
+from datetime import date
 
 from avanza.constants import TransactionsDetailsType
 from avanza_mcp import avanza_ext, utils
+from avanza_mcp.frozen_holdings_attribution import build_frozen_holdings_attribution
 from avanza_mcp.config import (
     ACCOUNT_READ_CACHE_SECONDS,
     KNOWN_ORDERBOOK_METADATA,
@@ -341,6 +343,112 @@ class CoreSnapshotsMixin:
             "transaction_first_available_date": transactions.get("first_available_date"),
             "transaction_truncation_risk": False,
             "cash_event_truncation_risk": False,
+        }
+        return result
+
+    def frozen_holdings_attribution_snapshot(
+        self,
+        avanza: Any,
+        requested_account_id: str,
+        requested_period: Any,
+        *,
+        start_date: date,
+        include_daily: bool,
+    ) -> dict[str, Any]:
+        performance = self.account_performance_snapshot(
+            avanza,
+            requested_account_id,
+            requested_period,
+        )
+        account_id = str(performance["account_id"])
+        candidate_points = [
+            point
+            for point in performance.get("chart_points", [])
+            if point.get("date")
+            and point.get("development_relative", {}).get("value") is not None
+            and point.get("account_value", {}).get("value") is not None
+            and str(point["date"]) >= start_date.isoformat()
+        ]
+        if len(candidate_points) < 2:
+            raise ValueError("At least two account-performance points are required for frozen attribution.")
+        effective_start = date.fromisoformat(str(candidate_points[0]["date"]))
+        effective_end = date.fromisoformat(str(candidate_points[-1]["date"]))
+        portfolio = self.portfolio_snapshot(avanza, account_id, compact=False, refresh=True)
+        transactions = self.transactions_snapshot(
+            avanza,
+            account_id,
+            transactions_from=effective_start,
+            transactions_to=effective_end,
+            types=[TransactionsDetailsType.BUY, TransactionsDetailsType.SELL],
+            max_elements=20_000,
+            executed_only=True,
+            compact=False,
+        )
+        cash_events = self.transactions_snapshot(
+            avanza,
+            account_id,
+            transactions_from=effective_start,
+            transactions_to=effective_end,
+            types=[
+                TransactionsDetailsType.DIVIDEND,
+                TransactionsDetailsType.WITHDRAW,
+                TransactionsDetailsType.DEPOSIT,
+                TransactionsDetailsType.UNKNOWN,
+            ],
+            max_elements=20_000,
+            executed_only=False,
+            compact=False,
+        )
+        if transactions.get("truncation_risk") or cash_events.get("truncation_risk"):
+            raise RuntimeError("Transaction history reached the 20,000-row safety cap; frozen attribution is incomplete.")
+
+        orderbook_ids = {
+            str(row.get("orderbook_id") or "").strip()
+            for row in portfolio.get("positions", [])
+            if str(row.get("orderbook_id") or "").strip()
+        }
+        orderbook_ids.update(
+            str(row.get("Order Book ID") or row.get("orderbook_id") or "").strip()
+            for row in transactions.get("transactions", [])
+            if str(row.get("Order Book ID") or row.get("orderbook_id") or "").strip()
+        )
+        period_label, period_enum = map_account_performance_period(requested_period)
+        resolution_label, resolution_enum = map_instrument_chart_resolution("DAY")
+        chart_points_by_orderbook: dict[str, list[dict[str, Any]]] = {}
+        chart_errors: list[dict[str, Any]] = []
+        for orderbook_id in sorted(orderbook_ids):
+            try:
+                payload = avanza.get_chart_data(orderbook_id, period_enum, resolution_enum)
+                chart = instrument_chart_summary_from_payload(
+                    payload,
+                    orderbook_id=orderbook_id,
+                    period=period_label,
+                    resolution=resolution_label,
+                )
+                chart_points_by_orderbook[orderbook_id] = chart.get("points", [])
+            except Exception as exc:
+                chart_errors.append({"orderbook_id": orderbook_id, "error": str(exc)})
+
+        result = build_frozen_holdings_attribution(
+            account_id=account_id,
+            start_date=effective_start,
+            performance_points=performance.get("chart_points", []),
+            portfolio_rows=portfolio.get("positions", []),
+            transaction_rows=transactions.get("transactions", []),
+            cash_event_rows=cash_events.get("transactions", []),
+            chart_points_by_orderbook=chart_points_by_orderbook,
+            include_daily=include_daily,
+        )
+        if chart_errors:
+            result["status"] = "BLOCKED_INCOMPLETE_HISTORY"
+            result.setdefault("issues", []).extend(chart_errors)
+        result["period"] = performance["period"]
+        result["lineage"] = {
+            "performance_tool": "avanza_account_performance",
+            "portfolio_tool": "avanza_portfolio",
+            "transaction_tool": "avanza_transactions",
+            "chart_source": "authenticated_avanza_get_chart_data",
+            "chart_resolution": "DAY",
         }
         return result
 

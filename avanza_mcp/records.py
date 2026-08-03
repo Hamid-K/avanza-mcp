@@ -618,6 +618,8 @@ def transaction_history_dict_row(item: dict[str, Any]) -> dict[str, Any]:
         "P/L SEK": result,
         "ISIN": str(item.get("isin") or orderbook.get("isin") or ""),
         "Description": str(item.get("description") or ""),
+        "Order Book ID": transaction_order_book_id(item),
+        "orderbook_id": transaction_order_book_id(item),
     }
 
 

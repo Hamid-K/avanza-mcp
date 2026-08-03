@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.28 - 2026-08-04
+
+- Added a read-only frozen-starting-holdings attribution replay using authenticated Avanza daily charts, current holdings, transactions, dividends, and external cash events.
+- The replay reconstructs start volumes from exact account-scoped trades and fails closed on missing order-book identity, unavailable prices, unsupported non-zero cash events, or truncated transaction history.
+
 ## 0.2.27 - 2026-08-04
 
 - Added a read-only authenticated `avanza_instrument_chart` MCP tool for normalized OHLC history by order book, period, and resolution so portfolio attribution does not substitute third-party or guessed prices.
