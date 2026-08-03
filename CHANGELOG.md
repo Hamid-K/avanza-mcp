@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.24 - 2026-08-03
+
+- Made `avanza_sold_today_buyback_state` fail closed on economic sold-slice recovery: pre-existing or generic BUY stops and unattributed regular BUY orders remain visible as conditional exposure but no longer conceal a missing recovery row.
+- Added per-stop recovery attribution evidence and regression coverage for the ETH failure mode where an older named-exception deep BUY was incorrectly counted against a later same-day sale.
+
 ## 0.2.23 - 2026-08-03
 
 - Canonicalized legacy `EPA` and broker `Euronext Paris` exchange labels to TradingView's current `EURONEXT` scanner symbol so Airbus participates in complete portfolio evidence batches.

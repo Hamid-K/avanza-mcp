@@ -857,7 +857,11 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_sold_today_buyback_state",
-        "description": "Summarize same-day sold instruments and whether active buy-back stops/orders cover sold volume.",
+        "description": (
+            "Summarize same-day sold instruments and fail closed on economic recovery coverage. "
+            "Same-day BUY fills offset sold volume; active BUY stops count only with durable "
+            "sold-slice recovery attribution, and regular BUY orders remain unattributed exposure."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

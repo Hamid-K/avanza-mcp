@@ -1689,11 +1689,16 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     acn = next(row for row in buybacks["items"] if row["orderbook_id"] == "ob-acn")
     assert acn["sold_volume"] == 4
     assert acn["active_tight_buyback_volume"] == 2
-    # issue #2 P1: same-day BUY fills and open BUY orders are netted now:
-    # 4 sold - 1 same-day fill - 2 active BUY stops - 2 open BUY order = 0 missing
+    # Same-day BUY fills offset sold exposure, but generic active BUY rows do
+    # not become sold-slice repair without explicit durable attribution.
     assert acn["same_day_buy_fill_volume"] == 1
     assert acn["open_buy_order_volume"] == 2
-    assert acn["missing_buyback_volume"] == 0
+    assert acn["attributed_active_buyback_volume"] == 0
+    assert acn["unattributed_active_buy_volume"] == 2
+    assert acn["attributed_open_buyback_volume"] == 0
+    assert acn["unattributed_open_buy_order_volume"] == 2
+    assert acn["missing_buyback_volume"] == 3
+    assert acn["coverage_semantics"] == "POST_SALE_ATTRIBUTED_RECOVERY_ONLY"
 
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
@@ -1717,6 +1722,42 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     )
     assert exact_recent["review_items"][0]["strategy_classification_required"] is False
     assert exact_recent["review_items"][0]["needs_sell_action"] is True
+
+
+def test_sold_slice_recovery_stop_attribution_rejects_preexisting_generic_buy():
+    from avanza_mcp.core.snapshots import sold_slice_recovery_stop_attribution
+
+    trade_date = date(2026, 8, 3)
+    preexisting_eth_buy = {
+        "strategy_metadata_status": "RECORDED",
+        "strategy_intent": "SPECIAL_APPROVED",
+        "strategy_reason": "Reviewed named ETH wide layout.",
+        "strategy_recorded_at": "2026-07-31T01:19:19+00:00",
+        "strategy_updated_at": "2026-07-31T14:03:34+00:00",
+    }
+    assert sold_slice_recovery_stop_attribution(
+        preexisting_eth_buy,
+        target_date=trade_date,
+    ) == (False, "STRATEGY_INTENT_NOT_SOLD_SLICE_RECOVERY")
+
+    dated_recovery = {
+        **preexisting_eth_buy,
+        "strategy_intent": "TACTICAL_RECOVERY",
+        "strategy_reason": "Restore the reviewed 2026-08-03 sold slice below its sale price.",
+    }
+    assert sold_slice_recovery_stop_attribution(
+        dated_recovery,
+        target_date=trade_date,
+    ) == (True, "RECOVERY_REASON_NAMES_TRADE_DATE")
+
+    stale_recovery = {
+        **dated_recovery,
+        "strategy_reason": "Restore an earlier reviewed sold slice.",
+    }
+    assert sold_slice_recovery_stop_attribution(
+        stale_recovery,
+        target_date=trade_date,
+    ) == (False, "RECOVERY_METADATA_PREDATES_OR_DOES_NOT_NAME_TRADE_DATE")
 
 
 def test_protection_gaps_require_explicit_strategy_target_for_core_holdings():

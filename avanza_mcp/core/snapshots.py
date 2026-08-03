@@ -84,6 +84,36 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 
+SOLD_SLICE_RECOVERY_INTENTS = frozenset(
+    {"DEEP_RESIDUAL", "PARTIAL_PARTICIPATION", "TACTICAL_RECOVERY"}
+)
+
+
+def sold_slice_recovery_stop_attribution(
+    row: dict[str, Any],
+    *,
+    target_date: date,
+) -> tuple[bool, str]:
+    """Fail closed unless a BUY stop is attributable to the reviewed sold slice."""
+
+    if row.get("strategy_metadata_status") != "RECORDED":
+        return False, "STRATEGY_METADATA_NOT_RECORDED"
+    intent = str(row.get("strategy_intent") or "").strip().upper()
+    if intent not in SOLD_SLICE_RECOVERY_INTENTS:
+        return False, "STRATEGY_INTENT_NOT_SOLD_SLICE_RECOVERY"
+
+    target_token = target_date.isoformat()
+    reason = str(row.get("strategy_reason") or "")
+    if target_token in reason:
+        return True, "RECOVERY_REASON_NAMES_TRADE_DATE"
+
+    recorded_at = str(row.get("strategy_recorded_at") or "")
+    updated_at = str(row.get("strategy_updated_at") or "")
+    if recorded_at.startswith(target_token) or updated_at.startswith(target_token):
+        return True, "RECOVERY_METADATA_RECORDED_ON_TRADE_DATE"
+    return False, "RECOVERY_METADATA_PREDATES_OR_DOES_NOT_NAME_TRADE_DATE"
+
+
 def tradingview_exchange_from_market(market: Any) -> str:
     market_name = re.sub(r"[^A-Z0-9]+", " ", str(market or "").upper()).strip()
     if not market_name:
@@ -1554,15 +1584,40 @@ class CoreSnapshotsMixin:
             tight_volume = 0.0
             deep_volume = 0.0
             unclassified_volume = 0.0
+            attributed_active_buyback_volume = 0.0
+            active_buy_stop_attribution: list[dict[str, Any]] = []
             for item in buy_stops:
                 volume = stop_loss_volume(item)
                 trigger_percent = stop_loss_trigger_percent(item)
+                trigger_bucket = "UNCLASSIFIED"
                 if trigger_percent is None:
                     unclassified_volume += volume
                 elif trigger_percent <= tight_trigger_percent_max:
                     tight_volume += volume
+                    trigger_bucket = "TIGHT"
                 else:
                     deep_volume += volume
+                    trigger_bucket = "DEEP"
+                strategy_row = self.stoploss_mcp_row(item)
+                counts_as_recovery, attribution_reason = sold_slice_recovery_stop_attribution(
+                    strategy_row,
+                    target_date=target_date,
+                )
+                if counts_as_recovery:
+                    attributed_active_buyback_volume += volume
+                active_buy_stop_attribution.append(
+                    {
+                        "stop_loss_id": strategy_row.get("stop_loss_id"),
+                        "volume": volume,
+                        "trigger_bucket": trigger_bucket,
+                        "strategy_intent": strategy_row.get("strategy_intent"),
+                        "strategy_metadata_status": strategy_row.get("strategy_metadata_status"),
+                        "strategy_recorded_at": strategy_row.get("strategy_recorded_at"),
+                        "strategy_updated_at": strategy_row.get("strategy_updated_at"),
+                        "counts_as_sold_slice_recovery": counts_as_recovery,
+                        "attribution_reason": attribution_reason,
+                    }
+                )
             generated_orders = [
                 open_order_mcp_dict(item)
                 for item in order_items
@@ -1586,10 +1641,16 @@ class CoreSnapshotsMixin:
                     open_buy_order_volume += volume
             current_holding = position_volume(positions_by_orderbook.get(orderbook_id, {}))
             sold_volume = float(sold.get("sold_volume") or 0.0)
-            active_buyback_volume = tight_volume + deep_volume + unclassified_volume
+            active_buy_stop_volume = tight_volume + deep_volume + unclassified_volume
             filled_buyback_volume = buy_fill_volume_by_orderbook.get(orderbook_id, 0.0)
+            # Regular BUY orders do not yet have durable per-order recovery intent.
+            # Surface their conditional exposure, but do not silently call it repair.
+            attributed_open_buyback_volume = 0.0
             missing = max(
-                sold_volume - filled_buyback_volume - active_buyback_volume - open_buy_order_volume,
+                sold_volume
+                - filled_buyback_volume
+                - attributed_active_buyback_volume
+                - attributed_open_buyback_volume,
                 0.0,
             )
             rows.append(
@@ -1600,12 +1661,27 @@ class CoreSnapshotsMixin:
                     "active_tight_buyback_volume": tight_volume,
                     "active_deep_buyback_volume": deep_volume,
                     "active_unclassified_buyback_volume": unclassified_volume,
+                    "active_buy_stop_volume": active_buy_stop_volume,
+                    "attributed_active_buyback_volume": attributed_active_buyback_volume,
+                    "unattributed_active_buy_volume": max(
+                        active_buy_stop_volume - attributed_active_buyback_volume,
+                        0.0,
+                    ),
+                    "active_buy_stop_attribution": active_buy_stop_attribution,
                     "open_buy_order_volume": open_buy_order_volume,
+                    "attributed_open_buyback_volume": attributed_open_buyback_volume,
+                    "unattributed_open_buy_order_volume": open_buy_order_volume,
                     "failed_buy_order_volume": failed_buy_order_volume,
                     "generated_open_orders": generated_orders,
                     "failed_raw_orders": failed_orders,
                     "missing_buyback_volume": missing,
                     "tight_trigger_percent_max": tight_trigger_percent_max,
+                    "coverage_semantics": "POST_SALE_ATTRIBUTED_RECOVERY_ONLY",
+                    "coverage_note": (
+                        "Same-day BUY fills offset sold volume. Active BUY stops count only with "
+                        "recorded sold-slice recovery intent attributable to this trade date; "
+                        "regular BUY orders remain conditional exposure but are not assumed to be repair."
+                    ),
                 }
             )
         return {

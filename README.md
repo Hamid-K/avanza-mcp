@@ -349,7 +349,7 @@ For multi-session setups:
 | `avanza_instrument_transactions` | Read transactions for one instrument/account. |
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
-| `avanza_sold_today_buyback_state` | Summarize same-day sold instruments and missing buy-back coverage. |
+| `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
