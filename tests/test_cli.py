@@ -3929,6 +3929,14 @@ def test_tradingview_scan_normalizes_us_market_alias(monkeypatch):
     assert snapshot["market"] == "america"
 
 
+def test_tradingview_normalizes_euronext_paris_exchange_aliases():
+    from avanza_mcp.external.tradingview_data import normalize_tv_symbol, tradingview_symbol_attempts
+
+    assert normalize_tv_symbol("AIR", "Euronext Paris") == "EURONEXT:AIR"
+    assert normalize_tv_symbol("EPA:AIR") == "EURONEXT:AIR"
+    assert tradingview_symbol_attempts("AIR", exchange="EPA", market="france")[0] == ("EURONEXT:AIR", "france")
+
+
 def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
     from avanza_mcp.external.tradingview_data import tradingview_symbol_full_snapshot
 

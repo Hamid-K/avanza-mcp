@@ -50,11 +50,21 @@ TRADINGVIEW_MARKET_ALIASES = {
     "united_states": "america",
     "united-states": "america",
 }
+TRADINGVIEW_EXCHANGE_ALIASES = {
+    "EPA": "EURONEXT",
+    "EURONEXTPARIS": "EURONEXT",
+}
 
 
 def normalize_tradingview_market(market: str | None) -> str:
     normalized = str(market or TRADINGVIEW_DEFAULT_MARKET).strip().lower() or TRADINGVIEW_DEFAULT_MARKET
     return TRADINGVIEW_MARKET_ALIASES.get(normalized, normalized)
+
+
+def normalize_tradingview_exchange(exchange: str | None) -> str:
+    normalized = re.sub(r"[^A-Z0-9_]", "", str(exchange or TRADINGVIEW_DEFAULT_EXCHANGE).strip().upper())
+    normalized = normalized or TRADINGVIEW_DEFAULT_EXCHANGE
+    return TRADINGVIEW_EXCHANGE_ALIASES.get(normalized, normalized)
 
 
 def recommendation_label(value: Any) -> str:
@@ -73,16 +83,16 @@ def normalize_tv_symbol(symbol: str, exchange: str = TRADINGVIEW_DEFAULT_EXCHANG
         raise ValueError("symbol is required.")
     if ":" in text:
         exchange_part, symbol_part = text.split(":", 1)
-        normalized_exchange = re.sub(r"[^A-Z0-9_]", "", exchange_part.strip().upper()) or exchange.strip().upper()
+        normalized_exchange = normalize_tradingview_exchange(exchange_part or exchange)
         normalized_symbol = symbol_part.strip().upper()
         if not normalized_symbol:
             raise ValueError("symbol is required.")
         return f"{normalized_exchange}:{normalized_symbol}"
-    return f"{exchange}:{text}"
+    return f"{normalize_tradingview_exchange(exchange)}:{text}"
 
 
 def tradingview_market_hint_for_exchange(exchange: str) -> str | None:
-    exchange_text = str(exchange or "").strip().upper()
+    exchange_text = normalize_tradingview_exchange(exchange) if str(exchange or "").strip() else ""
     if not exchange_text:
         return None
     if exchange_text in TRADINGVIEW_CRYPTO_EXCHANGE_FALLBACKS:
@@ -125,7 +135,7 @@ def tradingview_symbol_attempts(
     market: str = TRADINGVIEW_DEFAULT_MARKET,
 ) -> list[tuple[str, str]]:
     symbol_text = str(symbol or "").strip().upper()
-    exchange_text = str(exchange or TRADINGVIEW_DEFAULT_EXCHANGE).strip().upper()
+    exchange_text = normalize_tradingview_exchange(exchange)
     market_text = normalize_tradingview_market(market)
     if not symbol_text:
         raise ValueError("symbol is required.")

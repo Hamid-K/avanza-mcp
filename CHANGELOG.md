@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.23 - 2026-08-03
+
+- Canonicalized legacy `EPA` and broker `Euronext Paris` exchange labels to TradingView's current `EURONEXT` scanner symbol so Airbus participates in complete portfolio evidence batches.
+
 ## 0.2.22 - 2026-08-03
 
 - Normalized common U.S. TradingView market aliases to the scanner's canonical `america` route so portfolio pre-open and regular-session batches no longer fail with HTTP 404 when callers supply `US`.
