@@ -44,6 +44,18 @@ from avanza_mcp.external.http import append_cookie_header
 
 TRADINGVIEW_UNSUPPORTED_FIELD_CACHE: dict[str, set[str]] = {}
 TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK = threading.Lock()
+TRADINGVIEW_MARKET_ALIASES = {
+    "us": "america",
+    "usa": "america",
+    "united_states": "america",
+    "united-states": "america",
+}
+
+
+def normalize_tradingview_market(market: str | None) -> str:
+    normalized = str(market or TRADINGVIEW_DEFAULT_MARKET).strip().lower() or TRADINGVIEW_DEFAULT_MARKET
+    return TRADINGVIEW_MARKET_ALIASES.get(normalized, normalized)
+
 
 def recommendation_label(value: Any) -> str:
     score = utils.scalar_number(value)
@@ -114,7 +126,7 @@ def tradingview_symbol_attempts(
 ) -> list[tuple[str, str]]:
     symbol_text = str(symbol or "").strip().upper()
     exchange_text = str(exchange or TRADINGVIEW_DEFAULT_EXCHANGE).strip().upper()
-    market_text = str(market or TRADINGVIEW_DEFAULT_MARKET).strip().lower()
+    market_text = normalize_tradingview_market(market)
     if not symbol_text:
         raise ValueError("symbol is required.")
 
@@ -233,6 +245,7 @@ def tradingview_scan(
     descending: bool = True,
     cookie: str = "",
 ) -> dict[str, Any]:
+    normalized_market = normalize_tradingview_market(market)
     payload: dict[str, Any] = {
         "symbols": {"tickers": symbols, "query": {"types": []}},
         "columns": columns,
@@ -242,7 +255,7 @@ def tradingview_scan(
         payload["range"] = [0, max(0, limit - 1)]
     if sort_by:
         payload["sort"] = {"sortBy": sort_by, "sortOrder": "desc" if descending else "asc"}
-    url = TRADINGVIEW_SCANNER_URL_TEMPLATE.format(market=market)
+    url = TRADINGVIEW_SCANNER_URL_TEMPLATE.format(market=normalized_market)
     headers = append_cookie_header({"Content-Type": "application/json"}, cookie)
     try:
         data = ext_http.external_fetch_json(url, method="POST", headers=headers, payload=payload)
@@ -265,7 +278,7 @@ def tradingview_scan(
         rows_raw = []
     rows = [tv_row_to_dict(columns, row) for row in rows_raw if isinstance(row, dict)]
     return {
-        "market": market,
+        "market": normalized_market,
         "columns": columns,
         "rows": rows,
         "total_count": int(data.get("totalCount", len(rows))),
@@ -335,7 +348,8 @@ def tradingview_scan_with_field_fallback(
     descending: bool = True,
     cookie: str = "",
 ) -> tuple[dict[str, Any], list[str]]:
-    cache_key = str(market or TRADINGVIEW_DEFAULT_MARKET).strip().lower() or TRADINGVIEW_DEFAULT_MARKET
+    normalized_market = normalize_tradingview_market(market)
+    cache_key = normalized_market
     with TRADINGVIEW_UNSUPPORTED_FIELD_CACHE_LOCK:
         cached_unsupported = set(TRADINGVIEW_UNSUPPORTED_FIELD_CACHE.get(cache_key, set()))
     unsupported: list[str] = [field for field in unique_strings(fields) if field in cached_unsupported]
@@ -346,7 +360,7 @@ def tradingview_scan_with_field_fallback(
         snapshot = tradingview_scan(
             symbols=symbols,
             columns=columns,
-            market=market,
+            market=normalized_market,
             limit=max(1, int(limit if limit is not None else len(symbols))),
             sort_by=sort_by,
             descending=descending,
@@ -625,7 +639,7 @@ def tradingview_premarket_change(row: dict[str, Any]) -> tuple[float | None, flo
 
 def tradingview_market_state(market: str, exchange: str) -> tuple[str, str]:
     exchange_text = str(exchange or "").strip().upper()
-    if str(market or "").strip().lower() != "america" and exchange_text not in TRADINGVIEW_US_EQUITY_EXCHANGES:
+    if normalize_tradingview_market(market) != "america" and exchange_text not in TRADINGVIEW_US_EQUITY_EXCHANGES:
         return "unknown", ""
     try:
         now = datetime.now(ZoneInfo("America/New_York"))
@@ -828,6 +842,7 @@ def tradingview_preopen_batch_snapshot(
     cookie: str = "",
 ) -> dict[str, Any]:
     del max_concurrency  # Bulk scanner calls replace per-symbol concurrency for normal operation.
+    normalized_market = normalize_tradingview_market(market)
     requests: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -856,7 +871,7 @@ def tradingview_preopen_batch_snapshot(
             scan, unsupported_fields = tradingview_scan_with_field_fallback(
                 symbols=[request["normalized_symbol"] for request in requests],
                 fields=TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS,
-                market=market,
+                market=normalized_market,
                 cookie=cookie,
             )
         except Exception as exc:
@@ -881,7 +896,7 @@ def tradingview_preopen_batch_snapshot(
                         row,
                         symbol=normalized_symbol,
                         requested_symbol=symbol,
-                        requested_market=market,
+                        requested_market=normalized_market,
                         requested_exchange=item_exchange,
                         unsupported_fields=unsupported_fields,
                     ),
@@ -893,7 +908,7 @@ def tradingview_preopen_batch_snapshot(
                     raise RuntimeError(batch_error)
                 snapshot = tradingview_preopen_symbol_snapshot(
                     symbol,
-                    market=market,
+                    market=normalized_market,
                     exchange=item_exchange,
                     authenticated=authenticated,
                     cookie=cookie,
@@ -908,7 +923,7 @@ def tradingview_preopen_batch_snapshot(
             rows[index] = {"index": index, "symbol": symbol, "exchange": item_exchange, "ok": False, "error": str(exc)}
     return {
         "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "market": market,
+        "market": normalized_market,
         "authenticated": authenticated,
         "compact": compact,
         "batch_mode": "bulk_scanner",
@@ -918,7 +933,7 @@ def tradingview_preopen_batch_snapshot(
         "error_count": len(errors),
         "rows": rows,
         "errors": errors,
-        "unsafe_for_execution": False,
+        "unsafe_for_execution": bool(errors),
     }
 
 

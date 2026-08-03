@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.22 - 2026-08-03
+
+- Normalized common U.S. TradingView market aliases to the scanner's canonical `america` route so portfolio pre-open and regular-session batches no longer fail with HTTP 404 when callers supply `US`.
+- Marked partial or total TradingView batch failures unsafe for execution instead of reporting failed evidence as usable.
+
 ## 0.2.21 - 2026-08-03
 
 - Tightened the reusable portfolio instruction template with thesis-invalidation position sizing, volatility-scaled risk caps, and lower rolling turnover/full-friction brakes to prevent stop/rebuy churn from replacing mid-term investment intent.

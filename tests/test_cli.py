@@ -3912,6 +3912,23 @@ def test_tradingview_symbol_snapshot_uses_scanner_and_recommendation_labels(monk
     assert snapshot["unsafe_for_execution"] is False
 
 
+def test_tradingview_scan_normalizes_us_market_alias(monkeypatch):
+    from avanza_mcp.external.tradingview_data import tradingview_scan
+
+    captured_urls: list[str] = []
+
+    def fake_fetch_json(url, **kwargs):
+        captured_urls.append(url)
+        return {"totalCount": 0, "data": []}
+
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
+
+    snapshot = tradingview_scan(symbols=["NASDAQ:AAPL"], columns=["close"], market="US")
+
+    assert captured_urls == ["https://scanner.tradingview.com/america/scan"]
+    assert snapshot["market"] == "america"
+
+
 def test_tradingview_symbol_full_snapshot_returns_rich_payload(monkeypatch):
     from avanza_mcp.external.tradingview_data import tradingview_symbol_full_snapshot
 
@@ -4305,6 +4322,7 @@ def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypat
     assert batch["rows"][1]["ok"] is False
     assert batch["rows"][2]["symbol"] == "NASDAQ:MU"
     assert batch["error_count"] == 1
+    assert batch["unsafe_for_execution"] is True
     assert batch["batch_mode"] == "bulk_scanner"
     assert batch["fallback_count"] == 1
     assert calls == [["NASDAQ:SNDK", "NASDAQ:CRWD", "NASDAQ:MU"]]
