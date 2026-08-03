@@ -55,6 +55,13 @@ class CoreStopLossStrategyMixin:
     def ensure_stoploss_strategy_registry_writable(self) -> None:
         self.stoploss_strategy_registry.ensure_writable()
 
+    def stoploss_strategy_entry(
+        self,
+        account_id: str,
+        stop_loss_id: str,
+    ) -> dict[str, Any] | None:
+        return self.stoploss_strategy_registry.lookup(account_id, stop_loss_id)
+
     def persist_existing_stoploss_strategies(
         self,
         candidates: Iterable[dict[str, Any]],

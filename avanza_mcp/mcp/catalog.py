@@ -1355,12 +1355,14 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_stoploss_delete",
-        "description": "Dry-run or delete a stop-loss order. Live deletion requires TUI R/W mode and confirm=true.",
+        "description": "Dry-run or delete a stop-loss order. Live deletion requires TUI R/W mode, confirm=true, strategy_intent, strategy_reason, and an exact match to durable stop metadata.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "account_id": {"type": "string"},
                 "stop_loss_id": {"type": "string"},
+                "strategy_intent": {"type": "string", "enum": list(STOPLOSS_STRATEGY_INTENTS)},
+                "strategy_reason": {"type": "string"},
                 "confirm": {"type": "boolean", "default": False},
             },
             "required": ["account_id", "stop_loss_id"],

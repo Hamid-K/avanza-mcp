@@ -970,12 +970,11 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 )
             app.mcp_write_enabled = True
             app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True, "reason": "unit test"})
-            deletion = app.execute_mcp_tool(
-                "avanza_stoploss_delete",
-                {"account_id": "acc-2", "stop_loss_id": "sl-1", "confirm": True},
-            )
-            assert deletion["dry_run"] is False
-            assert deletion["result"]["deleted"] is True
+            with pytest.raises(ValueError, match="strategy_intent is required"):
+                app.execute_mcp_tool(
+                    "avanza_stoploss_delete",
+                    {"account_id": "acc-2", "stop_loss_id": "sl-1", "confirm": True},
+                )
             order_edit = app.execute_mcp_tool(
                 "avanza_order_edit",
                 {
@@ -1982,6 +1981,114 @@ def test_mcp_stoploss_strategy_intent_blocks_missing_or_misclassified_live_rows(
     )
     assert fixed_residual["request"]["strategy_intent"] == "DEEP_RESIDUAL"
     assert fixed_residual["request"]["strategy_reason"].startswith("Preserve")
+
+
+def test_mcp_stoploss_delete_requires_matching_durable_strategy_intent():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.deleted: list[tuple[str, str]] = []
+
+        def get_all_stop_losses(self):
+            if self.deleted:
+                return []
+            return [
+                {
+                    "id": "sl-deep",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-acn", "name": "ACN"},
+                    "trigger": {
+                        "type": "LESS_OR_EQUAL",
+                        "value": 90.0,
+                        "valueType": "MONETARY",
+                        "validUntil": TEST_VALID_UNTIL,
+                    },
+                    "order": {
+                        "type": "BUY",
+                        "volume": 1,
+                        "price": 90.5,
+                        "priceType": "MONETARY",
+                    },
+                }
+            ]
+
+        def delete_stop_loss_order(self, account_id, stop_loss_id):
+            self.deleted.append((account_id, stop_loss_id))
+            return {"deleted": True, "account_id": account_id, "stop_loss_id": stop_loss_id}
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.active_session_id = "test-session"
+    app.stoploss_strategy_registry.register_existing(
+        {
+            "account_id": "acc-1",
+            "stop_loss_id": "sl-deep",
+            "orderbook_id": "ob-acn",
+            "side": "BUY",
+            "volume": 1,
+            "trigger_type": "LESS_OR_EQUAL",
+            "trigger_value": 90,
+            "trigger_value_type": "MONETARY",
+            "order_price": 90.5,
+            "order_price_type": "MONETARY",
+            "valid_until": TEST_VALID_UNTIL,
+        },
+        strategy_intent="DEEP_RESIDUAL",
+        strategy_reason="Reviewed fixed residual.",
+        tenant_session_id="test-session",
+        source="UNIT_TEST",
+    )
+
+    dry_run = app.execute_mcp_tool(
+        "avanza_stoploss_delete",
+        {
+            "account_id": "acc-1",
+            "stop_loss_id": "sl-deep",
+            "strategy_intent": "DEEP_RESIDUAL",
+            "strategy_reason": "Remove the uneconomic reviewed residual.",
+        },
+    )
+    assert dry_run["dry_run"] is True
+    assert dry_run["warnings"] == []
+    assert dry_run["strategy_metadata_target"]["strategy_intent"] == "DEEP_RESIDUAL"
+
+    with pytest.raises(ValueError, match="does not match"):
+        app.execute_mcp_tool(
+            "avanza_stoploss_delete",
+            {
+                "account_id": "acc-1",
+                "stop_loss_id": "sl-deep",
+                "strategy_intent": "TACTICAL_HARVEST",
+                "strategy_reason": "Wrong intent on purpose.",
+            },
+        )
+
+    app.mcp_write_enabled = True
+    app.execute_mcp_tool(
+        "avanza_live_session_authorize",
+        {"acknowledge": True, "reason": "unit test"},
+    )
+    deleted = app.execute_mcp_tool(
+        "avanza_stoploss_delete",
+        {
+            "account_id": "acc-1",
+            "stop_loss_id": "sl-deep",
+            "strategy_intent": "DEEP_RESIDUAL",
+            "strategy_reason": "Remove the uneconomic reviewed residual.",
+            "confirm": True,
+        },
+    )
+    assert deleted["dry_run"] is False
+    assert deleted["ok"] is True
+    assert deleted["result"]["deleted"] is True
+    assert deleted["readback"]["deletion_verified"] is True
+    assert deleted["strategy_intent"] == "DEEP_RESIDUAL"
+    assert deleted["strategy_metadata_removed"] is True
+    assert app.avanza.deleted == [("acc-1", "sl-deep")]
+    assert app.stoploss_strategy_registry.lookup("acc-1", "sl-deep") is None
 
 
 def test_mcp_stoploss_strategy_backfill_is_exact_local_only_and_restart_durable():
@@ -3604,6 +3711,9 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     assert any(tool["name"] == "avanza_order_set" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_order_edit" for tool in tools["result"]["tools"])
     assert any(tool["name"] == "avanza_open_order_cancel" for tool in tools["result"]["tools"])
+    stop_delete_properties = tool_map["avanza_stoploss_delete"]["inputSchema"]["properties"]
+    assert "strategy_intent" in stop_delete_properties
+    assert "strategy_reason" in stop_delete_properties
 
 
 def test_tui_sorts_table_when_header_is_clicked():

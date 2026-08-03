@@ -92,7 +92,10 @@ from avanza_mcp.stoploss_strategy_registry import (
     stoploss_row_from_preview,
     stoploss_strategy_fingerprint,
 )
-from avanza_mcp.strategy_intent import validate_mcp_stoploss_strategy_intent
+from avanza_mcp.strategy_intent import (
+    validate_mcp_stoploss_delete_strategy_intent,
+    validate_mcp_stoploss_strategy_intent,
+)
 from avanza_mcp.utils import (
     is_unauthorized_http_error,
     mcp_call_log_line,
@@ -362,6 +365,7 @@ class CoreBridgeMixin:
             "trigger_value_type": trigger.get("value_type"),
             "order_price": utils.scalar_number(order_event.get("price")),
             "order_price_type": order_event.get("price_type"),
+            "currency": preview.get("currency"),
             "valid_until": trigger.get("valid_until"),
             "order_valid_days": order_event.get("valid_days"),
             "readback": row,
@@ -2417,33 +2421,104 @@ class CoreBridgeMixin:
         if tool == "avanza_stoploss_delete":
             confirmed = bool(arguments.get("confirm", False))
             self.require_mcp_write(confirmed)
+            account_id = str(arguments["account_id"])
+            stop_loss_id = str(arguments["stop_loss_id"])
+            recorded_entry = self.stoploss_strategy_entry(account_id, stop_loss_id)
+            strategy_intent, strategy_reason, warnings = (
+                validate_mcp_stoploss_delete_strategy_intent(
+                    arguments,
+                    recorded_entry,
+                    live=confirmed,
+                )
+            )
+            target_snapshot = self.stoploss_snapshot(
+                avanza,
+                account_id,
+                compact=True,
+                refresh=True,
+            )
+            target_rows = [
+                row
+                for row in target_snapshot["stoplosses"]
+                if str(row.get("stop_loss_id") or "") == stop_loss_id
+            ]
+            if len(target_rows) != 1:
+                raise ValueError(
+                    f"Expected one exact live stop-loss {stop_loss_id!r} in account "
+                    f"{account_id}, found {len(target_rows)}."
+                )
+            target_row = target_rows[0]
+            _, _, live_target_warnings = validate_mcp_stoploss_delete_strategy_intent(
+                arguments,
+                target_row,
+                live=confirmed,
+            )
+            warnings.extend(
+                warning for warning in live_target_warnings if warning not in warnings
+            )
             request = {
-                "account_id": str(arguments["account_id"]),
-                "stop_loss_id": str(arguments["stop_loss_id"]),
+                "account_id": account_id,
+                "stop_loss_id": stop_loss_id,
+                "strategy_intent": strategy_intent,
+                "strategy_reason": strategy_reason,
             }
             if not confirmed:
-                return {"dry_run": True, "request": request}
+                return {
+                    "dry_run": True,
+                    "action": "delete",
+                    "request": request,
+                    "strategy_metadata_target": target_row,
+                    "warnings": warnings,
+                }
+            self.ensure_stoploss_strategy_registry_writable()
             result = avanza.delete_stop_loss_order(request["account_id"], request["stop_loss_id"])
+            post_delete_snapshot = self.stoploss_snapshot(
+                avanza,
+                account_id,
+                compact=True,
+                refresh=True,
+            )
+            deletion_verified = not any(
+                str(row.get("stop_loss_id") or "") == stop_loss_id
+                for row in post_delete_snapshot["stoplosses"]
+            )
             metadata_cleanup_error = ""
-            try:
-                metadata_removed = self.remove_stoploss_strategy(
-                    request["account_id"],
-                    request["stop_loss_id"],
-                )
-            except Exception as exc:
-                metadata_removed = False
-                metadata_cleanup_error = str(exc)
+            metadata_removed = False
+            if deletion_verified:
+                try:
+                    metadata_removed = self.remove_stoploss_strategy(
+                        request["account_id"],
+                        request["stop_loss_id"],
+                    )
+                except Exception as exc:
+                    metadata_cleanup_error = str(exc)
             self.record_event("trading", "live_stoploss_delete", {"request": request, "result": result})
             payload = {
                 "dry_run": False,
                 "action": "delete",
                 "stop_loss_id": request["stop_loss_id"],
                 "account_id": request["account_id"],
-                "status": "DELETED",
+                "status": "DELETED" if deletion_verified else "DELETE_UNVERIFIED",
+                "ok": deletion_verified and metadata_removed,
                 "request": request,
                 "result": result,
+                "readback": {
+                    "deletion_verified": deletion_verified,
+                    "matching_rows": [
+                        row
+                        for row in post_delete_snapshot["stoplosses"]
+                        if str(row.get("stop_loss_id") or "") == stop_loss_id
+                    ],
+                },
                 "strategy_metadata_removed": metadata_removed,
+                "strategy_intent": strategy_intent,
+                "strategy_reason": strategy_reason,
             }
+            if not deletion_verified:
+                payload["warning"] = (
+                    "Broker deletion could not be verified; durable strategy metadata "
+                    "was retained and the stop must be treated as active."
+                )
             if metadata_cleanup_error:
                 payload["strategy_metadata_cleanup_error"] = metadata_cleanup_error
             return payload

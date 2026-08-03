@@ -2,10 +2,14 @@
 
 ## Unreleased
 
+## 0.2.21 - 2026-08-03
+
 - Tightened the reusable portfolio instruction template with thesis-invalidation position sizing, volatility-scaled risk caps, and lower rolling turnover/full-friction brakes to prevent stop/rebuy churn from replacing mid-term investment intent.
 - Added a non-sensitive portfolio-governance audit trail covering per-instrument theses, intended exposure, catalysts, entry/exit/invalidation gates, risk and friction rules, dated reviews, factor/capacity controls, and transaction-lifecycle KPIs; private account snapshots and generated analysis remain excluded from Git.
 - Added an exact current-stop reconciliation layer that supersedes stale historical row arrays, requires every live conditional order to map to durable strategy intent and a named next action, and keeps unresolved broker hygiene explicitly fail-closed rather than bypassing MCP controls.
 - Added a reusable immutable live-order protocol: urgent complete tuples bypass redundant analysis but never hard caps, exact quantities, account scope, order-kind fields, same-account readback, or immediate per-tenant authorization revocation; complaints and missed-price observations remain analysis-only.
+- Required MCP stop-loss deletion to carry strategy intent and reason matching the exact durable live-stop fingerprint, with pre-delete target verification, post-delete absence readback, and fail-closed metadata retention when deletion cannot be verified.
+- Added instrument-currency enrichment to stop-loss previews so absolute USD/EUR/etc. trigger and child prices are no longer mislabeled as SEK.
 
 ## 0.2.20 - 2026-07-31
 

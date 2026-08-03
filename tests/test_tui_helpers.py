@@ -39,6 +39,7 @@ from avanza_mcp.rendering import (
     compact_account_type,
     compact_single_line,
     default_account,
+    format_stop_loss_request,
     formatted_typed_value,
     holding_search_options,
     lookup_realtime_status,
@@ -88,6 +89,32 @@ def test_parse_transaction_types_defaults_to_buy_sell():
 def test_formatted_typed_value_uses_percent_symbol():
     assert formatted_typed_value(5, "PERCENTAGE") == "5%"
     assert formatted_typed_value(95.5, "MONETARY") == "95.5 SEK"
+    assert formatted_typed_value(95.5, "MONETARY", "USD") == "95.5 USD"
+
+
+def test_stoploss_request_uses_instrument_currency_for_monetary_prices():
+    lines = format_stop_loss_request(
+        {
+            "account_id": "acc-1",
+            "order_book_id": "ob-us",
+            "currency": "USD",
+            "stop_loss_trigger": {
+                "type": "LESS_OR_EQUAL",
+                "value": 95.5,
+                "value_type": "MONETARY",
+                "valid_until": TEST_VALID_UNTIL,
+            },
+            "stop_loss_order_event": {
+                "type": "BUY",
+                "volume": 2,
+                "price": 96.0,
+                "price_type": "MONETARY",
+                "valid_days": 1,
+            },
+        }
+    )
+    assert "Trigger: LESS_OR_EQUAL 95.5 USD" in lines
+    assert "Order: BUY 2 @ 96.0 USD" in lines
 
 
 def test_flattened_search_hits_accepts_avanza_list_shape():

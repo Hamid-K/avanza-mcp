@@ -88,3 +88,53 @@ def validate_mcp_stoploss_strategy_intent(
     preview["strategy_intent"] = intent or None
     preview["strategy_reason"] = reason or None
     return warnings
+
+
+def validate_mcp_stoploss_delete_strategy_intent(
+    arguments: dict[str, Any],
+    recorded_entry: dict[str, Any] | None,
+    *,
+    live: bool,
+) -> tuple[str | None, str | None, list[str]]:
+    """Require an auditable intent that matches the exact recorded stop."""
+
+    warnings: list[str] = []
+    intent = _normalized_intent(arguments.get("strategy_intent"))
+    reason = str(arguments.get("strategy_reason") or "").strip()
+
+    if not intent:
+        message = "strategy_intent is required for live stop-loss deletion."
+        if live:
+            raise ValueError(message)
+        warnings.append(message)
+    elif intent not in STOPLOSS_STRATEGY_INTENTS:
+        choices = ", ".join(STOPLOSS_STRATEGY_INTENTS)
+        raise ValueError(f"Unsupported strategy_intent {intent!r}; choose one of: {choices}.")
+
+    if not reason:
+        message = "strategy_reason is required for live stop-loss deletion."
+        if live:
+            raise ValueError(message)
+        warnings.append(message)
+
+    if not isinstance(recorded_entry, dict):
+        message = (
+            "Exact durable strategy metadata is required before deleting a stop-loss."
+        )
+        if live:
+            raise ValueError(message)
+        warnings.append(message)
+    else:
+        recorded_intent = _normalized_intent(recorded_entry.get("strategy_intent"))
+        if recorded_intent not in STOPLOSS_STRATEGY_INTENTS:
+            message = "The target stop-loss has no valid recorded strategy_intent."
+            if live:
+                raise ValueError(message)
+            warnings.append(message)
+        elif intent and intent != recorded_intent:
+            raise ValueError(
+                f"strategy_intent {intent} does not match the target stop-loss "
+                f"recorded intent {recorded_intent}."
+            )
+
+    return intent or None, reason or None, warnings

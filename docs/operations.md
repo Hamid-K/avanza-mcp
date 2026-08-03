@@ -301,7 +301,7 @@ Multi-session MCP behavior:
 | `avanza_open_order_edit` | Dry-run or update an existing open/pending regular order. |
 | `avanza_order_delete` | Dry-run or delete a regular open order. |
 | `avanza_open_order_cancel` | Dry-run or cancel an existing open/pending regular order. |
-| `avanza_stoploss_delete` | Dry-run or delete a stop-loss order. |
+| `avanza_stoploss_delete` | Dry-run or delete a stop-loss order; live deletion requires intent/reason matching the exact durable stop metadata. |
 | `avanza_stoploss_edit` | Dry-run or edit an existing stop-loss (delete old + place new). |
 
 Canonical naming note:

@@ -13,7 +13,11 @@ from typing import Any
 from avanza.constants import Condition, OrderType, StopLossPriceType, StopLossTriggerType
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
 
-from avanza_mcp.market_data import order_account_id, order_stock_name
+from avanza_mcp.market_data import (
+    infer_currency_from_metadata,
+    order_account_id,
+    order_stock_name,
+)
 from avanza_mcp.paper import append_paper_event, cancel_paper_order, create_paper_order, create_paper_stop_loss_order
 from avanza_mcp.rendering import (
     build_order_preview,
@@ -131,6 +135,9 @@ class CoreTradingMixin:
             return []
         valid_days = normalize_stoploss_order_valid_days(order_event.get("valid_days"), "order_valid_days")
         metadata = self.stoploss_metadata_for_orderbook(order_book_id) if order_book_id else {}
+        currency = infer_currency_from_metadata(metadata)
+        if currency:
+            preview["currency"] = currency
         warnings = enforce_live_stoploss_order_valid_days(valid_days, metadata, live=live)
         order_event["valid_days"] = valid_days
         order_event["derived_expiry_if_triggered_today"] = stoploss_triggered_order_expiry(valid_days)

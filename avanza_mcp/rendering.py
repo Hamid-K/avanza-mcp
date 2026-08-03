@@ -73,12 +73,16 @@ def price_type_label(value: Any) -> str:
     return str(value)
 
 
-def formatted_typed_value(value: Any, value_type: Any) -> str:
+def formatted_typed_value(
+    value: Any,
+    value_type: Any,
+    monetary_unit: str = "SEK",
+) -> str:
     label = price_type_label(value_type)
     if label == "%":
         return f"{value}%"
     if label == "SEK":
-        return f"{value} SEK"
+        return f"{value} {str(monetary_unit or 'SEK').strip().upper()}"
     return f"{value} {label}".strip()
 
 
@@ -147,12 +151,13 @@ def render_message(title: str, lines: list[str]) -> None:
 def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
     trigger = preview["stop_loss_trigger"]
     order_event = preview["stop_loss_order_event"]
+    monetary_unit = str(preview.get("currency") or "SEK")
     lines = [
         f"Account: {preview['account_id']}",
         f"Order book: {preview['order_book_id']}",
-        f"Trigger: {trigger['type']} {formatted_typed_value(trigger['value'], trigger['value_type'])}",
+        f"Trigger: {trigger['type']} {formatted_typed_value(trigger['value'], trigger['value_type'], monetary_unit)}",
         f"Trigger valid until: {trigger['valid_until']}",
-        f"Order: {order_event['type']} {order_event['volume']} @ {formatted_typed_value(order_event['price'], order_event['price_type'])}",
+        f"Order: {order_event['type']} {order_event['volume']} @ {formatted_typed_value(order_event['price'], order_event['price_type'], monetary_unit)}",
         f"Order valid days after trigger: {order_event['valid_days']}",
     ]
     derived_expiry = str(
