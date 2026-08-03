@@ -31,7 +31,20 @@ TRADINGVIEW_BROWSER_PROFILE_DIR = _REPO_ROOT.joinpath(".avanza_tradingview_profi
 TRADINGVIEW_KEYCHAIN_SERVICE = "Avanza-MCP.TradingView"
 MCP_KEYCHAIN_SERVICE = "Avanza-MCP.BridgeSession"
 LOG_DIR = _REPO_ROOT.joinpath("avanza-cli") / "logs"
-MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_LEGACY_PROTOCOL_VERSIONS = (
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
+MCP_STATELESS_PROTOCOL_VERSION = "2026-07-28"
+MCP_SUPPORTED_PROTOCOL_VERSIONS = (
+    MCP_STATELESS_PROTOCOL_VERSION,
+    *MCP_LEGACY_PROTOCOL_VERSIONS,
+)
+# Default for initialize-handshake clients. The 2026 revision uses
+# server/discover and per-request metadata instead of initialize.
+MCP_PROTOCOL_VERSION = MCP_LEGACY_PROTOCOL_VERSIONS[0]
 VALID_UNTIL_MAX_DAYS = int(os.getenv("AVANZA_VALID_UNTIL_MAX_DAYS", "90"))
 STOPLOSS_ORDER_VALID_DAYS_DEFAULT = int(os.getenv("AVANZA_STOPLOSS_ORDER_VALID_DAYS_DEFAULT", "1"))
 

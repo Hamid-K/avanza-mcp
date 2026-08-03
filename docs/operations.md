@@ -5,13 +5,20 @@ Example: `uv run python avanza_cli.py tui`.
 
 ## Agent Boundary
 
-- This Codex **developer agent** is code-focused.
+- The active **developer agent**, regardless of provider, is code-focused.
 - If a request is about live/paper trade execution, order placement, or stop-loss mutation, the developer agent must refuse and redirect to the dedicated **Trader agent**.
 - Use this agent for implementation, debugging, testing, and documentation updates only.
 
+## Shared Agent Context
+
+Codex, Claude Code, and Gemini CLI resolve their repository entry points to
+`INSTRUCTIONS/PROVIDER_ENTRYPOINT.md`. Use the ignored local
+`INSTRUCTIONS/SESSION_HANDOFF.md` to transfer explicit work state between
+clients. Full registration and switching steps are in `docs/clients.md`.
+
 ## Trading Assistant Context
 
-For Codex trading-assistant sessions, read the local-only context files before analysis:
+For explicitly assigned trading-assistant sessions, read the local-only context files before analysis:
 
 - `INSTRUCTIONS/INSTRUCTIONS.md` for standing safety, account-switching, stop-loss, re-entry, and earnings pre-positioning rules.
 - `INSTRUCTIONS/MEMORY.md` for timestamped lessons, mistakes, strategy updates, and checklist changes.
@@ -198,15 +205,17 @@ python avanza_cli.py tui
 
 2. Enable the `MCP` tick box in the TUI. This starts a localhost bridge that reuses the authenticated Avanza client and writes `.avanza_mcp_session.json`. By default, the ephemeral bridge token is stored in macOS Keychain (`security` CLI) and the dotfile stores metadata/connection details; if keychain is unavailable it falls back to file storage. Set `AVANZA_MCP_SESSION_BACKEND=file` to force dotfile-only storage.
 
-3. Register the MCP server in `~/.codex/config.toml`:
+3. Register the provider-neutral stdio command with Codex, Claude Code, or
+   Gemini CLI:
 
-```toml
-[mcp_servers.avanza-mcp]
-command = "python"
-args = ["/ABSOLUTE/PATH/TO/avanza_cli.py", "mcp"]
+```bash
+uv run --project /ABSOLUTE/PATH/TO/avanza-mcp \
+  python /ABSOLUTE/PATH/TO/avanza-mcp/avanza_cli.py mcp
 ```
 
-4. Start/reload Codex or Codex CLI. It should run:
+   Use the client-specific registration commands in `docs/clients.md`.
+
+4. Start or reload the selected MCP client. It should run:
 
 ```bash
 python avanza_cli.py mcp
@@ -399,7 +408,12 @@ Longer period export:
 
 `avanza_transactions` is read-only and can run with MCP `read_only=true`.
 
-Codex and Codex CLI can run this local stdio MCP command from `~/.codex/config.toml`. ChatGPT developer mode supports remote MCP apps/connectors over SSE or streaming HTTP; it does not currently connect directly to local stdio MCP servers. To use this from ChatGPT, expose a remote streaming HTTP/SSE MCP server with appropriate authentication instead of the local `python avanza_cli.py mcp` proxy.
+Codex, Claude Code, and Gemini CLI can all run this local stdio MCP command.
+They share one MCP catalog and repository context layout; no provider-specific
+broker bridge is used. ChatGPT developer mode supports remote MCP
+apps/connectors over SSE or streaming HTTP and does not currently connect
+directly to this local stdio proxy. A remote client requires a separately
+authenticated streaming HTTP/SSE deployment.
 
 For live monitoring loops, poll `avanza_live_snapshot` no faster than the TUI refresh interval. The snapshot includes positions, stop-losses, open orders, paper orders, safety mode, and `poll_interval_seconds`. MCP does not push unsolicited events to Codex; polling keeps sequencing explicit and auditable.
 

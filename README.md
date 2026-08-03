@@ -10,6 +10,12 @@
 
 Single-script CLI + Textual TUI for Avanza portfolio monitoring, regular buy/sell orders, stop-loss management, MCP integration, and paper trading.
 
+Provider-neutral agent context starts at `INSTRUCTIONS/PROVIDER_ENTRYPOINT.md`.
+The root `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` files are symbolic links to
+that single source, so Codex, Claude Code, and Gemini CLI receive the same
+repository rules. Cross-client work is handed off through the ignored local
+`INSTRUCTIONS/SESSION_HANDOFF.md`; see [LLM Client Interoperability](docs/clients.md).
+
 Trading-assistant context lives in:
 
 - `INSTRUCTIONS/INSTRUCTIONS.md`: standing operating rules and safety constraints.
@@ -268,21 +274,23 @@ python avanza_cli.py tui
 Log in, then enable the `MCP` tick box in the TUI. This starts the localhost bridge and writes `.avanza_mcp_session.json`.
 By default, the MCP bridge token is saved to macOS Keychain (`security` CLI) and only metadata is written to the dotfile; if keychain is unavailable, it falls back to file storage. Override with `AVANZA_MCP_SESSION_BACKEND=keychain|file|auto` (default `auto`).
 
-### 2) Register the MCP server in Codex/Codex CLI
+### 2) Register the MCP server in your client
 
-Add this to `~/.codex/config.toml`:
+Codex, Claude Code, and Gemini CLI all support the same local stdio proxy. The
+recommended absolute-path command is:
 
-```toml
-[mcp_servers.avanza-mcp]
-command = "python"
-args = ["/ABSOLUTE/PATH/TO/avanza_cli.py", "mcp"]
+```bash
+uv run --project /ABSOLUTE/PATH/TO/avanza-mcp \
+  python /ABSOLUTE/PATH/TO/avanza-mcp/avanza_cli.py mcp
 ```
 
-Use the absolute path to your local `avanza_cli.py`.
+Registration commands and the provider-neutral handoff workflow are documented
+in [LLM Client Interoperability](docs/clients.md).
 
 ### 3) Run from your MCP client
 
-After registration, start/reload Codex or Codex CLI. It will launch:
+After registration, start or reload the selected MCP client. It will launch the
+same proxy regardless of provider:
 
 ```bash
 python avanza_cli.py mcp
@@ -482,7 +490,7 @@ Use `avanza_transactions` to retrieve executed order history (BUY/SELL by defaul
 
 `avanza_transactions` is read-only and works while MCP remains read-only.
 
-### 4) ChatGPT desktop note
+### 4) Remote-only client note
 
 ChatGPT developer mode currently expects remote MCP apps/connectors over SSE or streaming HTTP, so it cannot directly register this local stdio proxy.
 

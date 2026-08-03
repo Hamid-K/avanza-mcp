@@ -8,8 +8,27 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from avanza_mcp import config
-from avanza_mcp.config import APP_VERSION, MCP_PROTOCOL_VERSION
+from avanza_mcp.config import (
+    APP_VERSION,
+    MCP_LEGACY_PROTOCOL_VERSIONS,
+    MCP_PROTOCOL_VERSION,
+    MCP_STATELESS_PROTOCOL_VERSION,
+    MCP_SUPPORTED_PROTOCOL_VERSIONS,
+)
 from avanza_mcp.mcp import server as mcp_server
+
+
+MCP_PROTOCOL_META_KEY = "io.modelcontextprotocol/protocolVersion"
+MCP_SERVER_INSTRUCTIONS = (
+    "Avanza-MCP exposes the same account, market-data, paper-trading, and guarded "
+    "broker tools to every MCP client. Begin with avanza_status or "
+    "avanza_capabilities. Use explicit tenant_session_id and account_id when "
+    "account identity matters. Read-only and paper modes are the defaults; live "
+    "broker mutation requires the server-side read/write gate, explicit live "
+    "authorization for the active session, confirm=true, and post-mutation "
+    "readback. Client trust or auto-approval never grants trading authority."
+)
+
 
 def load_mcp_session(path: Path | None = None) -> dict[str, Any]:
     path = path or config.MCP_SESSION_FILE
@@ -61,8 +80,12 @@ def call_mcp_bridge(session: dict[str, Any], tool: str, arguments: dict[str, Any
     return payload
 
 
-def mcp_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
+def mcp_tool_response(
+    payload: dict[str, Any],
+    *,
+    protocol_version: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "content": [
             {
                 "type": "text",
@@ -71,6 +94,11 @@ def mcp_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "isError": not bool(payload.get("ok", True)),
     }
+    if protocol_version in MCP_SUPPORTED_PROTOCOL_VERSIONS[:-1]:
+        result["structuredContent"] = payload
+    if protocol_version == MCP_STATELESS_PROTOCOL_VERSION:
+        result["resultType"] = "complete"
+    return result
 
 
 MCP_STDIO_NEWLINE = "newline"
@@ -142,13 +170,69 @@ def mcp_success(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "result": result}
 
 
-def mcp_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": message}}
+def mcp_error(
+    message_id: Any,
+    code: int,
+    message: str,
+    *,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": message_id, "error": error}
+
+
+def mcp_server_capabilities() -> dict[str, Any]:
+    return {"tools": {}}
+
+
+def negotiate_initialize_protocol(params: dict[str, Any]) -> str:
+    requested = str(params.get("protocolVersion", "") or "").strip()
+    if requested in MCP_LEGACY_PROTOCOL_VERSIONS:
+        return requested
+    return MCP_PROTOCOL_VERSION
+
+
+def mcp_request_protocol_version(
+    params: dict[str, Any],
+    active_protocol_version: str | None,
+) -> str | None:
+    meta = params.get("_meta")
+    if isinstance(meta, dict):
+        requested = str(meta.get(MCP_PROTOCOL_META_KEY, "") or "").strip()
+        if requested:
+            return requested
+    return active_protocol_version
+
+
+def mcp_discovery_result() -> dict[str, Any]:
+    return {
+        "resultType": "complete",
+        "supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+        "capabilities": mcp_server_capabilities(),
+        "serverInfo": {"name": "avanza_cli", "version": APP_VERSION},
+        "instructions": MCP_SERVER_INSTRUCTIONS,
+    }
+
+
+def mcp_tools_list_result(protocol_version: str | None) -> dict[str, Any]:
+    result: dict[str, Any] = {"tools": mcp_server.mcp_tools_catalog()}
+    if protocol_version == MCP_STATELESS_PROTOCOL_VERSION:
+        result.update(
+            {
+                "resultType": "complete",
+                "ttlMs": 300_000,
+                "cacheScope": "public",
+            }
+        )
+    return result
 
 
 def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
     input_stream = sys.stdin.buffer
     output_stream = sys.stdout.buffer
+    active_protocol_version: str | None = None
 
     while True:
         message, framing = read_mcp_message_frame(input_stream)
@@ -162,16 +246,24 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
 
         try:
             if method == "initialize":
+                active_protocol_version = negotiate_initialize_protocol(params)
                 write_mcp_message(
                     output_stream,
                     mcp_success(
                         message_id,
                         {
-                            "protocolVersion": MCP_PROTOCOL_VERSION,
-                            "capabilities": {"tools": {}},
+                            "protocolVersion": active_protocol_version,
+                            "capabilities": mcp_server_capabilities(),
                             "serverInfo": {"name": "avanza_cli", "version": APP_VERSION},
+                            "instructions": MCP_SERVER_INSTRUCTIONS,
                         },
                     ),
+                    framing=framing,
+                )
+            elif method == "server/discover":
+                write_mcp_message(
+                    output_stream,
+                    mcp_success(message_id, mcp_discovery_result()),
                     framing=framing,
                 )
             elif method == "notifications/initialized":
@@ -183,15 +275,41 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
                     framing=framing,
                 )
             elif method == "tools/list":
+                protocol_version = mcp_request_protocol_version(params, active_protocol_version)
+                if protocol_version not in {None, *MCP_SUPPORTED_PROTOCOL_VERSIONS}:
+                    write_mcp_message(
+                        output_stream,
+                        mcp_error(
+                            message_id,
+                            -32022,
+                            f"Unsupported MCP protocol version: {protocol_version}",
+                            data={"supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS)},
+                        ),
+                        framing=framing,
+                    )
+                    continue
                 write_mcp_message(
                     output_stream,
                     mcp_success(
                         message_id,
-                        {"tools": mcp_server.mcp_tools_catalog()},
+                        mcp_tools_list_result(protocol_version),
                     ),
                     framing=framing,
                 )
             elif method == "tools/call":
+                protocol_version = mcp_request_protocol_version(params, active_protocol_version)
+                if protocol_version not in {None, *MCP_SUPPORTED_PROTOCOL_VERSIONS}:
+                    write_mcp_message(
+                        output_stream,
+                        mcp_error(
+                            message_id,
+                            -32022,
+                            f"Unsupported MCP protocol version: {protocol_version}",
+                            data={"supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS)},
+                        ),
+                        framing=framing,
+                    )
+                    continue
                 tool_name = str(params.get("name", ""))
                 arguments = params.get("arguments") or {}
                 if not isinstance(arguments, dict):
@@ -200,7 +318,10 @@ def run_mcp_stdio_proxy(session_file: Path | None = None) -> None:
                 payload = call_mcp_bridge(session, tool_name, arguments)
                 write_mcp_message(
                     output_stream,
-                    mcp_success(message_id, mcp_tool_response(payload)),
+                    mcp_success(
+                        message_id,
+                        mcp_tool_response(payload, protocol_version=protocol_version),
+                    ),
                     framing=framing,
                 )
             else:

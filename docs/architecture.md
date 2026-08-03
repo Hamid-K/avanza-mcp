@@ -5,7 +5,7 @@ This project is intentionally small and explicit.
 ## Surfaces
 
 - `avanza_cli.py` is the single user-facing entry point: a thin shim over the `avanza_mcp` package. It provides scriptable console subcommands, the Textual terminal UI via `python avanza_cli.py tui`, and the Web UI via `python avanza_cli.py web` (the two UIs are mutually exclusive per checkout, enforced by `.avanza_ui.lock`).
-- `python avanza_cli.py mcp` is a stdio MCP proxy. It does not authenticate to Avanza itself; it forwards MCP tool calls to the localhost bridge started by the authenticated TUI.
+- `python avanza_cli.py mcp` is a provider-neutral stdio MCP proxy. It does not authenticate to Avanza itself; it forwards MCP tool calls to the localhost bridge started by the authenticated TUI or Web UI. Codex, Claude Code, and Gemini CLI use this same process and tool catalog.
 
 ## Package layout
 
@@ -30,7 +30,20 @@ The implementation lives in the `avanza_mcp` package:
 
 Within the package, functions that tests monkeypatch are always called through their defining module (`module.name(...)`, never `from module import name`), so a single patch point works everywhere.
 
-The console and TUI surfaces call `avanza-api` directly. MCP uses the TUI-owned authenticated client through a local bridge so credentials and TOTP remain handled by the TUI.
+The console and UI surfaces call `avanza-api` directly. MCP uses the UI-owned authenticated client through a local bridge so credentials and TOTP remain handled by the TUI or Web UI.
+
+## Provider-Neutral Agent Context
+
+`AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` are symbolic links to
+`INSTRUCTIONS/PROVIDER_ENTRYPOINT.md`. This prevents provider instructions from
+drifting. The ignored local `INSTRUCTIONS/SESSION_HANDOFF.md` carries explicit
+work-in-progress state between clients, while Git, the existing private ledgers,
+runtime files, and logs remain authoritative in their original locations.
+
+The MCP proxy accepts newline-delimited and legacy `Content-Length` stdio
+framing. It negotiates initialized MCP protocol revisions and implements the
+stateless discovery path for newer clients. See `docs/clients.md` for the
+supported revisions and client registration commands.
 
 Transaction history retrieval (`avanza_transactions`) is exposed on CLI and MCP as a read-only path for audit/review workflows (executed orders by default, optional broader transaction types and date filters).
 

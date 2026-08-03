@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.30 - 2026-08-04
+
+- Added one canonical provider-neutral agent entry point, linked from Codex,
+  Claude Code, and Gemini CLI instruction files, plus an ignored shared session
+  handoff for durable cross-client continuity.
+- Expanded the stdio MCP proxy to negotiate legacy initialized protocol
+  revisions and the stateless discovery protocol while preserving both newline
+  and `Content-Length` framing.
+- Documented registration, switching, safety, and context boundaries for all
+  three supported local MCP clients.
+
 ## 0.2.29 - 2026-08-04
 
 - Tightened recovery reachability semantics: fixed BUY rows within `8%` are practical participation, `8-15%` rows are secondary review only, and rows beyond `15%` are deep review. Secondary- or deep-only recovery now fails closed.
