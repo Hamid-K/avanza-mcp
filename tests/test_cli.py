@@ -801,6 +801,16 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                         "isin": "SE0000000001",
                         "description": "Dividend",
                     },
+                    {
+                        "tradeDate": "2026-04-28",
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrumentName": "Foreign Account AB",
+                        "type": "BUY",
+                        "volume": {"value": 3, "unit": "st"},
+                        "priceInTransactionCurrency": {"value": 50, "unit": "SEK"},
+                        "amount": {"value": 150, "unit": "SEK"},
+                        "description": "Foreign account order",
+                    },
                 ],
             }
 
@@ -860,6 +870,15 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             )
             assert raw_transactions["raw_payload"]["firstTransactionDate"] == "2024-01-01"
             assert raw_transactions["raw_payload"]["transactions"][0]["description"] == "Filled order"
+            assert len(raw_transactions["raw_payload"]["transactions"]) == 1
+            assert raw_transactions["raw_scope"] == {
+                "account_id": "acc-2",
+                "exact_account_scope": True,
+                "source_rows": 3,
+                "returned_rows": 1,
+                "foreign_rows_filtered": 1,
+                "unidentified_rows_filtered": 0,
+            }
             assert "raw_payload" not in transactions
             open_orders = app.execute_mcp_tool("avanza_open_orders", {"account_id": "acc-2"})
             assert open_orders["orders"] == []

@@ -65,6 +65,7 @@ from avanza_mcp.records import (
     stop_loss_volume,
     summarize_sold_transactions,
     summarize_stop_protection,
+    transaction_account_id,
     transaction_history_dict_row,
     transaction_matches_instrument_filters,
     transaction_order_book_id,
@@ -1482,7 +1483,51 @@ class CoreSnapshotsMixin:
             "transactions": rows,
         }
         if include_raw:
-            response["raw_payload"] = payload_to_json_safe(payload)
+            safe_payload = payload_to_json_safe(payload)
+            safe_items, _safe_first_date = transactions_items(safe_payload)
+            raw_items = [
+                item
+                for item in safe_items
+                if (not account_id or transaction_account_id(item) == str(account_id))
+                and transaction_matches_instrument_filters(
+                    item,
+                    account_id=account_id or None,
+                    account_name=account_name or None,
+                    orderbook_id=orderbook_id,
+                    instrument_name=instrument_name,
+                    side=side,
+                    status=status,
+                    executed_only=executed_only,
+                )
+            ]
+            foreign_rows = 0
+            unidentified_rows = 0
+            if account_id:
+                for item in safe_items:
+                    item_account_id = transaction_account_id(item)
+                    if item_account_id and item_account_id != str(account_id):
+                        foreign_rows += 1
+                    elif not item_account_id:
+                        unidentified_rows += 1
+
+            if isinstance(safe_payload, dict):
+                raw_payload = dict(safe_payload)
+                raw_key = "transactions" if "transactions" in raw_payload else "items"
+                if raw_key in raw_payload:
+                    raw_payload[raw_key] = raw_items
+            elif isinstance(safe_payload, list):
+                raw_payload = raw_items
+            else:
+                raw_payload = safe_payload
+            response["raw_payload"] = raw_payload
+            response["raw_scope"] = {
+                "account_id": account_id or None,
+                "exact_account_scope": bool(account_id),
+                "source_rows": len(safe_items),
+                "returned_rows": len(raw_items),
+                "foreign_rows_filtered": foreign_rows,
+                "unidentified_rows_filtered": unidentified_rows,
+            }
         if truncation_risk:
             response["warning"] = (
                 f"Fetched count reached max_elements={max_elements}; older transactions may be "

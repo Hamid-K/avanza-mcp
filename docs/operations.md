@@ -171,6 +171,13 @@ python avanza_cli.py transactions list \
   --types BUY,SELL,DIVIDEND
 ```
 
+When an exact `--account-id` is supplied, both normalized output and any
+`include_raw` evidence payload are scoped to that account. The raw envelope
+retains its broker structure, but unrelated or unidentified transaction rows
+are removed and the MCP response reports the source, returned, foreign, and
+unidentified row counts under `raw_scope`. Do not treat a raw response without
+an exact account scope as account-specific audit evidence.
+
 ## Web UI
 
 `python avanza_cli.py web` serves the browser trading console on

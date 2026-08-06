@@ -45,7 +45,7 @@ framing. It negotiates initialized MCP protocol revisions and implements the
 stateless discovery path for newer clients. See `docs/clients.md` for the
 supported revisions and client registration commands.
 
-Transaction history retrieval (`avanza_transactions`) is exposed on CLI and MCP as a read-only path for audit/review workflows (executed orders by default, optional broader transaction types, date filters, and an explicit `include_raw` payload for evidence preservation). Runtime capability fingerprints must confirm raw support before a historical raw-source gate can close.
+Transaction history retrieval (`avanza_transactions`) is exposed on CLI and MCP as a read-only path for audit/review workflows (executed orders by default, optional broader transaction types, date filters, and an explicit `include_raw` payload for evidence preservation). Normalized and raw transaction rows are filtered to the requested exact account; the raw broker envelope structure is preserved while its transaction array is scoped and the response records source/returned/foreign-row counts. Runtime capability fingerprints must confirm raw support before a historical raw-source gate can close.
 
 ## Credentials
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Scoped `avanza_transactions(include_raw=true)` raw transaction envelopes to
+  the requested exact account while preserving broker structure and exposing
+  raw source/scope counts; added a multi-account regression test.
 - Added read-only event-protection triage for material moves and
   event-sensitive holdings without turning review flags into broker authority.
 - Added fail-closed metadata for intentional holding-only drift, while keeping
