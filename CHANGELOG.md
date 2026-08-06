@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Added read-only event-protection triage for material moves and
+  event-sensitive holdings without turning review flags into broker authority.
+- Added fail-closed metadata for intentional holding-only drift, while keeping
+  stop, order, and other exposure drift unresolved.
+- Added `avanza_transactions(include_raw=true)` evidence preservation,
+  `contract_features`, and `mcp_contract_revision` runtime fingerprints so
+  historical raw-source gates can distinguish a loaded bridge from an older
+  long-running process.
+- Enforced matching `strategy_intent` and `strategy_reason` metadata for live
+  and paper stop workflows, including stop deletion reason checks.
+- Bounded TradingView pre-open batches and preserved per-symbol failures for
+  large or mixed-exchange reviews.
+- Added read-only artifact builders and validators for buy-back coverage,
+  catalysts, forward KPIs, transactions, scheduler state, strategy scope,
+  portfolio controls, and objective completion; expanded the verification
+  workflow and regression tests accordingly.
+- Established the repository-wide rule that agents require explicit
+  current-thread user approval before modifying code, tests, scripts,
+  configuration, documentation, or automation.
+
 ## 0.2.30 - 2026-08-04
 
 - Added one canonical provider-neutral agent entry point, linked from Codex,

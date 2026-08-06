@@ -8,6 +8,10 @@ Example: `uv run python avanza_cli.py tui`.
 - The active **developer agent**, regardless of provider, is code-focused.
 - If a request is about live/paper trade execution, order placement, or stop-loss mutation, the developer agent must refuse and redirect to the dedicated **Trader agent**.
 - Use this agent for implementation, debugging, testing, and documentation updates only.
+- Repository edits require explicit current-thread user approval for the
+  specific change. Monitoring, diagnosis, testing, committing, or a standing
+  task objective is not edit approval; state the intended files and scope
+  before editing.
 
 ## Shared Agent Context
 

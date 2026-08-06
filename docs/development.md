@@ -81,6 +81,15 @@ tracked change. Do not leave source or test changes only in the working tree;
 after the quality gates pass, commit and push them unless the user explicitly
 requests a local-only change.
 
+### Change Approval
+
+Agents must obtain explicit current-thread user approval before modifying
+repository code, tests, scripts, configuration, documentation, or automation.
+Analysis, monitoring, diagnosis, test execution, committing, and a standing
+task objective do not grant edit approval. Before editing, state the intended
+files and scope; do not infer approval from a prior task or from the fact that
+the repository is already being reviewed.
+
 Version source of truth is `pyproject.toml` (`project.version`). The runtime surfaces this version in CLI/TUI/MCP.
 
 For each release:
