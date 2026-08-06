@@ -1,6 +1,8 @@
 import io
 from datetime import date, timedelta
 
+import pytest
+
 TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 
 from avanza_mcp.mcp.proxy import (
@@ -878,6 +880,8 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
             "order_price": 1,
             "order_price_type": "%",
             "volume": 10,
+            "strategy_intent": "PROFIT_PROTECTION",
+            "strategy_reason": "Paper test protection row.",
         },
         instrument="Example AB",
     )
@@ -898,6 +902,23 @@ def test_paper_session_round_trip_and_active_row(tmp_path):
         "ACTIVE",
         cancel_badge(),
     )
+
+
+def test_paper_stop_requires_strategy_intent_and_reason():
+    with pytest.raises(ValueError, match="strategy_intent is required"):
+        create_paper_stop_loss_order(
+            {
+                "account_id": "acc-1",
+                "order_book_id": "ob-1",
+                "trigger_value": 5,
+                "trigger_value_type": "%",
+                "valid_until": TEST_VALID_UNTIL,
+                "order_price": 1,
+                "order_price_type": "%",
+                "volume": 10,
+            },
+            instrument="Example AB",
+        )
 
 
 def test_paper_regular_order_active_row():

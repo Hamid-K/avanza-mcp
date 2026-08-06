@@ -93,6 +93,34 @@ Run the full quality gate at any time:
 scripts/verify.sh
 ```
 
+The quality gate also validates the private review artifacts without granting
+trade authority: the instrument strategy master must cover 65 instruments and
+107 account-position rows, and the buy-back ledger must remain explicitly
+stamped until a new scoped live refresh verifies both accounts. It also checks
+the authoritative factor, pending-order, capital-displacement, and
+risk-governance overlays and ensures the objective-completion audit remains
+explicitly open while live and forward evidence are missing. It also checks
+the 12-measure forward KPI coverage audit and refuses to infer current returns,
+benchmark results, drawdown, participation, or lifecycle outcomes from stale
+or mixed-session snapshots. Generated portfolio artifacts are analysis
+context, not broker instructions. Every
+strategy-master account row also carries exact tenant/account/orderbook scope.
+The clean-sheet, factor, pending-order, displacement, risk, and live
+reconciliation overlays are checked for the same scope and authority flags.
+They also carry explicit `STAMPED_ANALYSIS_SNAPSHOT` freshness metadata and
+cannot claim current live state or authorize action without a new exact scoped
+refresh.
+Every daily
+buy-back candidate also carries explicit promotion and rejection/hold evidence;
+ledger-only rows are not generic placeholders.
+Transaction history is audited independently: historical summary coverage,
+manual sold slices, raw-source availability, and same-day BUY attribution are
+kept separate, with missing recent/raw evidence failing closed.
+The scheduler ledger is separately checked for its 18-row Approval C queue,
+non-terminal check windows, and explicit active/archive gaps.
+Catalyst coverage separately prevents estimated dates or stale scanner labels
+from being treated as verified issuer publication.
+
 ## Commands
 
 Console commands print human-readable Rich tables and summaries, not raw API payloads.
@@ -347,12 +375,12 @@ For multi-session setups:
 | `avanza_stoplosses` | List stop-loss orders with durable strategy intent and missing/mismatch metadata audit, optionally filtered by instrument, side, status, and compact mode. |
 | `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
 | `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
-| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
+| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
 | `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
-| `avanza_transactions` | List executed orders/history with optional account/date/type/instrument filters. |
+| `avanza_transactions` | List executed orders/history with optional account/date/type/instrument filters; `include_raw` opt-in preserves the unnormalized broker payload for read-only evidence. |
 | `avanza_live_snapshot` | Read a decision-ready polling snapshot, with optional compact instrument filtering. |
 | `avanza_position` | Read one account position by orderbook ID. |
 | `avanza_instrument_stoplosses` | Read stop-loss rows for one instrument/account. |
@@ -410,6 +438,12 @@ strategy gate, and reviewed aggregate holding/stop/open-order exposure to exact
 live state. A fill, holding change, stop edit, leftover order, missing plan, or
 stale plan makes `avanza_position_strategy_audit` fail closed until the change
 is reviewed. Rebaselining records a decision; it never authorizes a trade.
+
+Intentional holding-only drift may be documented with an `audit_exception` whose
+kind is `USER_CONTROLLED_ALLOCATION` or `POST_MANUAL_EXIT_DRIFT`, with an owner,
+reason, review point, and `allowed_mismatches: ["holding"]`. The audit must still
+remain incomplete, `rebaseline_authorized` is always false, and stop, order, or
+other exposure drift is never acknowledged by this mechanism.
 
 Mechanical registry equality does not prove that analysis sources carry the
 same meaning. Use `avanza-strategy-audit` to compare every account-position
@@ -469,7 +503,7 @@ avanza-strategy-audit \
   2. confirm `tv_auth_session_status` if authenticated TradingView data is needed,
   3. call `tv_preopen_batch_snapshot` for watchlist/candidate symbols or `avanza_tv_preopen_portfolio_bundle` for an Avanza account review,
   4. use `tv_scrape_heatmap` with filters such as `exchanges=["NASDAQ","NYSE","AMEX"]`, `exclude_otc=true`, `min_market_cap`, `min_price`, and `min_volume` to avoid OTC/microcap noise.
-- Performance notes: `tv_preopen_batch_snapshot` uses a bulk TradingView scanner call for normal multi-symbol reviews; Avanza MCP read tools keep a short in-process account cache to avoid repeated full portfolio/stop/order pulls during focused workflows; `avanza_orderbook_quotes` deduplicates IDs and can skip metadata enrichment when `fields` contains only price fields.
+- Performance notes: `tv_preopen_batch_snapshot` uses bounded bulk TradingView scanner chunks for normal multi-symbol reviews, preserving per-symbol error isolation for large or mixed-exchange requests; Avanza MCP read tools keep a short in-process account cache to avoid repeated full portfolio/stop/order pulls during focused workflows; `avanza_orderbook_quotes` deduplicates IDs and can skip metadata enrichment when `fields` contains only price fields.
 - TradingView extended-hours fields depend on TradingView entitlement/session and scanner availability. `premarket_close`, `postmarket_close`, `update_mode`, and quote freshness warnings are reported explicitly; missing fields are returned as `null` instead of inferred from Avanza.
 - `zacks_scrape_symbol` is best effort; it uses Zacks quote-feed data for rank when available, then attempts the quote page and free Zacks equity-report page for visible analysis text. It returns `rank_source`, `quote_feed`, `analysis_summary`, `analysis_sources`, and `blocked_sources`. Zacks HTML pages can still return bot-protection pages unless a valid browser session/cookie is provided.
 - Treat scrape output as decision support only. Keep live mutations behind Avanza read/write + explicit `confirm: true`.
@@ -489,6 +523,14 @@ Use `avanza_transactions` to retrieve executed order history (BUY/SELL by defaul
   - `{"transactions_from": "2026-01-01", "transactions_to": "2026-12-31", "executed_only": false, "max_elements": 5000}`
 
 `avanza_transactions` is read-only and works while MCP remains read-only.
+
+When preserving transaction evidence, pass `include_raw: true` and verify the
+response contains `raw_payload`. `avanza_capabilities` also reports
+`contract_features.transactions_include_raw`; a missing feature indicates that
+the loaded MCP runtime must be reloaded before raw-source evidence can be
+accepted.
+Also verify `mcp_contract_revision` after a reload; the package version alone
+is not sufficient to distinguish an older long-running bridge process.
 
 ### 4) Remote-only client note
 

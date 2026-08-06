@@ -852,6 +852,9 @@ def tradingview_preopen_batch_snapshot(
     cookie: str = "",
 ) -> dict[str, Any]:
     del max_concurrency  # Bulk scanner calls replace per-symbol concurrency for normal operation.
+    # Keep scanner payloads bounded so a large mixed-exchange review cannot
+    # fail as one request and lose the promised per-symbol error isolation.
+    batch_chunk_size = 8
     normalized_market = normalize_tradingview_market(market)
     requests: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
@@ -874,22 +877,33 @@ def tradingview_preopen_batch_snapshot(
         rows.append({})
 
     batch_rows_by_symbol: dict[str, dict[str, Any]] = {}
+    batch_errors_by_symbol: dict[str, str] = {}
     unsupported_fields: list[str] = []
-    batch_error = ""
-    if requests:
+    for chunk_start in range(0, len(requests), batch_chunk_size):
+        chunk = requests[chunk_start : chunk_start + batch_chunk_size]
+        chunk_symbols = [request["normalized_symbol"] for request in chunk]
         try:
-            scan, unsupported_fields = tradingview_scan_with_field_fallback(
-                symbols=[request["normalized_symbol"] for request in requests],
+            scan, chunk_unsupported_fields = tradingview_scan_with_field_fallback(
+                symbols=chunk_symbols,
                 fields=TRADINGVIEW_DEEP_ANALYTICS_CANDIDATE_FIELDS,
                 market=normalized_market,
                 cookie=cookie,
             )
+            for field in chunk_unsupported_fields:
+                if field not in unsupported_fields:
+                    unsupported_fields.append(field)
         except Exception as exc:
-            batch_error = str(exc)
-            scan = {"rows": []}
-        batch_rows_by_symbol = tradingview_batch_rows_by_request(
-            [row for row in scan.get("rows", []) if isinstance(row, dict)] if isinstance(scan, dict) else [],
-            [request["normalized_symbol"] for request in requests],
+            error = str(exc)
+            for symbol in chunk_symbols:
+                batch_errors_by_symbol[symbol] = error
+            continue
+        batch_rows_by_symbol.update(
+            tradingview_batch_rows_by_request(
+                [row for row in scan.get("rows", []) if isinstance(row, dict)]
+                if isinstance(scan, dict)
+                else [],
+                chunk_symbols,
+            )
         )
 
     fallback_count = 0
@@ -914,8 +928,8 @@ def tradingview_preopen_batch_snapshot(
                 )
             else:
                 fallback_count += 1
-                if batch_error:
-                    raise RuntimeError(batch_error)
+                if normalized_symbol in batch_errors_by_symbol:
+                    raise RuntimeError(batch_errors_by_symbol[normalized_symbol])
                 snapshot = tradingview_preopen_symbol_snapshot(
                     symbol,
                     market=normalized_market,

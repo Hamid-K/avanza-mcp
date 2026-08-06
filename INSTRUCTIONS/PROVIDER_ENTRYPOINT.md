@@ -6,6 +6,15 @@ Claude, and Gemini receive the same operating context.
 
 ## Select The Role
 
+## Hard Approval Rule
+
+- Agents must never modify repository code, tests, scripts, configuration,
+  documentation, or automation files without explicit current-thread user
+  approval for that specific change. Analysis, monitoring, diagnosis, testing,
+  committing, or a standing task objective is not edit approval. Before any
+  edit, state the intended files and scope and obtain approval unless the user
+  has already explicitly approved that exact edit in the current thread.
+
 - Repository sessions default to the **developer** role for implementation,
   review, testing, documentation, and release work. Developer sessions do not
   place, edit, or cancel live or paper trades.
@@ -80,6 +89,10 @@ substituting its template.
   recent slice and redact account or order details from public artifacts.
 - `.avanza_stoploss_strategy.json` and `.avanza_position_strategy.json` are
   audit metadata. They do not authorize a trade.
+- Position audit exceptions may explain only intentional holding-only drift;
+  they require owner/reason/review metadata, force `rebaseline_authorized=false`,
+  and keep the audit incomplete. Stop, order, and other exposure drift remains
+  unresolved and cannot be acknowledged by an exception.
 - Never commit local session files, credentials, cookies, account identifiers,
   portfolio snapshots, or private instruction contents.
 
@@ -89,3 +102,7 @@ substituting its template.
 - Keep implementation, tests, public templates, docs, and versioning aligned.
 - Run the repository verification described in `docs/development.md` before a
   commit or handoff, and record any tests that could not be run.
+- The verification suite includes read-only structural validation of the
+  65-instrument/107-position strategy master, the buy-back freshness contract,
+  authoritative portfolio-control overlays, and the objective-completion audit;
+  none authorizes broker or paper actions or claims goal completion.

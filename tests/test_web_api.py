@@ -305,6 +305,8 @@ def test_stoploss_dry_run_and_paper_place(with_session, runtime):
         "order_price": 2.0,
         "order_price_type": "percentage",
         "order_valid_days": 1,
+        "strategy_intent": "PROFIT_PROTECTION",
+        "strategy_reason": "Paper test protection row.",
     }
     review = with_session.post("/api/stoplosses/dry-run", json=body)
     assert review.status_code == 200, review.text

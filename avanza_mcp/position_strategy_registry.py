@@ -50,6 +50,11 @@ _OPEN_ORDER_EXPOSURE_FIELDS = {
     "open_buy_count",
     "open_sell_count",
 }
+_POSITION_AUDIT_EXCEPTION_ALLOWED_FIELDS = {"holding"}
+_POSITION_AUDIT_EXCEPTION_KINDS = {
+    "USER_CONTROLLED_ALLOCATION",
+    "POST_MANUAL_EXIT_DRIFT",
+}
 _TERMINAL_ORDER_STATUSES = {
     "CANCELLED",
     "CANCELED",
@@ -82,6 +87,42 @@ _PLAN_TEXT_FIELDS = (
     *_REQUIRED_PLAN_TEXT_FIELDS,
     *_OPTIONAL_PLAN_TEXT_FIELDS,
 )
+
+
+def _normalize_audit_exception(value: Any) -> dict[str, Any] | None:
+    """Validate metadata that explains intentional drift without clearing it."""
+
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("audit_exception must be an object or null.")
+    kind = _normalized_token(value.get("kind"))
+    reason = str(value.get("reason") or "").strip()
+    owner = str(value.get("owner") or "").strip()
+    review_due = str(value.get("review_due") or "").strip()
+    allowed_fields = value.get("allowed_mismatches")
+    if kind not in _POSITION_AUDIT_EXCEPTION_KINDS:
+        raise ValueError(
+            "audit_exception.kind must be USER_CONTROLLED_ALLOCATION or "
+            "POST_MANUAL_EXIT_DRIFT."
+        )
+    if not reason or not owner or not review_due:
+        raise ValueError(
+            "audit_exception requires reason, owner, and review_due."
+        )
+    if not isinstance(allowed_fields, list) or not allowed_fields:
+        raise ValueError("audit_exception.allowed_mismatches must be a non-empty list.")
+    normalized_fields = sorted({_normalized_token(field).lower() for field in allowed_fields})
+    if not set(normalized_fields).issubset(_POSITION_AUDIT_EXCEPTION_ALLOWED_FIELDS):
+        raise ValueError("audit_exception may acknowledge holding drift only.")
+    return {
+        "kind": kind,
+        "reason": reason,
+        "owner": owner,
+        "review_due": review_due,
+        "allowed_mismatches": normalized_fields,
+        "rebaseline_authorized": False,
+    }
 
 
 def _utc_timestamp() -> str:
@@ -165,6 +206,148 @@ def position_strategy_live_fingerprint(row: dict[str, Any]) -> dict[str, Any]:
         "open_sell_volume": _normalized_number(row.get("open_sell_volume")),
         "open_buy_count": _normalized_count(row.get("open_buy_count", 0)),
         "open_sell_count": _normalized_count(row.get("open_sell_count", 0)),
+    }
+
+
+def _position_percent(row: dict[str, Any], *keys: str) -> float | None:
+    """Read a rendered percentage without treating missing data as zero."""
+
+    for key in keys:
+        value = row.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        cleaned = str(value).strip().replace("%", "").replace(",", "")
+        parsed = scalar_number(cleaned)
+        if parsed is not None:
+            return float(parsed)
+    return None
+
+
+def build_event_protection_screen(
+    positions: Iterable[dict[str, Any]],
+    strategy_positions: Iterable[dict[str, Any]],
+    *,
+    material_move_threshold_percent: float = 5.0,
+) -> dict[str, Any]:
+    """Build a read-only event/protection triage screen.
+
+    The threshold is a surfacing aid, not a universal stop or sell rule. The
+    screen forces a plan-level event decision when a holding is event-sensitive
+    or makes a material move without active SELL protection, while preserving
+    the distinction between a review flag and trade authorization.
+    """
+
+    threshold = abs(float(material_move_threshold_percent))
+    strategy_by_orderbook = {
+        str(row.get("orderbook_id") or ""): row
+        for row in strategy_positions
+        if row.get("orderbook_id")
+    }
+    event_tokens = (
+        "EVENT",
+        "EARNINGS",
+        "REPORT",
+        "GUIDANCE",
+        "CATALYST",
+        "AFTER-CLOSE",
+        "BEFORE-OPEN",
+        "POST-EVENT",
+        "PUBLICATION",
+    )
+    decision_tokens = (
+        "HOLD",
+        "REDUCE",
+        "SELL",
+        "TRIM",
+        "RECLAIM",
+        "AVOID",
+        "ADD",
+        "REVIEW",
+    )
+    rows: list[dict[str, Any]] = []
+    for position in positions:
+        orderbook_id = str(
+            position.get("orderbook_id") or position.get("Order Book ID") or ""
+        ).strip()
+        strategy_row = strategy_by_orderbook.get(orderbook_id, {})
+        plan = strategy_row.get("position_strategy") or {}
+        day_percent = _position_percent(position, "Day %", "day_percent")
+        profit_percent = _position_percent(position, "Profit %", "profit_percent")
+        holding = _normalized_number(
+            position.get("volume", position.get("Volume", 0))
+        )
+        active_sell_volume = _normalized_number(
+            strategy_row.get("active_sell_volume")
+        )
+        active_sell_count = _normalized_count(
+            strategy_row.get("active_sell_count", 0)
+        )
+        plan_text = " ".join(
+            str(plan.get(field) or "")
+            for field in ("audit_status", "bucket", "gate", "recommendation", "stance", "next_gate")
+        ).upper()
+        event_sensitive = any(token in plan_text for token in event_tokens)
+        explicit_event_decision = event_sensitive and any(
+            token in plan_text for token in decision_tokens
+        )
+        material_move = (
+            day_percent is not None and abs(day_percent) >= threshold
+        )
+        profitable_without_sell = (
+            holding > 0
+            and active_sell_volume <= 0
+            and profit_percent is not None
+            and profit_percent > 0
+        )
+        protection_review_required = holding > 0 and active_sell_volume <= 0 and (
+            material_move or event_sensitive
+        )
+        if not protection_review_required:
+            continue
+        rows.append(
+            {
+                "account_id": str(strategy_row.get("account_id") or ""),
+                "orderbook_id": orderbook_id,
+                "stock": str(position.get("stock") or position.get("Stock") or ""),
+                "holding": holding,
+                "day_percent": day_percent,
+                "profit_percent": profit_percent,
+                "active_sell_volume": active_sell_volume,
+                "active_sell_count": active_sell_count,
+                "event_sensitive": event_sensitive,
+                "material_move": material_move,
+                "profitable_without_sell": profitable_without_sell,
+                "explicit_event_decision": explicit_event_decision,
+                "decision_required": not explicit_event_decision or material_move,
+                "audit_status": plan.get("audit_status"),
+                "bucket": plan.get("bucket"),
+                "next_gate": plan.get("next_gate"),
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            not row["material_move"],
+            not row["profitable_without_sell"],
+            -(abs(row["day_percent"]) if row["day_percent"] is not None else 0.0),
+            row["stock"],
+        )
+    )
+    return {
+        "authority": "READ_ONLY_TRIAGE",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "material_move_threshold_percent": threshold,
+        "rows": rows,
+        "material_move_count": sum(row["material_move"] for row in rows),
+        "profitable_without_sell_count": sum(
+            row["profitable_without_sell"] for row in rows
+        ),
+        "decision_required_count": sum(row["decision_required"] for row in rows),
+        "notes": [
+            "A material move is a review trigger, not a universal stop or sell rule.",
+            "Event gaps, core retention, tactical slices, and risk-off decisions remain instrument-specific.",
+        ],
     }
 
 
@@ -421,6 +604,9 @@ class PositionStrategyRegistry:
                 if candidate.get("proposed_correction") is not None
                 else None
             ),
+            "audit_exception": _normalize_audit_exception(
+                candidate.get("audit_exception")
+            ),
             "source_snapshot_at": (
                 str(candidate.get("source_snapshot_at") or "").strip() or None
             ),
@@ -522,6 +708,7 @@ class PositionStrategyRegistry:
                     for field in (
                         *_PLAN_TEXT_FIELDS,
                         "proposed_correction",
+                        "audit_exception",
                         "source",
                         "source_snapshot_at",
                         "recorded_at",
@@ -532,6 +719,14 @@ class PositionStrategyRegistry:
                     field: entry.get(field) for field in _LIVE_STATE_FIELDS
                 },
             }
+        )
+        exception = entry.get("audit_exception")
+        mismatch_fields = set(mismatches)
+        allowed_fields = set(exception.get("allowed_mismatches", [])) if isinstance(exception, dict) else set()
+        enriched["position_strategy_exception_status"] = (
+            "ACKNOWLEDGED_INTENTIONAL_DRIFT"
+            if exception and mismatch_fields and mismatch_fields.issubset(allowed_fields)
+            else None
         )
         return enriched
 
@@ -608,6 +803,15 @@ class PositionStrategyRegistry:
                 row.get("position_strategy_mismatches", [])
             )
         ]
+        acknowledged_mismatches = [
+            row
+            for row in mismatches
+            if row.get("position_strategy_exception_status")
+            == "ACKNOWLEDGED_INTENTIONAL_DRIFT"
+        ]
+        unresolved_mismatches = [
+            row for row in mismatches if row not in acknowledged_mismatches
+        ]
         complete = not missing and not mismatches and not unavailable and not stale_ids
         return {
             "account_id": account_token,
@@ -623,6 +827,14 @@ class PositionStrategyRegistry:
             "holding_drift_count": len(holding_drift),
             "stop_exposure_drift_count": len(stop_drift),
             "open_order_drift_count": len(open_order_drift),
+            "acknowledged_mismatch_count": len(acknowledged_mismatches),
+            "unresolved_mismatch_count": len(unresolved_mismatches),
+            "acknowledged_mismatch_orderbook_ids": [
+                row["orderbook_id"] for row in acknowledged_mismatches
+            ],
+            "unresolved_mismatch_orderbook_ids": [
+                row["orderbook_id"] for row in unresolved_mismatches
+            ],
             "missing_orderbook_ids": [row["orderbook_id"] for row in missing],
             "mismatched_orderbook_ids": [
                 row["orderbook_id"] for row in mismatches

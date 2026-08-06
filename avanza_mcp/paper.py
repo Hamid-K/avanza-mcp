@@ -9,6 +9,7 @@ from typing import Any
 from avanza_mcp import config, utils
 from avanza_mcp.config import PAPER_ORDER_ACTIVE_STATES
 from avanza_mcp.rendering import build_order_preview, build_stop_loss_preview
+from avanza_mcp.strategy_intent import validate_mcp_stoploss_strategy_intent
 
 def empty_paper_session() -> dict[str, Any]:
     now = datetime.now().isoformat(timespec="seconds")
@@ -313,6 +314,9 @@ def paper_risk_state(
 
 def create_paper_stop_loss_order(args: dict[str, Any], instrument: str = "") -> dict[str, Any]:
     _, _, preview = build_stop_loss_preview(args)
+    # Paper state is still durable strategy state; require the same explicit
+    # intent and reason contract as a live stop before persisting it.
+    validate_mcp_stoploss_strategy_intent(args, preview, live=True)
     timestamp = datetime.now().isoformat(timespec="seconds")
     return {
         "id": f"paper-{datetime.now().strftime('%Y%m%d%H%M%S%f')}",

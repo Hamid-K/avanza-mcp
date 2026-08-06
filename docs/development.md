@@ -20,6 +20,47 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv run scripts/verify.sh
 ```
 
+The verification script includes read-only checks for the 65-instrument/107
+account-position strategy master, the buy-back freshness/authority contract,
+and the authoritative factor/order/displacement/risk overlays. A stamped
+buy-back artifact is not treated as current broker state; both exact account
+snapshots must be refreshed before any action proposal. The gate also checks
+that the objective-level audit remains explicitly open while live refresh,
+event windows, and forward KPI evidence remain incomplete. The forward KPI
+audit preserves all 12 scorecard definitions but records zero completed
+forward measures until aligned account/benchmark observations and the frozen
+starting-holdings replay are available. Each strategy-master
+account row must also carry exact tenant/account/orderbook scope. Each daily
+buy-back candidate must include explicit promotion and rejection/hold evidence,
+including rows classified as ledger-only. The clean-sheet, factor,
+pending-order, displacement, risk, and live-reconciliation overlays must carry
+the same exact scope and fail-closed authority metadata. Transaction coverage is
+also checked independently: historical summary rows must reconcile to both
+exact accounts, manual exits must remain attributable, and missing raw or recent
+transaction evidence must keep same-day BUY attribution explicitly open.
+Those portfolio overlays are stamped with `STAMPED_ANALYSIS_SNAPSHOT`,
+`live_state_current=false`, `live_refresh_verified=false`, and
+`requires_new_scoped_live_refresh_before_action=true`; these fields are
+validated both directly and through the completion audit.
+The scheduler ledger is also parsed independently: the canonical Approval C
+queue must remain exactly 18 rows, every non-terminal row must have a next
+check, and terminal rows left in the active section must remain an explicit
+archive-gap blocker.
+Catalyst evidence is also checked independently: every sourced upcoming row
+must retain a defined status, unverified dates must remain
+`WAITING_OFFICIAL_DATE`, and due issuer rows must remain release/reversal gated.
+Completion-audit enrichment is deterministic and idempotent so repeated
+verification cannot duplicate requirement evidence clauses.
+When live position audits retain intentional holding-only drift, the
+completion-audit link also requires owner, reason, review timing,
+`allowed_mismatches=[holding]`, and `rebaseline_authorized=false` metadata for
+every acknowledged exception; zero unresolved mismatches alone is insufficient.
+When linked coverage requires a new scoped refresh, the completion audit must
+also mark the previous broker checkpoint as historical and set an explicit
+refresh-before-action state.
+The completion audit also links structural strategy-master and portfolio-control
+counts; those links are not a substitute for current scoped broker evidence.
+
 ## Mandatory Quality Gates
 
 Install local git hooks once per clone:

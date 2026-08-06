@@ -417,6 +417,9 @@ def load_project_version(default: str = "0.0.0-dev") -> str:
 
 
 APP_VERSION = load_project_version()
+# Independent of the package version so a long-running MCP process can be
+# distinguished from a reloaded process when the app version is unchanged.
+MCP_CONTRACT_REVISION = "2026-08-06.raw-transactions-v1"
 APP_NAME = "Avanza-MCP"
 TUI_TITLE = f"{APP_NAME} v{APP_VERSION}"
 GITHUB_RELEASE_REPO = os.getenv("AVANZA_GITHUB_REPO", "Hamid-K/avanza-mcp")

@@ -161,6 +161,8 @@ class CoreTradingMixin:
                 "order_valid_days": preview["stop_loss_order_event"]["valid_days"],
                 "trigger_on_market_maker_quote": preview["stop_loss_trigger"]["trigger_on_market_maker_quote"],
                 "short_selling_allowed": preview["stop_loss_order_event"]["short_selling_allowed"],
+                "strategy_intent": preview.get("strategy_intent"),
+                "strategy_reason": preview.get("strategy_reason"),
             },
             instrument=str(instrument),
         )

@@ -91,6 +91,26 @@ MCP_POSITION_STRATEGY_ITEM_PROPERTIES = {
     "stance": {"type": "string"},
     "next_gate": {"type": "string"},
     "proposed_correction": {"type": ["string", "null"]},
+    "audit_exception": {
+        "type": ["object", "null"],
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["USER_CONTROLLED_ALLOCATION", "POST_MANUAL_EXIT_DRIFT"],
+            },
+            "reason": {"type": "string"},
+            "owner": {"type": "string"},
+            "review_due": {"type": "string"},
+            "allowed_mismatches": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["holding"]},
+                "minItems": 1,
+            },
+            "rebaseline_authorized": {"const": False},
+        },
+        "required": ["kind", "reason", "owner", "review_due", "allowed_mismatches"],
+        "additionalProperties": False,
+    },
     "source_snapshot_at": {"type": "string"},
 }
 MCP_POSITION_STRATEGY_REQUIRED_FIELDS = [
@@ -118,6 +138,30 @@ MCP_POSITION_STRATEGY_REQUIRED_FIELDS = [
     "stance",
     "next_gate",
 ]
+
+MCP_LIVE_STOP_METADATA_CONDITION = {
+    "if": {
+        "properties": {"confirm": {"const": True}},
+        "required": ["confirm"],
+    },
+    "then": {"required": ["strategy_intent", "strategy_reason"]},
+}
+
+MCP_LIVE_BATCH_STOP_METADATA_CONDITION = {
+    "if": {
+        "properties": {"confirm": {"const": True}},
+        "required": ["confirm"],
+    },
+    "then": {
+        "properties": {
+            "items": {
+                "items": {
+                    "required": ["strategy_intent", "strategy_reason"],
+                }
+            }
+        }
+    },
+}
 
 
 MCP_TOOLS = [
@@ -795,6 +839,11 @@ MCP_TOOLS = [
                 "isin": {"type": "string"},
                 "max_elements": {"type": "integer", "minimum": 1, "maximum": 20000, "default": 1000},
                 "executed_only": {"type": "boolean", "default": True},
+                "include_raw": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include the unnormalized broker transaction payload for read-only evidence preservation.",
+                },
             },
             "additionalProperties": False,
         },
@@ -862,6 +911,11 @@ MCP_TOOLS = [
                 "orderbook_id": {"type": ["string", "integer"]},
                 "max_elements": {"type": "integer", "minimum": 1, "maximum": 20000, "default": 1000},
                 "executed_only": {"type": "boolean", "default": True},
+                "include_raw": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include the unnormalized broker transaction payload for read-only evidence preservation.",
+                },
             },
             "required": ["account_id", "orderbook_id"],
             "additionalProperties": False,
@@ -1096,6 +1150,8 @@ MCP_TOOLS = [
                 "order_valid_days": {"type": "integer", "default": STOPLOSS_ORDER_VALID_DAYS_DEFAULT},
                 "trigger_on_market_maker_quote": {"type": "boolean", "default": False},
                 "short_selling_allowed": {"type": "boolean", "default": False},
+                "strategy_intent": {"type": "string", "enum": list(STOPLOSS_STRATEGY_INTENTS)},
+                "strategy_reason": {"type": "string"},
             },
             "required": [
                 "account_id",
@@ -1103,6 +1159,8 @@ MCP_TOOLS = [
                 "trigger_value",
                 "order_price",
                 "volume",
+                "strategy_intent",
+                "strategy_reason",
             ],
             "additionalProperties": False,
         },
@@ -1298,6 +1356,7 @@ MCP_TOOLS = [
                 "order_price",
                 "volume",
             ],
+            "allOf": [MCP_LIVE_STOP_METADATA_CONDITION],
             "additionalProperties": False,
         },
     },
@@ -1337,6 +1396,7 @@ MCP_TOOLS = [
                 },
             },
             "required": ["account_id", "items"],
+            "allOf": [MCP_LIVE_BATCH_STOP_METADATA_CONDITION],
             "additionalProperties": False,
         },
     },
@@ -1434,6 +1494,7 @@ MCP_TOOLS = [
                 "confirm": {"type": "boolean", "default": False},
             },
             "required": ["account_id", "stop_loss_id"],
+            "allOf": [MCP_LIVE_STOP_METADATA_CONDITION],
             "additionalProperties": False,
         },
     },
@@ -1469,6 +1530,7 @@ MCP_TOOLS = [
                 "order_price",
                 "volume",
             ],
+            "allOf": [MCP_LIVE_STOP_METADATA_CONDITION],
             "additionalProperties": False,
         },
     },

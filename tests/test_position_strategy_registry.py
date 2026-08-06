@@ -5,6 +5,7 @@ import pytest
 
 from avanza_mcp.position_strategy_registry import (
     PositionStrategyRegistry,
+    build_event_protection_screen,
     build_position_strategy_live_states,
 )
 
@@ -58,6 +59,111 @@ def candidate(state: dict | None = None) -> dict:
     }
 
 
+def test_event_protection_screen_flags_profitable_event_shock_without_authority():
+    positions = [
+        {
+            "stock": "Fastly A",
+            "orderbook_id": "956885",
+            "volume": 79,
+            "Day %": "-12.64%",
+            "Profit %": "+7.41%",
+        }
+    ]
+    strategy_positions = [
+        {
+            "account_id": "5227886",
+            "orderbook_id": "956885",
+            "active_sell_volume": 0,
+            "active_sell_count": 0,
+            "position_strategy": {
+                "audit_status": "EVENT_SHOCK_REVIEW_REQUIRED",
+                "bucket": "EVENT_SHOCK_PROTECTION_REVIEW",
+                "gate": "Review guidance and reclaim before hold or tactical slice.",
+                "recommendation": "No automatic SELL.",
+                "stance": "Review",
+                "next_gate": "Post-event guidance and regular-session reclaim.",
+            },
+        }
+    ]
+
+    result = build_event_protection_screen(positions, strategy_positions)
+
+    assert result["authority"] == "READ_ONLY_TRIAGE"
+    assert result["broker_mutation"] is False
+    assert result["trade_authority"] is False
+    assert result["material_move_count"] == 1
+    assert result["profitable_without_sell_count"] == 1
+    assert result["rows"][0]["decision_required"] is True
+
+
+def test_event_protection_screen_keeps_normal_core_out_of_triage():
+    positions = [
+        {
+            "stock": "Core Corp",
+            "orderbook_id": "1",
+            "volume": 10,
+            "Day %": "-1.2%",
+            "Profit %": "+10%",
+        }
+    ]
+    strategy_positions = [
+        {
+            "account_id": "5227886",
+            "orderbook_id": "1",
+            "active_sell_volume": 0,
+            "active_sell_count": 0,
+            "position_strategy": {
+                "audit_status": "VALID_CURRENT_PLAN",
+                "bucket": "CORE_HOLD",
+                "gate": "Review monthly fundamentals.",
+                "recommendation": "Hold core.",
+                "stance": "KEEP",
+                "next_gate": "Monthly review.",
+            },
+        }
+    ]
+
+    result = build_event_protection_screen(positions, strategy_positions)
+
+    assert result["rows"] == []
+
+
+def test_event_protection_screen_surfaces_event_gated_core_material_move():
+    positions = [
+        {
+            "stock": "Sandisk",
+            "orderbook_id": "1968764",
+            "volume": 4,
+            "Day %": "-5.02%",
+            "Profit %": "+7.67%",
+        }
+    ]
+    strategy_positions = [
+        {
+            "account_id": "5227886",
+            "orderbook_id": "1968764",
+            "active_sell_volume": 0,
+            "active_sell_count": 0,
+            "position_strategy": {
+                "audit_status": "VALID_CURRENT_PLAN",
+                "bucket": "EVENT_GATED_CORE",
+                "gate": "Review after the report and following regular-session price discovery.",
+                "recommendation": "Hold the event-gated core; no automatic SELL.",
+                "stance": "HOLD",
+                "next_gate": "Post-report review.",
+            },
+        }
+    ]
+
+    result = build_event_protection_screen(positions, strategy_positions)
+
+    assert result["material_move_count"] == 1
+    assert result["profitable_without_sell_count"] == 1
+    assert result["rows"][0]["event_sensitive"] is True
+    assert result["rows"][0]["decision_required"] is True
+    assert result["trade_authority"] is False
+
+
 def test_position_registry_persists_and_detects_holding_and_order_drift(tmp_path):
     path = tmp_path / "position-strategies.json"
     registry = PositionStrategyRegistry(path)
@@ -82,6 +188,114 @@ def test_position_registry_persists_and_detects_holding_and_order_drift(tmp_path
         "active_buy_volume",
         "active_buy_count",
     ]
+
+
+def test_intentional_holding_drift_is_acknowledged_but_remains_incomplete(tmp_path):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    reviewed = candidate(
+        live_state(
+            holding=10,
+            active_buy_volume=0,
+            active_sell_volume=0,
+            active_buy_count=0,
+            active_sell_count=0,
+        )
+    )
+    reviewed["audit_exception"] = {
+        "kind": "USER_CONTROLLED_ALLOCATION",
+        "reason": "User controls this allocation outside stock stop logic.",
+        "owner": "user",
+        "review_due": "MONTHLY_OR_ON_USER_INSTRUCTION",
+        "allowed_mismatches": ["holding"],
+    }
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+
+    enriched = registry.enrich(
+        live_state(
+            holding=11,
+            active_buy_volume=0,
+            active_sell_volume=0,
+            active_buy_count=0,
+            active_sell_count=0,
+        )
+    )
+    assert enriched["position_strategy_status"] == "STALE_MISMATCH"
+    assert enriched["position_strategy_exception_status"] == "ACKNOWLEDGED_INTENTIONAL_DRIFT"
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [{"account_id": "acc-1", "orderbook_id": "ob-1", "stock": "Test Corp", "volume": 11}],
+        [],
+        [],
+    )
+    assert audit["complete"] is False
+    assert audit["holding_drift_count"] == 1
+    assert audit["acknowledged_mismatch_count"] == 1
+    assert audit["unresolved_mismatch_count"] == 0
+    assert audit["acknowledged_mismatch_orderbook_ids"] == ["ob-1"]
+
+
+def test_holding_exception_never_acknowledges_order_drift(tmp_path):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    reviewed = candidate(
+        live_state(
+            active_buy_volume=0,
+            active_sell_volume=0,
+            active_buy_count=0,
+            active_sell_count=0,
+        )
+    )
+    reviewed["audit_exception"] = {
+        "kind": "POST_MANUAL_EXIT_DRIFT",
+        "reason": "The user-controlled exit may leave holding-only drift.",
+        "owner": "user",
+        "review_due": "NEXT_LIFECYCLE_REVIEW",
+        "allowed_mismatches": ["holding"],
+        "rebaseline_authorized": True,
+    }
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+
+    enriched = registry.enrich(
+        live_state(
+            holding=11,
+            active_buy_volume=1,
+            active_buy_count=1,
+            active_sell_volume=0,
+            active_sell_count=0,
+        )
+    )
+    assert enriched["position_strategy_exception_status"] is None
+    assert enriched["position_strategy"]["audit_exception"]["rebaseline_authorized"] is False
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [{"account_id": "acc-1", "orderbook_id": "ob-1", "stock": "Test Corp", "volume": 11}],
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "status": "ACTIVE",
+                "side": "BUY",
+                "volume": 1,
+            }
+        ],
+        [],
+    )
+    assert audit["complete"] is False
+    assert audit["acknowledged_mismatch_count"] == 0
+    assert audit["unresolved_mismatch_count"] == 1
+    assert audit["unresolved_mismatch_orderbook_ids"] == ["ob-1"]
 
 
 def test_live_state_union_catches_orders_without_a_position():

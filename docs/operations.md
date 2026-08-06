@@ -272,12 +272,12 @@ Multi-session MCP behavior:
 | `avanza_stoplosses` | List stop-loss orders with durable strategy intent and missing/mismatch metadata audit, optionally filtered by instrument, side, status, and compact mode. |
 | `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
 | `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
-| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
+| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
 | `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
-| `avanza_transactions` | List executed orders/history with optional account/date/type/instrument filters. |
+| `avanza_transactions` | List executed orders/history with optional account/date/type/instrument filters; `include_raw` opt-in preserves the unnormalized broker payload for read-only evidence. |
 | `avanza_live_snapshot` | Read a decision-ready polling snapshot, with optional compact instrument filtering. |
 | `avanza_position` | Read one account position by orderbook ID. |
 | `avanza_instrument_stoplosses` | Read stop-loss rows for one instrument/account. |
@@ -377,7 +377,7 @@ Zacks integration is best effort. `zacks_scrape_symbol` uses Zacks quote-feed da
 
 Performance behavior:
 
-- `tv_preopen_batch_snapshot` performs one TradingView scanner request for normal multi-symbol batches, then falls back per symbol only when a row is missing.
+- `tv_preopen_batch_snapshot` performs bounded TradingView scanner requests for normal multi-symbol batches, then falls back per symbol only when a row is missing. This prevents a large mixed-exchange review from collapsing into one failed request while preserving input order and per-symbol errors.
 - TradingView unsupported scanner fields are cached per market after the first rejection.
 - Avanza MCP read tools keep a short in-process account cache for portfolio, stop-loss, and open-order lists; pass `refresh=true` on read tools when a fresh pull is required after an external change.
 - `avanza_orderbook_quotes` deduplicates repeated orderbook IDs and skips remote metadata enrichment when `fields` asks only for price fields.
@@ -407,6 +407,13 @@ Longer period export:
 ```
 
 `avanza_transactions` is read-only and can run with MCP `read_only=true`.
+
+For evidence preservation, pass `include_raw: true` and require a returned
+`raw_payload`. Check `avanza_capabilities.contract_features` before relying on
+the feature; a false or missing `transactions_include_raw` flag means the
+loaded runtime is stale and historical raw-source proof remains open.
+Verify `mcp_contract_revision` as well, because the package version may remain
+unchanged across a contract reload.
 
 Codex, Claude Code, and Gemini CLI can all run this local stdio MCP command.
 They share one MCP catalog and repository context layout; no provider-specific

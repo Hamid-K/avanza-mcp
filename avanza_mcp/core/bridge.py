@@ -11,6 +11,7 @@ from avanza_mcp.config import (
     APP_VERSION,
     DEFAULT_FX_FEE_RATE,
     LIVE_REFRESH_SECONDS,
+    MCP_CONTRACT_REVISION,
     TRADINGVIEW_DEFAULT_EXCHANGE,
     TRADINGVIEW_DEFAULT_MARKET,
     TRADINGVIEW_LOGIN_URL,
@@ -62,6 +63,7 @@ from avanza_mcp.paper import (
     paper_trades,
 )
 from avanza_mcp.position_strategy_registry import (
+    build_event_protection_screen,
     position_strategy_live_fingerprint,
 )
 from avanza_mcp.records import (
@@ -165,10 +167,38 @@ class CoreBridgeMixin:
 
     def mcp_status_payload(self) -> dict[str, Any]:
         account = self.account_by_id(self.selected_account_id or "") if self.selected_account_id else None
+        catalog = mcp_tools_catalog()
         available_tools = sorted(
             tool.get("name", "")
-            for tool in mcp_tools_catalog()
+            for tool in catalog
             if isinstance(tool, dict) and tool.get("name")
+        )
+        catalog_by_name = {
+            str(tool.get("name")): tool
+            for tool in catalog
+            if isinstance(tool, dict) and tool.get("name")
+        }
+        transaction_properties = (
+            catalog_by_name.get("avanza_transactions", {})
+            .get("inputSchema", {})
+            .get("properties", {})
+        )
+        stop_metadata_tools = (
+            "avanza_stoploss_set",
+            "avanza_stoploss_set_batch",
+            "avanza_stoploss_edit",
+            "avanza_stoploss_delete",
+        )
+        def stop_schema_properties(tool: str) -> dict[str, Any]:
+            properties = catalog_by_name.get(tool, {}).get("inputSchema", {}).get("properties", {})
+            if tool == "avanza_stoploss_set_batch":
+                return properties.get("items", {}).get("items", {}).get("properties", {})
+            return properties
+
+        live_stop_metadata_enforced = all(
+            "strategy_intent" in stop_schema_properties(tool)
+            and "strategy_reason" in stop_schema_properties(tool)
+            for tool in stop_metadata_tools
         )
         sessions = [
             {
@@ -191,6 +221,7 @@ class CoreBridgeMixin:
         return {
             "ok": True,
             "app_version": APP_VERSION,
+            "mcp_contract_revision": MCP_CONTRACT_REVISION,
             "enabled": self.mcp_server is not None,
             "mcp_enabled": self.mcp_server is not None,
             "read_write": self.mcp_write_enabled,
@@ -204,6 +235,11 @@ class CoreBridgeMixin:
             "accounts_loaded": len(self.accounts),
             "poll_interval_seconds": LIVE_REFRESH_SECONDS,
             "available_tools": available_tools,
+            "contract_features": {
+                "tenant_session_scope": "tenant_session_id" in transaction_properties,
+                "transactions_include_raw": "include_raw" in transaction_properties,
+                "live_stop_strategy_metadata": live_stop_metadata_enforced,
+            },
             "can_read_quotes": True,
             "can_place_paper_orders": True,
             "can_place_live_orders": bool(self.mcp_write_enabled and self.live_trading_allowed_for_session),
@@ -528,6 +564,10 @@ class CoreBridgeMixin:
             open_orders,
             prune_stale=prune_stale,
         )
+        event_protection_screen = build_event_protection_screen(
+            positions,
+            position_strategy["positions"],
+        )
         stoploss_strategy = self.stoploss_strategy_summary(
             account_id,
             active_stoplosses,
@@ -542,6 +582,7 @@ class CoreBridgeMixin:
             "complete": complete,
             "review_required": not complete,
             "position_strategy": position_strategy,
+            "event_protection_screen": event_protection_screen,
             "stoploss_strategy": stoploss_strategy,
             "open_order_count": len(open_orders),
             "stop_error_count": len(stop_errors),
@@ -1304,6 +1345,7 @@ class CoreBridgeMixin:
                 "stance",
                 "next_gate",
                 "proposed_correction",
+                "audit_exception",
                 "source_snapshot_at",
             )
             for index, requested in enumerate(requested_items):
@@ -1494,10 +1536,16 @@ class CoreBridgeMixin:
 
         if tool == "avanza_transactions":
             transactions_from = parse_optional_iso_date(
-                arguments.get("transactions_from") or arguments.get("changed_since") or arguments.get("from"),
+                arguments.get("transactions_from")
+                or arguments.get("changed_since")
+                or arguments.get("from")
+                or arguments.get("date"),
                 label="transactions_from",
             )
-            transactions_to = parse_optional_iso_date(arguments.get("transactions_to") or arguments.get("to"), label="transactions_to")
+            transactions_to = parse_optional_iso_date(
+                arguments.get("transactions_to") or arguments.get("to") or arguments.get("date"),
+                label="transactions_to",
+            )
             return self.transactions_snapshot(
                 avanza,
                 account_id,
@@ -1512,6 +1560,7 @@ class CoreBridgeMixin:
                 max_elements=int(arguments.get("max_elements", 1000)),
                 executed_only=bool(arguments.get("executed_only", True)),
                 compact=bool(arguments.get("compact", False)),
+                include_raw=bool(arguments.get("include_raw", False)),
             )
 
         if tool == "avanza_live_snapshot":
@@ -1613,6 +1662,7 @@ class CoreBridgeMixin:
                 max_elements=int(arguments.get("max_elements", 1000)),
                 executed_only=bool(arguments.get("executed_only", True)),
                 compact=bool(arguments.get("compact", False)),
+                include_raw=bool(arguments.get("include_raw", False)),
             )
 
         if tool == "avanza_instrument_state":

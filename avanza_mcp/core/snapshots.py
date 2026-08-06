@@ -1427,6 +1427,7 @@ class CoreSnapshotsMixin:
         max_elements: int = 1000,
         executed_only: bool = True,
         compact: bool = False,
+        include_raw: bool = False,
     ) -> dict[str, Any]:
         transaction_types = parse_transaction_types(types)
         account = self.account_by_id(account_id) if account_id else None
@@ -1480,6 +1481,8 @@ class CoreSnapshotsMixin:
             "truncation_risk": truncation_risk,
             "transactions": rows,
         }
+        if include_raw:
+            response["raw_payload"] = payload_to_json_safe(payload)
         if truncation_risk:
             response["warning"] = (
                 f"Fetched count reached max_elements={max_elements}; older transactions may be "

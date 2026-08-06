@@ -855,6 +855,12 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             assert transactions["first_available_date"] == "2024-01-01"
             assert len(transactions["transactions"]) == 1
             assert transactions["transactions"][0]["Type"] == "BUY"
+            raw_transactions = app.execute_mcp_tool(
+                "avanza_transactions", {"account_id": "acc-2", "include_raw": True}
+            )
+            assert raw_transactions["raw_payload"]["firstTransactionDate"] == "2024-01-01"
+            assert raw_transactions["raw_payload"]["transactions"][0]["description"] == "Filled order"
+            assert "raw_payload" not in transactions
             open_orders = app.execute_mcp_tool("avanza_open_orders", {"account_id": "acc-2"})
             assert open_orders["orders"] == []
             ongoing_orders = app.execute_mcp_tool("avanza_ongoing_orders", {"account_id": "acc-2"})
@@ -878,6 +884,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "order_price": 1,
                     "order_price_type": "%",
                     "volume": 10,
+                    "strategy_intent": "PROFIT_PROTECTION",
+                    "strategy_reason": "Paper test protection row.",
                 },
             )
             assert dry_run["dry_run"] is True
@@ -901,6 +909,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                     "order_price": 1,
                     "order_price_type": "%",
                     "volume": 10,
+                    "strategy_intent": "PROFIT_PROTECTION",
+                    "strategy_reason": "Paper test protection row.",
                 },
             )
             assert paper_order["paper"] is True
@@ -915,6 +925,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
             app.query_one("#trigger-value").value = "5"
             app.query_one("#order-price").value = "1"
             app.query_one("#volume").value = "10"
+            app.query_one("#strategy-intent", Select).value = "PROFIT_PROTECTION"
+            app.query_one("#strategy-reason", Input).value = "Paper test protection row."
             app.handle_place_live()
             assert len(app.execute_mcp_tool("avanza_paper_orders", {"active_only": True})["orders"]) == 1
             app.query_one("#regular-order-valid-until").value = TEST_VALID_UNTIL
@@ -1419,6 +1431,12 @@ def test_mcp_capabilities_and_live_session_authorization():
     status = app.execute_mcp_tool("avanza_capabilities", {})
     assert status["live_trading_allowed_for_this_session"] is False
     assert status["can_place_live_orders"] is False
+    assert status["mcp_contract_revision"] == "2026-08-06.raw-transactions-v1"
+    assert status["contract_features"] == {
+        "tenant_session_scope": True,
+        "transactions_include_raw": True,
+        "live_stop_strategy_metadata": True,
+    }
     with pytest.raises(PermissionError):
         app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
 
@@ -1543,6 +1561,42 @@ def test_mcp_orderbook_quotes_deduplicates_and_skips_metadata_for_price_projecti
     assert result["quotes"] == [{"orderbook_id": "111", "last": 310.0, "bid": 309.9, "ask": 310.1, "error": None}]
     assert fake.market_calls == 1
     assert fake.search_calls == 0
+
+
+def test_mcp_transactions_date_shortcut_bounds_both_sides():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.transaction_calls = []
+
+        def get_transactions_details(
+            self,
+            transaction_details_types=None,
+            transactions_from=None,
+            transactions_to=None,
+            isin=None,
+            max_elements=1000,
+        ):
+            self.transaction_calls.append(
+                (transaction_details_types, transactions_from, transactions_to, isin, max_elements)
+            )
+            return {"firstTransactionDate": "2024-01-01", "transactions": []}
+
+    fake = FakeAvanza()
+    app = AvanzaTradingTui()
+    app.avanza = fake
+
+    result = app.execute_mcp_tool(
+        "avanza_transactions",
+        {"account_id": "acc-2", "date": "2026-08-06"},
+    )
+
+    assert result["transactions"] == []
+    assert len(fake.transaction_calls) == 1
+    _, transactions_from, transactions_to, _, _ = fake.transaction_calls[0]
+    assert transactions_from == date(2026, 8, 6)
+    assert transactions_to == date(2026, 8, 6)
 
 
 def test_mcp_focused_instrument_state_and_protection_summaries():
@@ -2094,13 +2148,14 @@ def test_mcp_stoploss_delete_requires_matching_durable_strategy_intent():
         source="UNIT_TEST",
     )
 
+    matching_reason = "Reviewed fixed residual."
     dry_run = app.execute_mcp_tool(
         "avanza_stoploss_delete",
         {
             "account_id": "acc-1",
             "stop_loss_id": "sl-deep",
             "strategy_intent": "DEEP_RESIDUAL",
-            "strategy_reason": "Remove the uneconomic reviewed residual.",
+            "strategy_reason": matching_reason,
         },
     )
     assert dry_run["dry_run"] is True
@@ -2118,6 +2173,17 @@ def test_mcp_stoploss_delete_requires_matching_durable_strategy_intent():
             },
         )
 
+    with pytest.raises(ValueError, match="strategy_reason does not match"):
+        app.execute_mcp_tool(
+            "avanza_stoploss_delete",
+            {
+                "account_id": "acc-1",
+                "stop_loss_id": "sl-deep",
+                "strategy_intent": "DEEP_RESIDUAL",
+                "strategy_reason": "Different reason on purpose.",
+            },
+        )
+
     app.mcp_write_enabled = True
     app.execute_mcp_tool(
         "avanza_live_session_authorize",
@@ -2129,7 +2195,7 @@ def test_mcp_stoploss_delete_requires_matching_durable_strategy_intent():
             "account_id": "acc-1",
             "stop_loss_id": "sl-deep",
             "strategy_intent": "DEEP_RESIDUAL",
-            "strategy_reason": "Remove the uneconomic reviewed residual.",
+            "strategy_reason": matching_reason,
             "confirm": True,
         },
     )
@@ -2869,6 +2935,45 @@ def test_mcp_tools_catalog_exposes_tenant_session_scope_fields():
         props = scoped_tools[name]["inputSchema"]["properties"]
         assert "tenant_session_id" not in props
         assert "session_id" not in props
+
+    transactions_schema = scoped_tools["avanza_transactions"]["inputSchema"]
+    assert transactions_schema["additionalProperties"] is False
+    assert transactions_schema["properties"]["include_raw"]["default"] is False
+    assert "unnormalized broker transaction payload" in transactions_schema["properties"]["include_raw"]["description"]
+
+
+def test_position_strategy_schema_keeps_audit_exception_holding_only():
+    from avanza_mcp.mcp.catalog import MCP_TOOLS
+
+    tool = next(item for item in MCP_TOOLS if item["name"] == "avanza_position_strategy_register_batch")
+    item_schema = tool["inputSchema"]["properties"]["items"]["items"]
+    exception = item_schema["properties"]["audit_exception"]
+
+    assert exception["properties"]["rebaseline_authorized"] == {"const": False}
+    assert exception["properties"]["allowed_mismatches"]["items"]["enum"] == ["holding"]
+    assert "rebaseline_authorized" not in exception["required"]
+
+
+def test_live_stop_schemas_require_strategy_metadata_when_confirmed():
+    from avanza_mcp.mcp.catalog import MCP_TOOLS
+
+    tool_map = {tool["name"]: tool for tool in MCP_TOOLS}
+    for name in ("avanza_stoploss_set", "avanza_stoploss_delete", "avanza_stoploss_edit"):
+        schema = tool_map[name]["inputSchema"]
+        condition = schema["allOf"][0]
+        assert condition["if"] == {
+            "properties": {"confirm": {"const": True}},
+            "required": ["confirm"],
+        }
+        assert condition["then"]["required"] == ["strategy_intent", "strategy_reason"]
+
+    batch_schema = tool_map["avanza_stoploss_set_batch"]["inputSchema"]
+    batch_condition = batch_schema["allOf"][0]
+    assert batch_condition["if"]["properties"]["confirm"] == {"const": True}
+    assert batch_condition["then"]["properties"]["items"]["items"]["required"] == [
+        "strategy_intent",
+        "strategy_reason",
+    ]
 
 
 def test_mcp_status_can_be_scoped_by_tenant_session_without_switching_active():
@@ -3769,6 +3874,8 @@ def test_mcp_stdio_lists_tools_without_tui_session_file(tmp_path):
     stop_delete_properties = tool_map["avanza_stoploss_delete"]["inputSchema"]["properties"]
     assert "strategy_intent" in stop_delete_properties
     assert "strategy_reason" in stop_delete_properties
+    paper_stop = tool_map["avanza_paper_stoploss_set"]["inputSchema"]
+    assert {"strategy_intent", "strategy_reason"}.issubset(set(paper_stop["required"]))
 
 
 def test_tui_sorts_table_when_header_is_clicked():
@@ -4541,6 +4648,39 @@ def test_tradingview_preopen_batch_snapshot_preserves_order_and_errors(monkeypat
     assert batch["batch_mode"] == "bulk_scanner"
     assert batch["fallback_count"] == 1
     assert calls == [["NASDAQ:SNDK", "NASDAQ:CRWD", "NASDAQ:MU"]]
+
+
+def test_tradingview_preopen_batch_snapshot_chunks_large_requests(monkeypatch):
+    from avanza_mcp.external.tradingview_data import tradingview_preopen_batch_snapshot
+
+    calls: list[list[str]] = []
+
+    def fake_scan(*, symbols, fields, market, **kwargs):
+        calls.append(list(symbols))
+        return {
+            "rows": [
+                {
+                    "name": symbol.split(":", 1)[1],
+                    "exchange": symbol.split(":", 1)[0],
+                    "close": 10.0,
+                    "premarket_close": 10.5,
+                    "Recommend.All": 0.1,
+                }
+                for symbol in symbols
+            ],
+            "total_count": len(symbols),
+            "market": market,
+        }, []
+
+    monkeypatch.setattr("avanza_mcp.external.tradingview_data.tradingview_scan_with_field_fallback", fake_scan)
+
+    symbols = [{"symbol": f"S{i}", "exchange": "NASDAQ"} for i in range(9)]
+    batch = tradingview_preopen_batch_snapshot(symbols, authenticated=False, compact=True)
+
+    assert batch["ok_count"] == 9
+    assert batch["error_count"] == 0
+    assert [len(call) for call in calls] == [8, 1]
+    assert [row["index"] for row in batch["rows"]] == list(range(9))
 
 
 def test_tradingview_heatmap_filters_otc_and_microcaps(monkeypatch):

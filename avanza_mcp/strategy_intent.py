@@ -126,6 +126,7 @@ def validate_mcp_stoploss_delete_strategy_intent(
         warnings.append(message)
     else:
         recorded_intent = _normalized_intent(recorded_entry.get("strategy_intent"))
+        recorded_reason = str(recorded_entry.get("strategy_reason") or "").strip()
         if recorded_intent not in STOPLOSS_STRATEGY_INTENTS:
             message = "The target stop-loss has no valid recorded strategy_intent."
             if live:
@@ -135,6 +136,16 @@ def validate_mcp_stoploss_delete_strategy_intent(
             raise ValueError(
                 f"strategy_intent {intent} does not match the target stop-loss "
                 f"recorded intent {recorded_intent}."
+            )
+        if not recorded_reason:
+            message = "The target stop-loss has no valid recorded strategy_reason."
+            if live:
+                raise ValueError(message)
+            warnings.append(message)
+        elif reason and reason != recorded_reason:
+            raise ValueError(
+                "strategy_reason does not match the target stop-loss recorded "
+                "reason."
             )
 
     return intent or None, reason or None, warnings
