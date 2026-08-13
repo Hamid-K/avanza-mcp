@@ -878,6 +878,8 @@ def test_tui_login_hides_credentials_and_shows_workspace(monkeypatch, tmp_path):
                 "returned_rows": 1,
                 "foreign_rows_filtered": 1,
                 "unidentified_rows_filtered": 0,
+                "out_of_range_rows_filtered": 0,
+                "unparseable_date_rows_filtered": 0,
             }
             assert "raw_payload" not in transactions
             open_orders = app.execute_mcp_tool("avanza_open_orders", {"account_id": "acc-2"})
@@ -1600,7 +1602,39 @@ def test_mcp_transactions_date_shortcut_bounds_both_sides():
             self.transaction_calls.append(
                 (transaction_details_types, transactions_from, transactions_to, isin, max_elements)
             )
-            return {"firstTransactionDate": "2024-01-01", "transactions": []}
+            return {
+                "firstTransactionDate": "2024-01-01",
+                "transactions": [
+                    {
+                        "tradeDate": "2026-08-05",
+                        "type": "SELL",
+                        "account": {"id": "acc-2", "name": "Main"},
+                        "orderbook": {"id": "ob-old", "name": "Old"},
+                        "volume": {"value": 1},
+                    },
+                    {
+                        "tradeDate": "2026-08-06T10:15:00.000",
+                        "type": "BUY",
+                        "account": {"id": "acc-2", "name": "Main"},
+                        "orderbook": {"id": "ob-exact", "name": "Exact"},
+                        "volume": {"value": 1},
+                    },
+                    {
+                        "tradeDate": "2026-08-07",
+                        "type": "SELL",
+                        "account": {"id": "acc-2", "name": "Main"},
+                        "orderbook": {"id": "ob-future", "name": "Future"},
+                        "volume": {"value": 1},
+                    },
+                    {
+                        "tradeDate": "invalid",
+                        "type": "BUY",
+                        "account": {"id": "acc-2", "name": "Main"},
+                        "orderbook": {"id": "ob-invalid", "name": "Invalid"},
+                        "volume": {"value": 1},
+                    },
+                ],
+            }
 
     fake = FakeAvanza()
     app = AvanzaTradingTui()
@@ -1608,10 +1642,14 @@ def test_mcp_transactions_date_shortcut_bounds_both_sides():
 
     result = app.execute_mcp_tool(
         "avanza_transactions",
-        {"account_id": "acc-2", "date": "2026-08-06"},
+        {"account_id": "acc-2", "date": "2026-08-06", "include_raw": True},
     )
 
-    assert result["transactions"] == []
+    assert [row["Order Book ID"] for row in result["transactions"]] == ["ob-exact"]
+    assert result["local_date_filter_applied"] is True
+    assert result["out_of_range_rows_filtered"] == 2
+    assert result["unparseable_date_rows_filtered"] == 1
+    assert [row["orderbook"]["id"] for row in result["raw_payload"]["transactions"]] == ["ob-exact"]
     assert len(fake.transaction_calls) == 1
     _, transactions_from, transactions_to, _, _ = fake.transaction_calls[0]
     assert transactions_from == date(2026, 8, 6)
@@ -1622,6 +1660,7 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     from avanza_mcp.tui.app import AvanzaTradingTui
 
     today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
 
     class FakeAvanza:
         def get_accounts_positions(self):
@@ -1702,6 +1741,8 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
                     {"tradeDate": today, "type": "SELL", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-acn", "name": "ACN"}, "instrumentName": "ACN", "volume": {"value": 4, "unit": "st"}, "priceInTransactionCurrency": {"value": 100, "unit": "SEK"}, "amount": {"value": 400, "unit": "SEK"}},
                     {"tradeDate": today, "type": "BUY", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-acn", "name": "ACN"}, "instrumentName": "ACN", "volume": {"value": 1, "unit": "st"}, "priceInTransactionCurrency": {"value": 95, "unit": "SEK"}, "amount": {"value": -95, "unit": "SEK"}},
                     {"tradeDate": today, "type": "SELL", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-other", "name": "Other"}, "instrumentName": "Other", "volume": {"value": 1, "unit": "st"}},
+                    {"tradeDate": yesterday, "type": "SELL", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-old", "name": "Old"}, "instrumentName": "Old", "volume": {"value": 2, "unit": "st"}},
+                    {"tradeDate": yesterday, "type": "BUY", "account": {"id": "acc-1", "name": "Main"}, "orderbook": {"id": "ob-old", "name": "Old"}, "instrumentName": "Old", "volume": {"value": 2, "unit": "st"}},
                 ],
             }
 
@@ -1732,6 +1773,7 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     assert state["protection"]["failed_sell_stop_volume"] == 1
     assert state["protection"]["failed_buy_stop_volume"] == 0
     assert all(row["stock"] == "ACN" for row in state["recent_transactions"])
+    assert all(str(row["date"]).startswith(today) for row in state["recent_transactions"])
 
     gaps = app.execute_mcp_tool("avanza_protection_gaps", {"account_id": "acc-1", "exclude_eth": True})
     assert [row["orderbook_id"] for row in gaps["gaps"]] == ["ob-acn"]
@@ -1759,6 +1801,7 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     assert "MISSING_TARGET_SELL_VOLUME" in exact_gaps["gaps"][0]["issue_types"]
 
     buybacks = app.execute_mcp_tool("avanza_sold_today_buyback_state", {"account_id": "acc-1", "date": today})
+    assert all(row["orderbook_id"] != "ob-old" for row in buybacks["items"])
     acn = next(row for row in buybacks["items"] if row["orderbook_id"] == "ob-acn")
     assert acn["sold_volume"] == 4
     assert acn["active_tight_buyback_volume"] == 2
@@ -1785,6 +1828,7 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     assert reachability["trade_authority"] is False
 
     recent = app.execute_mcp_tool("avanza_recent_fills_needing_protection", {"account_id": "acc-1", "since": today})
+    assert all(row["orderbook_id"] != "ob-old" for row in recent["review_items"])
     assert recent["items"][0]["orderbook_id"] == "ob-acn"
     assert recent["review_items"][0]["strategy_classification_required"] is True
     assert recent["review_items"][0]["needs_sell_action"] is False

@@ -736,7 +736,7 @@ def test_transactions_types_filter_parses(with_session, runtime):
             return {
                 "transactions": [
                     {
-                        "tradeDate": "2026-01-02",
+                        "tradeDate": date.today().isoformat(),
                         "account": {"id": "acc-1", "name": "Main"},
                         "type": "BUY",
                         "orderbook": {"id": "1234", "name": "TestStock"},
@@ -801,14 +801,14 @@ def test_transactions_panel_includes_non_order_rows_and_account_name_payloads(wi
             return {
                 "transactions": [
                     {
-                        "tradeDate": "2026-01-03",
+                        "tradeDate": date.today().isoformat(),
                         "accountName": "Main",
                         "type": "DIVIDEND",
                         "description": "Dividend payment",
                         "amount": {"value": 42.0, "unit": "SEK"},
                     },
                     {
-                        "tradeDate": "2026-01-03",
+                        "tradeDate": date.today().isoformat(),
                         "accountName": "Other",
                         "type": "DEPOSIT",
                         "description": "Other account deposit",

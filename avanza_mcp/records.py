@@ -1,6 +1,6 @@
 """Payload normalization: search hits, transactions, orders, stop-losses, movers."""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from avanza.constants import TransactionsDetailsType
@@ -703,6 +703,48 @@ def transaction_stock_name(item: dict[str, Any]) -> str:
 
 def transaction_trade_date(item: dict[str, Any]) -> str:
     return str(item.get("tradeDate") or item.get("date") or "")
+
+
+def transaction_trade_day(item: dict[str, Any]) -> date | None:
+    """Return the broker transaction's calendar day without shifting ISO dates."""
+
+    value = item.get("tradeDate") or item.get("date")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        normalized = iso_from_any_timestamp(value)
+        if not normalized:
+            return None
+        try:
+            return date.fromisoformat(normalized[:10])
+        except ValueError:
+            return None
+
+
+def transaction_in_date_range(
+    item: dict[str, Any],
+    transactions_from: date | None,
+    transactions_to: date | None,
+) -> bool:
+    """Fail closed on missing, invalid, or out-of-range broker transaction dates."""
+
+    if transactions_from is None and transactions_to is None:
+        return True
+    trade_day = transaction_trade_day(item)
+    if trade_day is None:
+        return False
+    if transactions_from is not None and trade_day < transactions_from:
+        return False
+    if transactions_to is not None and trade_day > transactions_to:
+        return False
+    return True
 
 
 def transaction_side(item: dict[str, Any]) -> str:

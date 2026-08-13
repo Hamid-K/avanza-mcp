@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.32 - 2026-08-14
+
+- Enforced requested transaction date bounds locally after broker retrieval so
+  nearest-prior, future, missing-date, and malformed-date rows cannot leak into
+  exact transaction reads, same-day sold-slice reconstruction, raw evidence,
+  instrument state, or recent-fill protection review.
+- Added regression coverage for broker responses that ignore exact day and
+  since-date filters.
+
 ## 0.2.31 - 2026-08-14
 
 - Fixed `sec_filings_recent` HTTP 403 failures by separating SEC's declared

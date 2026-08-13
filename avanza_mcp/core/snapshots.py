@@ -67,9 +67,11 @@ from avanza_mcp.records import (
     summarize_stop_protection,
     transaction_account_id,
     transaction_history_dict_row,
+    transaction_in_date_range,
     transaction_matches_instrument_filters,
     transaction_order_book_id,
     transaction_stock_name,
+    transaction_trade_day,
     transaction_volume,
     transactions_items,
 )
@@ -1441,10 +1443,24 @@ class CoreSnapshotsMixin:
             max_elements=max_elements,
         )
         items, first_date = transactions_items(payload)
+        local_date_filter_applied = transactions_from is not None or transactions_to is not None
+        out_of_range_rows_filtered = sum(
+            1
+            for item in items
+            if local_date_filter_applied
+            and transaction_trade_day(item) is not None
+            and not transaction_in_date_range(item, transactions_from, transactions_to)
+        )
+        unparseable_date_rows_filtered = sum(
+            1
+            for item in items
+            if local_date_filter_applied and transaction_trade_day(item) is None
+        )
         rows = [
             transaction_history_dict_row(item)
             for item in items
-            if transaction_matches_instrument_filters(
+            if transaction_in_date_range(item, transactions_from, transactions_to)
+            and transaction_matches_instrument_filters(
                 item,
                 account_id=account_id or None,
                 account_name=account_name or None,
@@ -1479,6 +1495,9 @@ class CoreSnapshotsMixin:
             "max_elements": max_elements,
             "fetched_count": len(items),
             "returned_count": len(rows),
+            "local_date_filter_applied": local_date_filter_applied,
+            "out_of_range_rows_filtered": out_of_range_rows_filtered,
+            "unparseable_date_rows_filtered": unparseable_date_rows_filtered,
             "truncation_risk": truncation_risk,
             "transactions": rows,
         }
@@ -1488,7 +1507,8 @@ class CoreSnapshotsMixin:
             raw_items = [
                 item
                 for item in safe_items
-                if (not account_id or transaction_account_id(item) == str(account_id))
+                if transaction_in_date_range(item, transactions_from, transactions_to)
+                and (not account_id or transaction_account_id(item) == str(account_id))
                 and transaction_matches_instrument_filters(
                     item,
                     account_id=account_id or None,
@@ -1527,6 +1547,8 @@ class CoreSnapshotsMixin:
                 "returned_rows": len(raw_items),
                 "foreign_rows_filtered": foreign_rows,
                 "unidentified_rows_filtered": unidentified_rows,
+                "out_of_range_rows_filtered": out_of_range_rows_filtered,
+                "unparseable_date_rows_filtered": unparseable_date_rows_filtered,
             }
         if truncation_risk:
             response["warning"] = (
@@ -1801,6 +1823,11 @@ class CoreSnapshotsMixin:
             max_elements=5000,
         )
         items, _first_date = transactions_items(payload)
+        items = [
+            item
+            for item in items
+            if transaction_in_date_range(item, target_date, target_date)
+        ]
         sold_rows = summarize_sold_transactions(
             [
                 item
@@ -2020,6 +2047,11 @@ class CoreSnapshotsMixin:
             max_elements=5000,
         )
         items, _first_date = transactions_items(payload)
+        items = [
+            item
+            for item in items
+            if transaction_in_date_range(item, since_date, None)
+        ]
         bought_transactions = [
             item
             for item in items
