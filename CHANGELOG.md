@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.31 - 2026-08-14
+
+- Fixed `sec_filings_recent` HTTP 403 failures by separating SEC's declared
+  application/contact identity from the browser user agent used by TradingView.
+- Cached the SEC ticker-to-CIK index for 24 hours, serialized SEC requests below
+  the fair-access ceiling, and added actionable identity and rate-limit errors.
 - Scoped `avanza_transactions(include_raw=true)` raw transaction envelopes to
   the requested exact account while preserving broker structure and exposing
   raw source/scope counts; added a multi-account regression test.

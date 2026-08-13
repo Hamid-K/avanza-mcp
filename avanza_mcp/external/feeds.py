@@ -3,8 +3,11 @@
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 from avanza_mcp import utils
@@ -12,10 +15,56 @@ from avanza_mcp.config import (
     FMP_ANALYST_RECOMMENDATIONS_URL_TEMPLATE,
     FRED_OBSERVATIONS_URL,
     POLYGON_ANALYST_INSIGHTS_URL,
+    SEC_HTTP_USER_AGENT,
+    SEC_REQUEST_MIN_INTERVAL_SECONDS,
     SEC_SUBMISSIONS_URL_TEMPLATE,
+    SEC_TICKER_INDEX_CACHE_SECONDS,
     SEC_TICKERS_URL,
 )
 from avanza_mcp.external import http as ext_http
+
+_SEC_REQUEST_LOCK = threading.Lock()
+_SEC_LAST_REQUEST_AT = 0.0
+_SEC_TICKER_INDEX_LOCK = threading.Lock()
+_SEC_TICKER_INDEX_CACHE: tuple[float, tuple[dict[str, Any], ...]] | None = None
+
+
+def _sec_request_headers() -> dict[str, str]:
+    user_agent = str(SEC_HTTP_USER_AGENT or "").strip()
+    if not user_agent:
+        raise RuntimeError(
+            "SEC automated access requires a declared application and contact identity. "
+            "Set AVANZA_SEC_HTTP_USER_AGENT or AVANZA_SEC_CONTACT_EMAIL, or configure git user.email."
+        )
+    return {"Accept": "application/json", "User-Agent": user_agent}
+
+
+def _sec_fetch_json(url: str) -> dict[str, Any]:
+    global _SEC_LAST_REQUEST_AT
+
+    with _SEC_REQUEST_LOCK:
+        wait_seconds = SEC_REQUEST_MIN_INTERVAL_SECONDS - (time.monotonic() - _SEC_LAST_REQUEST_AT)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        _SEC_LAST_REQUEST_AT = time.monotonic()
+        try:
+            return ext_http.external_fetch_json(url, headers=_sec_request_headers())
+        except HTTPError as exc:
+            if exc.code == 403:
+                raise RuntimeError(
+                    "SEC denied the declared automated request (HTTP 403). Verify "
+                    "AVANZA_SEC_HTTP_USER_AGENT contains an application/company name and contact email; "
+                    "if it is correct, pause requests before retrying because the client IP may be temporarily blocked."
+                ) from exc
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
+                suffix = f" Retry-After: {retry_after}." if retry_after else ""
+                raise RuntimeError(
+                    "SEC fair-access rate limit reached (HTTP 429); pause requests before retrying."
+                    f"{suffix}"
+                ) from exc
+            raise
+
 
 def sec_cik_text(value: Any) -> str:
     raw = re.sub(r"[^0-9]", "", str(value or ""))
@@ -25,16 +74,27 @@ def sec_cik_text(value: Any) -> str:
 
 
 def sec_ticker_index() -> list[dict[str, Any]]:
-    payload = ext_http.external_fetch_json(SEC_TICKERS_URL, headers={"Accept": "application/json"})
-    rows = payload.get("data", [])
-    fields = payload.get("fields", [])
-    if not isinstance(rows, list) or not isinstance(fields, list):
-        raise RuntimeError("Unexpected SEC ticker payload.")
-    return [
-        {str(fields[idx]): row[idx] if idx < len(row) else None for idx in range(len(fields))}
-        for row in rows
-        if isinstance(row, list)
-    ]
+    global _SEC_TICKER_INDEX_CACHE
+
+    with _SEC_TICKER_INDEX_LOCK:
+        now = time.monotonic()
+        if _SEC_TICKER_INDEX_CACHE is not None:
+            cached_at, cached_rows = _SEC_TICKER_INDEX_CACHE
+            if now - cached_at < SEC_TICKER_INDEX_CACHE_SECONDS:
+                return [dict(row) for row in cached_rows]
+
+        payload = _sec_fetch_json(SEC_TICKERS_URL)
+        rows = payload.get("data", [])
+        fields = payload.get("fields", [])
+        if not isinstance(rows, list) or not isinstance(fields, list):
+            raise RuntimeError("Unexpected SEC ticker payload.")
+        normalized = tuple(
+            {str(fields[idx]): row[idx] if idx < len(row) else None for idx in range(len(fields))}
+            for row in rows
+            if isinstance(row, list)
+        )
+        _SEC_TICKER_INDEX_CACHE = (time.monotonic(), normalized)
+        return [dict(row) for row in normalized]
 
 
 def sec_lookup_cik(ticker: str | None = None, cik: str | None = None) -> tuple[str, dict[str, Any] | None]:
@@ -51,10 +111,7 @@ def sec_lookup_cik(ticker: str | None = None, cik: str | None = None) -> tuple[s
 
 def sec_recent_filings_snapshot(ticker: str | None, cik: str | None, limit: int = 20) -> dict[str, Any]:
     cik_text, company = sec_lookup_cik(ticker=ticker, cik=cik)
-    payload = ext_http.external_fetch_json(
-        SEC_SUBMISSIONS_URL_TEMPLATE.format(cik=cik_text),
-        headers={"Accept": "application/json"},
-    )
+    payload = _sec_fetch_json(SEC_SUBMISSIONS_URL_TEMPLATE.format(cik=cik_text))
     recent = payload.get("filings", {}).get("recent", {})
     forms = recent.get("form", []) if isinstance(recent, dict) else []
     accessions = recent.get("accessionNumber", []) if isinstance(recent, dict) else []

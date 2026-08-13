@@ -478,6 +478,28 @@ avanza-strategy-audit \
   --expected-positions 107
 ```
 
+### SEC EDGAR access identity
+
+`sec_filings_recent` uses a provider-specific declared identity for official
+SEC requests. It does not reuse the browser-style user agent required by
+TradingView. By default, Avanza-MCP derives the contact address from the local
+`git config user.email` value without writing that address into the repository.
+
+For a machine without Git contact configuration, set either a contact email or
+the complete SEC user agent before starting the TUI/MCP bridge:
+
+```bash
+export AVANZA_SEC_CONTACT_EMAIL="admin@example.com"
+# Or provide the complete declared identity:
+export AVANZA_SEC_HTTP_USER_AGENT="Avanza-MCP/0.2.31 Example Company admin@example.com"
+```
+
+The ticker-to-CIK index is cached for 24 hours per process and SEC requests are
+serialized below the official 10-requests-per-second ceiling. Advanced local
+overrides are `AVANZA_SEC_TICKER_INDEX_CACHE_SECONDS` and
+`AVANZA_SEC_REQUEST_MIN_INTERVAL_SECONDS`; the latter is always clamped to at
+least `0.1` seconds. Restart the bridge after changing any of these settings.
+
 ### TradingView/Zacks scrape mode notes
 
 - These tools are intentionally marked experimental.

@@ -53,18 +53,52 @@ def parse_active_rows(text: str) -> tuple[str, list[dict[str, Any]]]:
     return last_updated, rows
 
 
+def parse_archived_rows(text: str) -> list[dict[str, Any]]:
+    start = text.index("## Completed Archive") + len("## Completed Archive")
+    archive = text[start:]
+    next_section = re.search(r"^##\s+", archive, re.MULTILINE)
+    if next_section:
+        archive = archive[: next_section.start()]
+
+    rows: list[dict[str, Any]] = []
+    for line in archive.splitlines():
+        if not line.startswith("| `"):
+            continue
+        fields = [field.strip() for field in line.strip().strip("|").split("|")]
+        if len(fields) != 4:
+            rows.append({"parse_status": "INVALID_COLUMN_COUNT", "raw": line})
+            continue
+        rows.append(
+            {
+                "id": _strip_code(fields[0]),
+                "account_instrument": fields[1],
+                "status": _strip_code(fields[2]),
+                "final_evidence": fields[3],
+            }
+        )
+    return rows
+
+
 def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
     text = SCHEDULER.read_text(encoding="utf-8")
     last_updated, rows = parse_active_rows(text)
+    archived_rows = parse_archived_rows(text)
     status_counts: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status", ""))
         status_counts[status] = status_counts.get(status, 0) + 1
+    archive_status_counts: dict[str, int] = {}
+    for row in archived_rows:
+        status = str(row.get("status", ""))
+        archive_status_counts[status] = archive_status_counts.get(status, 0) + 1
     terminal_rows = [row for row in rows if row.get("status") in TERMINAL]
     non_terminal_rows = [row for row in rows if row.get("status") in NON_TERMINAL]
     invalid_status_rows = [
         row for row in rows if row.get("status") not in NON_TERMINAL and row.get("status") not in TERMINAL
     ]
+    invalid_archive_status_rows = [row for row in archived_rows if row.get("status") not in TERMINAL]
+    active_approval_c_rows = [row for row in rows if str(row.get("id", "")).startswith("C-")]
+    archived_approval_c_rows = [row for row in archived_rows if str(row.get("id", "")).startswith("C-")]
     generated_at = generated_at or datetime.now(ZoneInfo("Europe/Stockholm")).isoformat(timespec="seconds")
     blockers = []
     if terminal_rows:
@@ -76,12 +110,12 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
                 "condition_to_close": "Move terminal rows to Completed Archive only after preserving final evidence and without changing planned action semantics.",
             }
         )
-    if invalid_status_rows:
+    if invalid_status_rows or invalid_archive_status_rows:
         blockers.append(
             {
                 "id": "SCH2",
                 "type": "INVALID_SCHEDULER_STATUS",
-                "count": len(invalid_status_rows),
+                "count": len(invalid_status_rows) + len(invalid_archive_status_rows),
                 "condition_to_close": "Replace each invalid status with a defined non-terminal or terminal scheduler status and retain evidence.",
             }
         )
@@ -127,13 +161,19 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
             "requires_new_scoped_live_refresh_before_action": True,
         },
         "rows": rows,
+        "archived_rows": archived_rows,
         "validation": {
             "active_section_rows": len(rows),
+            "completed_archive_rows": len(archived_rows),
             "non_terminal_rows": len(non_terminal_rows),
             "terminal_rows_in_active_section": len(terminal_rows),
             "invalid_status_rows": len(invalid_status_rows),
+            "invalid_archive_status_rows": len(invalid_archive_status_rows),
             "status_counts": status_counts,
-            "canonical_approval_c_rows": sum(str(row.get("id", "")).startswith("C-") for row in rows),
+            "archive_status_counts": archive_status_counts,
+            "canonical_approval_c_active_rows": len(active_approval_c_rows),
+            "canonical_approval_c_archived_rows": len(archived_approval_c_rows),
+            "canonical_approval_c_rows": len(active_approval_c_rows) + len(archived_approval_c_rows),
             "daily_buyback_rows": sum(str(row.get("id", "")).startswith("BUYBACK-COVERAGE-DAILY") for row in rows),
             "all_non_terminal_rows_have_checks": all(
                 bool(row.get("last_checked")) and bool(row.get("next_check")) for row in non_terminal_rows
@@ -143,6 +183,7 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
         "archive_proposal": archive_proposal,
         "notes": [
             "Scheduler dates are wake-up conditions, not publication proof or trade authorization.",
+            "Canonical Approval C integrity spans active non-terminal rows and terminal rows preserved in Completed Archive.",
             "No scheduler row was moved, deleted, completed, or otherwise mutated by this audit.",
         ],
     }

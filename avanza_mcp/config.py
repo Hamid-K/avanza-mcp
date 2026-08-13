@@ -8,6 +8,7 @@ directory containing the avanza_cli.py shim, matching the historical layout.
 import argparse
 import os
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -417,10 +418,47 @@ def load_project_version(default: str = "0.0.0-dev") -> str:
 
 
 APP_VERSION = load_project_version()
+APP_NAME = "Avanza-MCP"
+
+
+def load_sec_http_user_agent() -> str:
+    configured = str(os.getenv("AVANZA_SEC_HTTP_USER_AGENT", "") or "").strip()
+    if configured:
+        return configured
+
+    contact_email = str(os.getenv("AVANZA_SEC_CONTACT_EMAIL", "") or "").strip()
+    if not contact_email:
+        try:
+            result = subprocess.run(
+                ["git", "config", "--get", "user.email"],
+                cwd=_REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            result = None
+        if result is not None and result.returncode == 0:
+            contact_email = result.stdout.strip()
+
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+", contact_email):
+        return ""
+    return f"{APP_NAME}/{APP_VERSION} {contact_email}"
+
+
+SEC_HTTP_USER_AGENT = load_sec_http_user_agent()
+SEC_TICKER_INDEX_CACHE_SECONDS = max(
+    0.0,
+    float(os.getenv("AVANZA_SEC_TICKER_INDEX_CACHE_SECONDS", "86400")),
+)
+SEC_REQUEST_MIN_INTERVAL_SECONDS = max(
+    0.1,
+    float(os.getenv("AVANZA_SEC_REQUEST_MIN_INTERVAL_SECONDS", "0.11")),
+)
 # Independent of the package version so a long-running MCP process can be
 # distinguished from a reloaded process when the app version is unchanged.
 MCP_CONTRACT_REVISION = "2026-08-06.raw-transactions-v1"
-APP_NAME = "Avanza-MCP"
 TUI_TITLE = f"{APP_NAME} v{APP_VERSION}"
 GITHUB_RELEASE_REPO = os.getenv("AVANZA_GITHUB_REPO", "Hamid-K/avanza-mcp")
 UPDATE_CHECK_INTERVAL_SECONDS = float(os.getenv("AVANZA_UPDATE_CHECK_INTERVAL_SECONDS", "1800"))

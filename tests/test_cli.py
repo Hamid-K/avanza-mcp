@@ -4784,10 +4784,51 @@ def test_tradingview_watchlist_entry_matches_target_variants():
     assert tradingview_watchlist_entry_matches_target(entry, "https://www.tradingview.com/watchlists/57177174/", "") is False
 
 
-def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypatch):
-    from avanza_mcp.external.feeds import sec_recent_filings_snapshot
+def _configure_sec_test_state(monkeypatch):
+    from avanza_mcp.external import feeds
+
+    monkeypatch.setattr(feeds, "SEC_HTTP_USER_AGENT", "Avanza-MCP/test sec-contact@example.com")
+    monkeypatch.setattr(feeds, "SEC_REQUEST_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(feeds, "SEC_TICKER_INDEX_CACHE_SECONDS", 3600.0)
+    monkeypatch.setattr(feeds, "_SEC_LAST_REQUEST_AT", 0.0)
+    monkeypatch.setattr(feeds, "_SEC_TICKER_INDEX_CACHE", None)
+    return feeds
+
+
+def test_load_sec_http_user_agent_prefers_explicit_identity(monkeypatch):
+    from avanza_mcp import config
+
+    monkeypatch.setenv(
+        "AVANZA_SEC_HTTP_USER_AGENT",
+        "Avanza-MCP/test Example Company sec-contact@example.com",
+    )
+    assert config.load_sec_http_user_agent() == (
+        "Avanza-MCP/test Example Company sec-contact@example.com"
+    )
+
+
+def test_load_sec_http_user_agent_derives_local_git_contact(monkeypatch):
+    from avanza_mcp import config
+
+    monkeypatch.delenv("AVANZA_SEC_HTTP_USER_AGENT", raising=False)
+    monkeypatch.delenv("AVANZA_SEC_CONTACT_EMAIL", raising=False)
+    monkeypatch.setattr(
+        config.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="sec-contact@example.com\n"),
+    )
+
+    assert config.load_sec_http_user_agent() == (
+        f"Avanza-MCP/{config.APP_VERSION} sec-contact@example.com"
+    )
+
+
+def test_sec_recent_filings_snapshot_uses_declared_identity_for_index_and_submissions(monkeypatch):
+    feeds = _configure_sec_test_state(monkeypatch)
+    calls = []
 
     def fake_fetch_json(url, **kwargs):
+        calls.append((url, kwargs))
         if "company_tickers_exchange.json" in url:
             return {
                 "fields": ["cik", "name", "ticker", "exchange"],
@@ -4809,13 +4850,68 @@ def test_sec_recent_filings_snapshot_uses_ticker_index_and_submissions(monkeypat
         raise AssertionError(f"Unexpected URL: {url}")
 
     monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
-    snapshot = sec_recent_filings_snapshot(ticker="AAPL", cik=None, limit=2)
+    snapshot = feeds.sec_recent_filings_snapshot(ticker="AAPL", cik=None, limit=2)
 
     assert snapshot["cik"] == "0000320193"
     assert snapshot["ticker"] == "AAPL"
     assert len(snapshot["filings"]) == 2
     assert snapshot["filings"][0]["form"] == "10-Q"
     assert snapshot["filings"][0]["url"].endswith("/a10q.htm")
+    assert len(calls) == 2
+    for _, kwargs in calls:
+        assert kwargs["headers"] == {
+            "Accept": "application/json",
+            "User-Agent": "Avanza-MCP/test sec-contact@example.com",
+        }
+
+
+def test_sec_ticker_index_is_cached_across_symbol_lookups(monkeypatch):
+    feeds = _configure_sec_test_state(monkeypatch)
+    calls = []
+
+    def fake_fetch_json(url, **kwargs):
+        calls.append((url, kwargs))
+        return {
+            "fields": ["cik", "name", "ticker", "exchange"],
+            "data": [
+                [320193, "Apple Inc.", "AAPL", "Nasdaq"],
+                [789019, "Microsoft Corp.", "MSFT", "Nasdaq"],
+            ],
+        }
+
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
+
+    assert feeds.sec_lookup_cik(ticker="AAPL") == (
+        "0000320193",
+        {"cik": 320193, "name": "Apple Inc.", "ticker": "AAPL", "exchange": "Nasdaq"},
+    )
+    assert feeds.sec_lookup_cik(ticker="MSFT")[0] == "0000789019"
+    assert len(calls) == 1
+
+
+def test_sec_ticker_index_requires_declared_contact_identity(monkeypatch):
+    feeds = _configure_sec_test_state(monkeypatch)
+    monkeypatch.setattr(feeds, "SEC_HTTP_USER_AGENT", "")
+
+    with pytest.raises(RuntimeError, match="AVANZA_SEC_HTTP_USER_AGENT"):
+        feeds.sec_ticker_index()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_message"),
+    ((403, "declared automated request"), (429, "fair-access rate limit")),
+)
+def test_sec_http_access_failures_are_actionable(monkeypatch, status_code, expected_message):
+    feeds = _configure_sec_test_state(monkeypatch)
+
+    def fake_fetch_json(url, **kwargs):
+        headers = {"Retry-After": "2"} if status_code == 429 else None
+        raise HTTPError(url, status_code, "blocked", headers, None)
+
+    monkeypatch.setattr("avanza_mcp.external.http.external_fetch_json", fake_fetch_json)
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        feeds.sec_ticker_index()
 
 
 def test_fmp_analyst_recommendations_snapshot_parses_rows(monkeypatch):
