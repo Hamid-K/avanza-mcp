@@ -39,8 +39,13 @@ def live_state(
 
 
 def candidate(state: dict | None = None) -> dict:
+    reviewed_state = state or live_state()
+    has_active_sell = (
+        reviewed_state.get("active_sell_volume", 0) > 0
+        and reviewed_state.get("active_sell_count", 0) > 0
+    )
     return {
-        "live_state": state or live_state(),
+        "live_state": reviewed_state,
         "instrument": "Test Corp",
         "ticker": "TEST",
         "venue": "NYSE",
@@ -54,6 +59,16 @@ def candidate(state: dict | None = None) -> dict:
         "bucket": "CORE_RESTORATION",
         "stance": "KEEP",
         "next_gate": "Review after the next material event.",
+        "protection_classification": (
+            "CALIBRATED_STOP_PROFIT_LADDER"
+            if has_active_sell
+            else "CORE_HOLD_EXCEPTION"
+        ),
+        "protection_reason": (
+            "The reviewed tactical SELL row is active and metadata-controlled."
+            if has_active_sell
+            else "The intact reviewed core deliberately has no mechanical SELL stop."
+        ),
         "proposed_correction": None,
         "source_snapshot_at": "2026-07-31T01:28:25+02:00",
     }
@@ -190,6 +205,93 @@ def test_position_registry_persists_and_detects_holding_and_order_drift(tmp_path
     ]
 
 
+def test_position_registry_requires_explicit_protection_metadata(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    reviewed = candidate()
+    del reviewed["protection_classification"]
+
+    with pytest.raises(ValueError, match="protection_classification is required"):
+        registry.register_many_existing(
+            [reviewed],
+            tenant_session_id="personal",
+            source="unit_test",
+        )
+
+
+@pytest.mark.parametrize(
+    ("classification", "state", "message"),
+    [
+        (
+            "CALIBRATED_STOP_PROFIT_LADDER",
+            live_state(active_sell_volume=0, active_sell_count=0),
+            "requires active SELL volume and count",
+        ),
+        (
+            "CORE_HOLD_EXCEPTION",
+            live_state(),
+            "cannot coexist with an active SELL stop",
+        ),
+        (
+            "MARKER_EXCEPTION",
+            live_state(
+                holding=2,
+                active_sell_volume=0,
+                active_sell_count=0,
+            ),
+            "requires live holding at or below one",
+        ),
+    ],
+)
+def test_position_registry_rejects_protection_contradictions(
+    tmp_path,
+    classification,
+    state,
+    message,
+):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    reviewed = candidate(state)
+    reviewed["protection_classification"] = classification
+
+    with pytest.raises(ValueError, match=message):
+        registry.register_many_existing(
+            [reviewed],
+            tenant_session_id="personal",
+            source="unit_test",
+        )
+
+
+def test_repair_required_is_recorded_but_blocks_governance_completion(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    state = live_state(
+        active_buy_volume=0,
+        active_buy_count=0,
+        active_sell_volume=0,
+        active_sell_count=0,
+    )
+    reviewed = candidate(state)
+    reviewed["protection_classification"] = "REPAIR_REQUIRED"
+    reviewed["protection_reason"] = "The live relative BUY child lacks a fixed cap."
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [{"account_id": "acc-1", "orderbook_id": "ob-1", "volume": 10}],
+        [],
+        [],
+    )
+
+    assert audit["strict_fingerprint_complete"] is True
+    assert audit["protection_complete"] is False
+    assert audit["governance_complete"] is False
+    assert audit["complete"] is False
+    assert audit["protection_repair_required_count"] == 1
+    assert audit["protection_repair_required_orderbook_ids"] == ["ob-1"]
+
+
 def test_intentional_holding_drift_is_acknowledged_but_remains_incomplete(tmp_path):
     path = tmp_path / "position-strategies.json"
     registry = PositionStrategyRegistry(path)
@@ -238,6 +340,8 @@ def test_intentional_holding_drift_is_acknowledged_but_remains_incomplete(tmp_pa
     assert audit["acknowledged_mismatch_count"] == 1
     assert audit["unresolved_mismatch_count"] == 0
     assert audit["acknowledged_mismatch_orderbook_ids"] == ["ob-1"]
+    assert audit["protection_complete"] is True
+    assert audit["governance_complete"] is True
 
 
 def test_exception_preserving_semantic_update_keeps_reviewed_fingerprint(tmp_path):
@@ -280,6 +384,10 @@ def test_exception_preserving_semantic_update_keeps_reviewed_fingerprint(tmp_pat
             "bucket": "POST_EVENT_LOCKED_DEEP_RESIDUAL",
             "stance": "Retain the one-share marker and locked deep residual.",
             "next_gate": "Review only after a regular-session reversal.",
+            "protection_classification": "MARKER_EXCEPTION",
+            "protection_reason": (
+                "The live post-exit exposure is one marker share without a SELL stop."
+            ),
             "audit_exception": audit_exception,
             "preserve_audit_exception_fingerprint": True,
         }
@@ -313,6 +421,11 @@ def test_exception_preserving_semantic_update_keeps_reviewed_fingerprint(tmp_pat
         enriched["position_strategy"]["audit_status"]
         == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
     )
+    assert (
+        enriched["position_strategy"]["protection_classification"]
+        == "MARKER_EXCEPTION"
+    )
+    assert enriched["position_protection_status"] == "VALID"
     assert enriched["position_strategy"]["audit_exception"] == audit_exception
 
     reloaded = PositionStrategyRegistry(path)

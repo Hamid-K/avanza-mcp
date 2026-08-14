@@ -458,7 +458,7 @@ SEC_REQUEST_MIN_INTERVAL_SECONDS = max(
 )
 # Independent of the package version so a long-running MCP process can be
 # distinguished from a reloaded process when the app version is unchanged.
-MCP_CONTRACT_REVISION = "2026-08-06.raw-transactions-v1"
+MCP_CONTRACT_REVISION = "2026-08-14.position-protection-v1"
 TUI_TITLE = f"{APP_NAME} v{APP_VERSION}"
 GITHUB_RELEASE_REPO = os.getenv("AVANZA_GITHUB_REPO", "Hamid-K/avanza-mcp")
 UPDATE_CHECK_INTERVAL_SECONDS = float(os.getenv("AVANZA_UPDATE_CHECK_INTERVAL_SECONDS", "1800"))

@@ -375,8 +375,8 @@ For multi-session setups:
 | `avanza_stoplosses` | List stop-loss orders with durable strategy intent and missing/mismatch metadata audit, optionally filtered by instrument, side, status, and compact mode. |
 | `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
 | `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
-| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
-| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; an explicit preservation flag can update semantics without rebaselining a holding-only exception, and changes only the local registry, never Avanza. |
+| `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan or explicit protection classification is missing, stale, contradictory, or marked `REPAIR_REQUIRED`. |
+| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans and instrument-specific protection reasons against exact live account state; an explicit preservation flag can update semantics without rebaselining a holding-only exception, and changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
@@ -454,6 +454,30 @@ must explicitly set `rebaseline_authorized: false`; and supplied exception
 metadata must be unchanged. Missing exceptions, no actual holding drift, or any
 stop/open-order mismatch are rejected atomically. This remains a private
 registry write and never mutates or authorizes Avanza.
+
+Every reviewed row also requires one exact `protection_classification`:
+`CALIBRATED_STOP_PROFIT_LADDER`, `CORE_HOLD_EXCEPTION`, `MARKER_EXCEPTION`,
+`NAMED_EXCEPTION`, `NON_STOP_ELIGIBLE`, or `REPAIR_REQUIRED`, plus an
+instrument-specific `protection_reason`. The registry validates the class
+against current SELL exposure and live holding size. Missing or contradictory
+metadata is rejected; `REPAIR_REQUIRED` is durable but blocks governance
+completion. A valid acknowledged holding-only exception can therefore remain
+strictly fingerprint-incomplete while still being governance-complete, without
+silently changing its stored fingerprint.
+
+The private `output/PORTFOLIO_GOVERNANCE_REVIEW_STREAK.json` ledger records
+each scheduled twice-daily review. Validate it with:
+
+```bash
+python3 scripts/verify_governance_review_streak.py
+```
+
+The verifier rejects duplicate windows, missing account or gate evidence,
+late backfills, false eligibility flags, premature completion claims, and any
+review whose exact-account authorization state is not explicitly off. Goal
+completion additionally requires ten eligible morning/evening reviews across
+five regular market sessions; use `--require-complete` only when asserting that
+terminal condition.
 
 Mechanical registry equality does not prove that analysis sources carry the
 same meaning. Use `avanza-strategy-audit` to compare every account-position

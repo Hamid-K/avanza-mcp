@@ -25,6 +25,23 @@ POSITION_STRATEGY_MISSING = "MISSING"
 POSITION_STRATEGY_STALE_MISMATCH = "STALE_MISMATCH"
 POSITION_STRATEGY_REGISTRY_UNAVAILABLE = "REGISTRY_UNAVAILABLE"
 
+POSITION_PROTECTION_VALID = "VALID"
+POSITION_PROTECTION_MISSING = "MISSING"
+POSITION_PROTECTION_INVALID = "INVALID"
+POSITION_PROTECTION_CONTRADICTION = "CONTRADICTION"
+POSITION_PROTECTION_REPAIR_REQUIRED = "REPAIR_REQUIRED"
+POSITION_PROTECTION_REGISTRY_UNAVAILABLE = "REGISTRY_UNAVAILABLE"
+POSITION_PROTECTION_CLASSIFICATIONS = frozenset(
+    {
+        "CALIBRATED_STOP_PROFIT_LADDER",
+        "CORE_HOLD_EXCEPTION",
+        "MARKER_EXCEPTION",
+        "NAMED_EXCEPTION",
+        "NON_STOP_ELIGIBLE",
+        "REPAIR_REQUIRED",
+    }
+)
+
 _LIVE_STATE_FIELDS = (
     "account_id",
     "orderbook_id",
@@ -78,6 +95,8 @@ _REQUIRED_PLAN_TEXT_FIELDS = (
     "bucket",
     "stance",
     "next_gate",
+    "protection_classification",
+    "protection_reason",
 )
 _OPTIONAL_PLAN_TEXT_FIELDS = (
     "ticker",
@@ -143,6 +162,59 @@ def _normalized_count(value: Any) -> int:
     if parsed is None or float(parsed) < 0 or not float(parsed).is_integer():
         raise ValueError(f"Expected a non-negative integer count, got {value!r}.")
     return int(parsed)
+
+
+def _position_protection_evaluation(
+    plan: dict[str, Any] | None,
+    live_state: dict[str, Any],
+) -> tuple[str, list[str]]:
+    """Validate explicit protection semantics against the exact live row."""
+
+    plan = plan if isinstance(plan, dict) else {}
+    classification = _normalized_token(plan.get("protection_classification"))
+    reason = str(plan.get("protection_reason") or "").strip()
+    if not classification or not reason:
+        missing = []
+        if not classification:
+            missing.append("protection_classification")
+        if not reason:
+            missing.append("protection_reason")
+        return POSITION_PROTECTION_MISSING, missing
+    if classification not in POSITION_PROTECTION_CLASSIFICATIONS:
+        return POSITION_PROTECTION_INVALID, [
+            f"unsupported protection_classification {classification!r}"
+        ]
+
+    fingerprint = position_strategy_live_fingerprint(live_state)
+    holding = float(fingerprint["holding"])
+    active_sell_volume = float(fingerprint["active_sell_volume"])
+    active_sell_count = int(fingerprint["active_sell_count"])
+    has_active_sell = active_sell_volume > 0 or active_sell_count > 0
+    contradictions: list[str] = []
+
+    if classification == "CALIBRATED_STOP_PROFIT_LADDER":
+        if active_sell_volume <= 0 or active_sell_count <= 0:
+            contradictions.append(
+                "CALIBRATED_STOP_PROFIT_LADDER requires active SELL volume and count"
+            )
+    elif classification in {
+        "CORE_HOLD_EXCEPTION",
+        "MARKER_EXCEPTION",
+        "NON_STOP_ELIGIBLE",
+    }:
+        if has_active_sell:
+            contradictions.append(
+                f"{classification} cannot coexist with an active SELL stop"
+            )
+
+    if classification == "MARKER_EXCEPTION" and holding > 1:
+        contradictions.append("MARKER_EXCEPTION requires live holding at or below one")
+
+    if contradictions:
+        return POSITION_PROTECTION_CONTRADICTION, contradictions
+    if classification == "REPAIR_REQUIRED":
+        return POSITION_PROTECTION_REPAIR_REQUIRED, []
+    return POSITION_PROTECTION_VALID, []
 
 
 def _row_account_id(row: dict[str, Any]) -> str:
@@ -646,6 +718,21 @@ class PositionStrategyRegistry:
         if priority not in {"A", "B", "C", "D", "E"}:
             raise ValueError("priority must be one of A, B, C, D, or E.")
         plan["priority"] = priority
+        plan["protection_classification"] = _normalized_token(
+            plan["protection_classification"]
+        )
+        protection_status, protection_issues = _position_protection_evaluation(
+            plan,
+            live_fingerprint,
+        )
+        if protection_status in {
+            POSITION_PROTECTION_MISSING,
+            POSITION_PROTECTION_INVALID,
+            POSITION_PROTECTION_CONTRADICTION,
+        }:
+            raise ValueError(
+                "Invalid protection plan: " + "; ".join(protection_issues) + "."
+            )
 
         now = _utc_timestamp()
         return {
@@ -755,6 +842,8 @@ class PositionStrategyRegistry:
                     "position_strategy_status": POSITION_STRATEGY_REGISTRY_UNAVAILABLE,
                     "position_strategy_mismatches": [],
                     "position_strategy": None,
+                    "position_protection_status": POSITION_PROTECTION_REGISTRY_UNAVAILABLE,
+                    "position_protection_issues": [],
                 }
             )
             return enriched
@@ -769,6 +858,8 @@ class PositionStrategyRegistry:
                     "position_strategy_status": POSITION_STRATEGY_MISSING,
                     "position_strategy_mismatches": [],
                     "position_strategy": None,
+                    "position_protection_status": POSITION_PROTECTION_MISSING,
+                    "position_protection_issues": ["position_strategy"],
                 }
             )
             return enriched
@@ -778,6 +869,10 @@ class PositionStrategyRegistry:
             for field in _LIVE_STATE_FIELDS
             if entry.get(field) != fingerprint.get(field)
         ]
+        protection_status, protection_issues = _position_protection_evaluation(
+            entry,
+            live_state,
+        )
         enriched.update(
             {
                 "position_strategy_status": (
@@ -786,6 +881,8 @@ class PositionStrategyRegistry:
                     else POSITION_STRATEGY_STALE_MISMATCH
                 ),
                 "position_strategy_mismatches": mismatches,
+                "position_protection_status": protection_status,
+                "position_protection_issues": protection_issues,
                 "position_strategy": {
                     field: entry.get(field)
                     for field in (
@@ -805,7 +902,11 @@ class PositionStrategyRegistry:
         )
         exception = entry.get("audit_exception")
         mismatch_fields = set(mismatches)
-        allowed_fields = set(exception.get("allowed_mismatches", [])) if isinstance(exception, dict) else set()
+        allowed_fields = (
+            set(exception.get("allowed_mismatches", []))
+            if isinstance(exception, dict)
+            else set()
+        )
         enriched["position_strategy_exception_status"] = (
             "ACKNOWLEDGED_INTENTIONAL_DRIFT"
             if exception and mismatch_fields and mismatch_fields.issubset(allowed_fields)
@@ -895,11 +996,60 @@ class PositionStrategyRegistry:
         unresolved_mismatches = [
             row for row in mismatches if row not in acknowledged_mismatches
         ]
-        complete = not missing and not mismatches and not unavailable and not stale_ids
+        protection_missing = [
+            row
+            for row in enriched
+            if row.get("position_protection_status") == POSITION_PROTECTION_MISSING
+        ]
+        protection_invalid = [
+            row
+            for row in enriched
+            if row.get("position_protection_status") == POSITION_PROTECTION_INVALID
+        ]
+        protection_contradictions = [
+            row
+            for row in enriched
+            if row.get("position_protection_status")
+            == POSITION_PROTECTION_CONTRADICTION
+        ]
+        protection_repairs = [
+            row
+            for row in enriched
+            if row.get("position_protection_status")
+            == POSITION_PROTECTION_REPAIR_REQUIRED
+        ]
+        protection_unavailable = [
+            row
+            for row in enriched
+            if row.get("position_protection_status")
+            == POSITION_PROTECTION_REGISTRY_UNAVAILABLE
+        ]
+        protection_complete = not (
+            protection_missing
+            or protection_invalid
+            or protection_contradictions
+            or protection_repairs
+            or protection_unavailable
+        )
+        strict_fingerprint_complete = not (
+            missing or mismatches or unavailable or stale_ids
+        )
+        governance_complete = bool(
+            protection_complete
+            and not missing
+            and not unavailable
+            and not stale_ids
+            and not unresolved_mismatches
+        )
+        complete = bool(strict_fingerprint_complete and protection_complete)
         return {
             "account_id": account_token,
             "complete": complete,
             "review_required": not complete,
+            "strict_fingerprint_complete": strict_fingerprint_complete,
+            "governance_complete": governance_complete,
+            "governance_review_eligible": governance_complete,
+            "protection_complete": protection_complete,
             "row_count": len(enriched),
             "planned_count": len(planned_ids) - len(pruned_ids),
             "recorded_count": len(recorded),
@@ -912,11 +1062,31 @@ class PositionStrategyRegistry:
             "open_order_drift_count": len(open_order_drift),
             "acknowledged_mismatch_count": len(acknowledged_mismatches),
             "unresolved_mismatch_count": len(unresolved_mismatches),
+            "protection_missing_count": len(protection_missing),
+            "protection_invalid_count": len(protection_invalid),
+            "protection_contradiction_count": len(protection_contradictions),
+            "protection_repair_required_count": len(protection_repairs),
+            "protection_registry_unavailable_count": len(protection_unavailable),
             "acknowledged_mismatch_orderbook_ids": [
                 row["orderbook_id"] for row in acknowledged_mismatches
             ],
             "unresolved_mismatch_orderbook_ids": [
                 row["orderbook_id"] for row in unresolved_mismatches
+            ],
+            "protection_missing_orderbook_ids": [
+                row["orderbook_id"] for row in protection_missing
+            ],
+            "protection_invalid_orderbook_ids": [
+                row["orderbook_id"] for row in protection_invalid
+            ],
+            "protection_contradiction_orderbook_ids": [
+                row["orderbook_id"] for row in protection_contradictions
+            ],
+            "protection_repair_required_orderbook_ids": [
+                row["orderbook_id"] for row in protection_repairs
+            ],
+            "protection_registry_unavailable_orderbook_ids": [
+                row["orderbook_id"] for row in protection_unavailable
             ],
             "missing_orderbook_ids": [row["orderbook_id"] for row in missing],
             "mismatched_orderbook_ids": [

@@ -251,6 +251,11 @@ class CoreBridgeMixin:
                     "preserve_audit_exception_fingerprint"
                     in position_strategy_item_properties
                 ),
+                "position_strategy_protection_classification": (
+                    "protection_classification"
+                    in position_strategy_item_properties
+                    and "protection_reason" in position_strategy_item_properties
+                ),
             },
             "can_read_quotes": True,
             "can_place_paper_orders": True,
@@ -589,10 +594,18 @@ class CoreBridgeMixin:
             and not stop_errors
             and not order_errors
         )
+        governance_complete = bool(
+            position_strategy["governance_complete"]
+            and stoploss_strategy["complete"]
+            and not stop_errors
+            and not order_errors
+        )
         return {
             "account_id": account_id,
             "complete": complete,
             "review_required": not complete,
+            "governance_complete": governance_complete,
+            "governance_review_eligible": governance_complete,
             "position_strategy": position_strategy,
             "event_protection_screen": event_protection_screen,
             "stoploss_strategy": stoploss_strategy,
@@ -1356,6 +1369,8 @@ class CoreBridgeMixin:
                 "bucket",
                 "stance",
                 "next_gate",
+                "protection_classification",
+                "protection_reason",
                 "proposed_correction",
                 "audit_exception",
                 "source_snapshot_at",
@@ -1459,6 +1474,10 @@ class CoreBridgeMixin:
                         "strategy_class": requested.get("strategy_class"),
                         "priority": requested.get("priority"),
                         "next_gate": requested.get("next_gate"),
+                        "protection_classification": requested.get(
+                            "protection_classification"
+                        ),
+                        "protection_reason": requested.get("protection_reason"),
                         "preserve_audit_exception_fingerprint": bool(
                             requested.get(
                                 "preserve_audit_exception_fingerprint",

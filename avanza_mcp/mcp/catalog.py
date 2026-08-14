@@ -9,6 +9,9 @@ from avanza_mcp.config import (
     TRADINGVIEW_WATCHLIST_ROW_LIMIT,
     TRANSACTION_TYPE_CHOICES,
 )
+from avanza_mcp.position_strategy_registry import (
+    POSITION_PROTECTION_CLASSIFICATIONS,
+)
 from avanza_mcp.strategy_intent import (
     SELL_STOPLOSS_STRATEGY_INTENTS,
     STOPLOSS_STRATEGY_INTENTS,
@@ -90,6 +93,21 @@ MCP_POSITION_STRATEGY_ITEM_PROPERTIES = {
     "bucket": {"type": "string"},
     "stance": {"type": "string"},
     "next_gate": {"type": "string"},
+    "protection_classification": {
+        "type": "string",
+        "enum": sorted(POSITION_PROTECTION_CLASSIFICATIONS),
+        "description": (
+            "Explicit reviewed protection state for this exact live account-position row."
+        ),
+    },
+    "protection_reason": {
+        "type": "string",
+        "minLength": 1,
+        "description": (
+            "Instrument-specific reason the current stop/profit state is appropriate "
+            "or requires repair; next_gate supplies the promotion/review condition."
+        ),
+    },
     "proposed_correction": {"type": ["string", "null"]},
     "audit_exception": {
         "type": ["object", "null"],
@@ -146,6 +164,8 @@ MCP_POSITION_STRATEGY_REQUIRED_FIELDS = [
     "bucket",
     "stance",
     "next_gate",
+    "protection_classification",
+    "protection_reason",
 ]
 
 MCP_LIVE_STOP_METADATA_CONDITION = {
@@ -757,7 +777,8 @@ MCP_TOOLS = [
         "description": (
             "Refresh exact holdings, active stop exposure, regular open orders, "
             "and stop-intent metadata for one account, then fail closed on any "
-            "missing or stale reviewed position plan. Read-only at Avanza."
+            "missing or stale reviewed position plan, missing/contradictory "
+            "protection classification, or REPAIR_REQUIRED row. Read-only at Avanza."
         ),
         "inputSchema": {
             "type": "object",
@@ -778,7 +799,8 @@ MCP_TOOLS = [
             "registry, never Avanza; confirm=true requires MCP R/W but not "
             "live-trading authorization. An explicit per-row preservation flag "
             "can update semantics without rebaselining a reviewed holding-only "
-            "exception, but refuses every stop/order or other mismatch."
+            "exception, but refuses every stop/order or other mismatch. Every row "
+            "requires an explicit protection classification and instrument-specific reason."
         ),
         "inputSchema": {
             "type": "object",

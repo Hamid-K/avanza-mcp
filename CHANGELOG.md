@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.2.34 - 2026-08-14
+
+- Added a required, explicit protection classification and instrument-specific
+  reason to every reviewed account-position plan. Audits now fail closed on
+  missing, invalid, contradictory, or `REPAIR_REQUIRED` protection states and
+  distinguish strict fingerprint equality from governance-complete intentional
+  holding-only drift.
+- Added a runtime capability and MCP contract revision for the protection
+  schema, including exact dry-run visibility and restart-durable registry
+  coverage without granting broker or paper authority.
+- Added a fail-closed twice-daily governance-streak ledger and verifier. A
+  completion claim now requires ten chronological eligible reviews spanning
+  paired morning/evening windows across five regular sessions, both exact
+  accounts, every required gate, fresh evidence, zero blockers, and live
+  authorization off.
+
 ## 0.2.33 - 2026-08-14
 
 - Added an explicit exception-preserving semantic update mode to

@@ -1452,12 +1452,13 @@ def test_mcp_capabilities_and_live_session_authorization():
     status = app.execute_mcp_tool("avanza_capabilities", {})
     assert status["live_trading_allowed_for_this_session"] is False
     assert status["can_place_live_orders"] is False
-    assert status["mcp_contract_revision"] == "2026-08-06.raw-transactions-v1"
+    assert status["mcp_contract_revision"] == "2026-08-14.position-protection-v1"
     assert status["contract_features"] == {
         "tenant_session_scope": True,
         "transactions_include_raw": True,
         "live_stop_strategy_metadata": True,
         "position_strategy_exception_preserve": True,
+        "position_strategy_protection_classification": True,
     }
     with pytest.raises(PermissionError):
         app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
@@ -2442,6 +2443,10 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
         "bucket": "CORE_RESTORATION",
         "stance": "KEEP",
         "next_gate": "Review after the next material event.",
+        "protection_classification": "CORE_HOLD_EXCEPTION",
+        "protection_reason": (
+            "The intact reviewed core deliberately has no mechanical SELL stop."
+        ),
         "source_snapshot_at": "2026-07-31T01:28:25+02:00",
     }
     dry_run = app.execute_mcp_tool(
@@ -2470,7 +2475,10 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
     assert app.live_trading_allowed_for_session is False
     assert registered["broker_mutation"] is False
     assert registered["ok"] is True
+    assert registered["governance_complete"] is True
+    assert registered["governance_review_eligible"] is True
     assert registered["position_strategy"]["recorded_count"] == 1
+    assert registered["position_strategy"]["protection_complete"] is True
 
     restarted = AvanzaTradingTui()
     restarted.avanza = FakeAvanza()
@@ -2481,11 +2489,18 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
         {"account_id": "acc-1"},
     )
     assert after_restart["complete"] is True
+    assert after_restart["governance_complete"] is True
     assert (
         after_restart["position_strategy"]["positions"][0][
             "position_strategy"
         ]["strategy_class"]
         == "CORE_COMPOUNDER"
+    )
+    assert (
+        after_restart["position_strategy"]["positions"][0][
+            "position_strategy"
+        ]["protection_classification"]
+        == "CORE_HOLD_EXCEPTION"
     )
 
     live_holding["value"] = 11
@@ -2578,6 +2593,10 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
         "bucket": "DORMANT_EVENT_REDESIGN",
         "stance": "Retain reviewed exposure.",
         "next_gate": "Review after the event.",
+        "protection_classification": "CORE_HOLD_EXCEPTION",
+        "protection_reason": (
+            "The reviewed growth core deliberately has no mechanical SELL stop."
+        ),
         "audit_exception": audit_exception,
         "source_snapshot_at": "2026-08-14T14:00:00+02:00",
     }
@@ -2600,6 +2619,10 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
         "bucket": "POST_EVENT_LOCKED_DEEP_RESIDUAL",
         "stance": "Retain one marker share.",
         "next_gate": "Review only after a regular-session reversal.",
+        "protection_classification": "MARKER_EXCEPTION",
+        "protection_reason": (
+            "The live post-exit exposure is one marker share without a SELL stop."
+        ),
         "preserve_audit_exception_fingerprint": True,
     }
     dry_run = app.execute_mcp_tool(
@@ -2627,6 +2650,10 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
     audit = confirmed["position_strategy"]
     assert audit["acknowledged_mismatch_count"] == 1
     assert audit["unresolved_mismatch_count"] == 0
+    assert audit["complete"] is False
+    assert audit["governance_complete"] is True
+    assert audit["governance_review_eligible"] is True
+    assert audit["protection_complete"] is True
     row = audit["positions"][0]
     assert row["recorded_live_state"]["holding"] == 9
     assert (
@@ -2650,6 +2677,9 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
         == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
     )
     assert after_restart["position_strategy"]["unresolved_mismatch_count"] == 0
+    assert after_restart["complete"] is False
+    assert after_restart["governance_complete"] is True
+    assert after_restart["governance_review_eligible"] is True
 
 
 def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
@@ -3162,10 +3192,21 @@ def test_position_strategy_schema_keeps_audit_exception_holding_only():
     tool = next(item for item in MCP_TOOLS if item["name"] == "avanza_position_strategy_register_batch")
     item_schema = tool["inputSchema"]["properties"]["items"]["items"]
     exception = item_schema["properties"]["audit_exception"]
+    protection = item_schema["properties"]["protection_classification"]
 
     assert exception["properties"]["rebaseline_authorized"] == {"const": False}
     assert exception["properties"]["allowed_mismatches"]["items"]["enum"] == ["holding"]
     assert "rebaseline_authorized" not in exception["required"]
+    assert protection["enum"] == [
+        "CALIBRATED_STOP_PROFIT_LADDER",
+        "CORE_HOLD_EXCEPTION",
+        "MARKER_EXCEPTION",
+        "NAMED_EXCEPTION",
+        "NON_STOP_ELIGIBLE",
+        "REPAIR_REQUIRED",
+    ]
+    assert "protection_classification" in item_schema["required"]
+    assert "protection_reason" in item_schema["required"]
     assert item_schema["properties"]["preserve_audit_exception_fingerprint"] == {
         "type": "boolean",
         "default": False,
