@@ -183,6 +183,14 @@ class CoreBridgeMixin:
             .get("inputSchema", {})
             .get("properties", {})
         )
+        position_strategy_item_properties = (
+            catalog_by_name.get("avanza_position_strategy_register_batch", {})
+            .get("inputSchema", {})
+            .get("properties", {})
+            .get("items", {})
+            .get("items", {})
+            .get("properties", {})
+        )
         stop_metadata_tools = (
             "avanza_stoploss_set",
             "avanza_stoploss_set_batch",
@@ -239,6 +247,10 @@ class CoreBridgeMixin:
                 "tenant_session_scope": "tenant_session_id" in transaction_properties,
                 "transactions_include_raw": "include_raw" in transaction_properties,
                 "live_stop_strategy_metadata": live_stop_metadata_enforced,
+                "position_strategy_exception_preserve": (
+                    "preserve_audit_exception_fingerprint"
+                    in position_strategy_item_properties
+                ),
             },
             "can_read_quotes": True,
             "can_place_paper_orders": True,
@@ -1419,6 +1431,12 @@ class CoreBridgeMixin:
                 candidate = {
                     "live_state": live_state,
                     **{field: requested.get(field) for field in plan_fields},
+                    "preserve_audit_exception_fingerprint": bool(
+                        requested.get(
+                            "preserve_audit_exception_fingerprint",
+                            False,
+                        )
+                    ),
                 }
                 candidates.append(candidate)
                 previews.append(
@@ -1441,8 +1459,21 @@ class CoreBridgeMixin:
                         "strategy_class": requested.get("strategy_class"),
                         "priority": requested.get("priority"),
                         "next_gate": requested.get("next_gate"),
+                        "preserve_audit_exception_fingerprint": bool(
+                            requested.get(
+                                "preserve_audit_exception_fingerprint",
+                                False,
+                            )
+                        ),
                     }
                 )
+
+            validated_entries = self.preview_existing_position_strategies(
+                candidates,
+                source="MCP_REVIEWED_CLEAN_SHEET",
+            )
+            for preview, entry in zip(previews, validated_entries, strict=True):
+                preview["recorded_holding_after_write"] = entry["holding"]
 
             if not confirmed:
                 return {

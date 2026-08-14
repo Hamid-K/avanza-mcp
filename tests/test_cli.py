@@ -1457,6 +1457,7 @@ def test_mcp_capabilities_and_live_session_authorization():
         "tenant_session_scope": True,
         "transactions_include_raw": True,
         "live_stop_strategy_metadata": True,
+        "position_strategy_exception_preserve": True,
     }
     with pytest.raises(PermissionError):
         app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
@@ -2501,6 +2502,156 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
         )
 
 
+def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint():
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    live_holding = {"value": 9}
+
+    class FakeAvanza:
+        def get_accounts_positions(self):
+            return {
+                "withOrderbook": [
+                    {
+                        "id": "pos-1",
+                        "account": {"id": "acc-1", "name": "Main"},
+                        "instrument": {
+                            "name": "Shop Test",
+                            "orderbook": {
+                                "id": "ob-1",
+                                "quote": {"isRealTime": True},
+                            },
+                        },
+                        "volume": {"value": live_holding["value"], "unit": "st"},
+                        "value": {"value": 1000, "unit": "SEK"},
+                        "averageAcquiredPrice": {"value": 100, "unit": "SEK"},
+                        "acquiredValue": {"value": 1000, "unit": "SEK"},
+                        "lastTradingDayPerformance": {
+                            "relative": {"value": 0, "unit": "%"},
+                            "absolute": {"value": 0, "unit": "SEK"},
+                        },
+                    }
+                ],
+                "withoutOrderbook": [],
+                "cashPositions": [],
+            }
+
+        def get_all_stop_losses(self):
+            return []
+
+        def get_orders(self):
+            return []
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.selected_account_id = "acc-1"
+    app.active_session_id = "darkcell"
+    app.mcp_write_enabled = True
+    audit_exception = {
+        "kind": "POST_MANUAL_EXIT_DRIFT",
+        "reason": "User manually sold eight shares.",
+        "owner": "user",
+        "review_due": "SESSION_3_AND_SESSION_5_LIFECYCLE_REVIEW",
+        "allowed_mismatches": ["holding"],
+        "rebaseline_authorized": False,
+    }
+    spec = {
+        "order_book_id": "ob-1",
+        "instrument": "Shop Test",
+        "ticker": "SHOP",
+        "venue": "NYSE",
+        "holding": 9,
+        "active_buy_volume": 0,
+        "active_sell_volume": 0,
+        "active_buy_count": 0,
+        "active_sell_count": 0,
+        "open_buy_volume": 0,
+        "open_sell_volume": 0,
+        "open_buy_count": 0,
+        "open_sell_count": 0,
+        "strategy_class": "GROWTH_CORE",
+        "horizon": "6-24m",
+        "thesis": "Reviewed post-event thesis.",
+        "gate": "Wait for a regular-session reversal.",
+        "audit_status": "PENDING_EVENT_REDESIGN",
+        "recommendation": "Keep the review dormant.",
+        "priority": "B",
+        "bucket": "DORMANT_EVENT_REDESIGN",
+        "stance": "Retain reviewed exposure.",
+        "next_gate": "Review after the event.",
+        "audit_exception": audit_exception,
+        "source_snapshot_at": "2026-08-14T14:00:00+02:00",
+    }
+    initial = app.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {
+            "account_id": "acc-1",
+            "items": [spec],
+            "confirm": True,
+        },
+    )
+    assert initial["ok"] is True
+
+    live_holding["value"] = 1
+    updated = {
+        **spec,
+        "holding": 1,
+        "audit_status": "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY",
+        "recommendation": "Keep the marker and locked residual only.",
+        "bucket": "POST_EVENT_LOCKED_DEEP_RESIDUAL",
+        "stance": "Retain one marker share.",
+        "next_gate": "Review only after a regular-session reversal.",
+        "preserve_audit_exception_fingerprint": True,
+    }
+    dry_run = app.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {"account_id": "acc-1", "items": [updated]},
+    )
+    assert dry_run["dry_run"] is True
+    assert dry_run["broker_mutation"] is False
+    assert dry_run["items"][0]["recorded_holding_after_write"] == 9
+    assert (
+        dry_run["items"][0]["preserve_audit_exception_fingerprint"] is True
+    )
+
+    confirmed = app.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {
+            "account_id": "acc-1",
+            "items": [updated],
+            "confirm": True,
+        },
+    )
+    assert confirmed["broker_mutation"] is False
+    assert confirmed["registered_count"] == 1
+    assert confirmed["ok"] is False
+    audit = confirmed["position_strategy"]
+    assert audit["acknowledged_mismatch_count"] == 1
+    assert audit["unresolved_mismatch_count"] == 0
+    row = audit["positions"][0]
+    assert row["recorded_live_state"]["holding"] == 9
+    assert (
+        row["position_strategy"]["audit_status"]
+        == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
+    )
+    assert app.live_trading_allowed_for_session is False
+
+    restarted = AvanzaTradingTui()
+    restarted.avanza = FakeAvanza()
+    restarted.selected_account_id = "acc-1"
+    restarted.active_session_id = "darkcell"
+    after_restart = restarted.execute_mcp_tool(
+        "avanza_position_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    restarted_row = after_restart["position_strategy"]["positions"][0]
+    assert restarted_row["recorded_live_state"]["holding"] == 9
+    assert (
+        restarted_row["position_strategy"]["audit_status"]
+        == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
+    )
+    assert after_restart["position_strategy"]["unresolved_mismatch_count"] == 0
+
+
 def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
     from avanza_mcp.tui.app import AvanzaTradingTui
 
@@ -3015,6 +3166,15 @@ def test_position_strategy_schema_keeps_audit_exception_holding_only():
     assert exception["properties"]["rebaseline_authorized"] == {"const": False}
     assert exception["properties"]["allowed_mismatches"]["items"]["enum"] == ["holding"]
     assert "rebaseline_authorized" not in exception["required"]
+    assert item_schema["properties"]["preserve_audit_exception_fingerprint"] == {
+        "type": "boolean",
+        "default": False,
+        "description": (
+            "Update semantic plan fields while preserving an existing reviewed "
+            "fingerprint and holding-only audit exception. Refuses missing or "
+            "changed exception metadata and any non-holding live drift."
+        ),
+    }
 
 
 def test_live_stop_schemas_require_strategy_metadata_when_confirmed():

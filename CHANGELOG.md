@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.33 - 2026-08-14
+
+- Added an explicit exception-preserving semantic update mode to
+  `avanza_position_strategy_register_batch`. It retains the reviewed live
+  fingerprint and holding-only audit exception while updating plan semantics,
+  and refuses missing or changed exception metadata, no actual holding drift,
+  every stop/open-order mismatch, and any attempted rebaseline.
+- Validated dry runs through the same atomic registry preparation path used by
+  confirmed private metadata writes and exposed the post-write recorded
+  holding in the preview. Added the
+  `position_strategy_exception_preserve` runtime capability flag so clients
+  can verify the loaded contract. Broker and paper state remain untouched.
+- Added restart-durability, schema, exact Shopify-shaped, and fail-closed
+  regression coverage.
+
 ## 0.2.32 - 2026-08-14
 
 - Enforced requested transaction date bounds locally after broker retrieval so

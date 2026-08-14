@@ -111,6 +111,15 @@ MCP_POSITION_STRATEGY_ITEM_PROPERTIES = {
         "required": ["kind", "reason", "owner", "review_due", "allowed_mismatches"],
         "additionalProperties": False,
     },
+    "preserve_audit_exception_fingerprint": {
+        "type": "boolean",
+        "default": False,
+        "description": (
+            "Update semantic plan fields while preserving an existing reviewed "
+            "fingerprint and holding-only audit exception. Refuses missing or "
+            "changed exception metadata and any non-holding live drift."
+        ),
+    },
     "source_snapshot_at": {"type": "string"},
 }
 MCP_POSITION_STRATEGY_REQUIRED_FIELDS = [
@@ -767,7 +776,9 @@ MCP_TOOLS = [
             "Dry-run or atomically register reviewed strategy plans for exact "
             "live account-position states. Changes only the private local "
             "registry, never Avanza; confirm=true requires MCP R/W but not "
-            "live-trading authorization."
+            "live-trading authorization. An explicit per-row preservation flag "
+            "can update semantics without rebaselining a reviewed holding-only "
+            "exception, but refuses every stop/order or other mismatch."
         ),
         "inputSchema": {
             "type": "object",

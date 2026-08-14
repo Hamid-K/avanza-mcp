@@ -567,7 +567,8 @@ class PositionStrategyRegistry:
         live_state = candidate.get("live_state")
         if not isinstance(live_state, dict):
             raise ValueError("Every registry candidate requires a live_state.")
-        fingerprint = position_strategy_live_fingerprint(live_state)
+        live_fingerprint = position_strategy_live_fingerprint(live_state)
+        fingerprint = live_fingerprint
         missing_identity = [
             field
             for field in ("account_id", "orderbook_id")
@@ -579,6 +580,58 @@ class PositionStrategyRegistry:
                 + ", ".join(missing_identity)
                 + "."
             )
+
+        requested_exception = _normalize_audit_exception(
+            candidate.get("audit_exception")
+        )
+        audit_exception = requested_exception
+        if bool(candidate.get("preserve_audit_exception_fingerprint", False)):
+            if not isinstance(existing, dict):
+                raise ValueError(
+                    "preserve_audit_exception_fingerprint requires an existing "
+                    "reviewed registry entry."
+                )
+            existing_exception_payload = existing.get("audit_exception")
+            existing_exception = _normalize_audit_exception(
+                existing_exception_payload
+            )
+            if existing_exception is None:
+                raise ValueError(
+                    "preserve_audit_exception_fingerprint requires an existing "
+                    "holding-only audit_exception."
+                )
+            if (
+                not isinstance(existing_exception_payload, dict)
+                or existing_exception_payload.get("rebaseline_authorized")
+                is not False
+                or set(existing_exception.get("allowed_mismatches", [])) != {"holding"}
+            ):
+                raise ValueError(
+                    "The existing audit_exception must explicitly allow holding "
+                    "drift only and set rebaseline_authorized=false."
+                )
+            recorded_fingerprint = position_strategy_live_fingerprint(existing)
+            drift_fields = [
+                field
+                for field in _LIVE_STATE_FIELDS
+                if recorded_fingerprint.get(field) != live_fingerprint.get(field)
+            ]
+            if drift_fields != ["holding"]:
+                rendered = ", ".join(drift_fields) if drift_fields else "none"
+                raise ValueError(
+                    "preserve_audit_exception_fingerprint requires exact "
+                    "holding-only live drift; found: " + rendered + "."
+                )
+            if (
+                requested_exception is not None
+                and requested_exception != existing_exception
+            ):
+                raise ValueError(
+                    "preserve_audit_exception_fingerprint cannot change the "
+                    "existing audit_exception."
+                )
+            fingerprint = recorded_fingerprint
+            audit_exception = existing_exception
 
         plan: dict[str, Any] = {}
         for field in _REQUIRED_PLAN_TEXT_FIELDS:
@@ -604,9 +657,7 @@ class PositionStrategyRegistry:
                 if candidate.get("proposed_correction") is not None
                 else None
             ),
-            "audit_exception": _normalize_audit_exception(
-                candidate.get("audit_exception")
-            ),
+            "audit_exception": audit_exception,
             "source_snapshot_at": (
                 str(candidate.get("source_snapshot_at") or "").strip() or None
             ),
@@ -620,6 +671,56 @@ class PositionStrategyRegistry:
             "updated_at": now,
         }
 
+    def _prepare_many_locked(
+        self,
+        rows: Iterable[dict[str, Any]],
+        *,
+        tenant_session_id: str | None,
+        source: str,
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        self._ensure_writable()
+        prepared: list[tuple[str, str, dict[str, Any]]] = []
+        seen: set[tuple[str, str]] = set()
+        for candidate in rows:
+            live_state = candidate.get("live_state")
+            if not isinstance(live_state, dict):
+                raise ValueError("Every registry candidate requires a live_state.")
+            fingerprint = position_strategy_live_fingerprint(live_state)
+            key = (fingerprint["account_id"], fingerprint["orderbook_id"])
+            if key in seen:
+                raise ValueError(
+                    "Duplicate registry candidate for account "
+                    f"{key[0]} orderbook {key[1]}."
+                )
+            seen.add(key)
+            current = self._account_positions_locked(key[0]).get(key[1])
+            entry = self._entry_from_candidate(
+                candidate,
+                tenant_session_id=tenant_session_id,
+                source=source,
+                existing=current,
+            )
+            prepared.append((key[0], key[1], entry))
+        return prepared
+
+    def preview_many_existing(
+        self,
+        candidates: Iterable[dict[str, Any]],
+        *,
+        tenant_session_id: str | None,
+        source: str,
+    ) -> list[dict[str, Any]]:
+        """Validate a reviewed batch without changing the registry file."""
+
+        rows = list(candidates)
+        with self._lock:
+            prepared = self._prepare_many_locked(
+                rows,
+                tenant_session_id=tenant_session_id,
+                source=source,
+            )
+            return [deepcopy(entry) for _, _, entry in prepared]
+
     def register_many_existing(
         self,
         candidates: Iterable[dict[str, Any]],
@@ -631,29 +732,11 @@ class PositionStrategyRegistry:
 
         rows = list(candidates)
         with self._lock:
-            self._ensure_writable()
-            prepared: list[tuple[str, str, dict[str, Any]]] = []
-            seen: set[tuple[str, str]] = set()
-            for candidate in rows:
-                live_state = candidate.get("live_state")
-                if not isinstance(live_state, dict):
-                    raise ValueError("Every registry candidate requires a live_state.")
-                fingerprint = position_strategy_live_fingerprint(live_state)
-                key = (fingerprint["account_id"], fingerprint["orderbook_id"])
-                if key in seen:
-                    raise ValueError(
-                        "Duplicate registry candidate for account "
-                        f"{key[0]} orderbook {key[1]}."
-                    )
-                seen.add(key)
-                current = self._account_positions_locked(key[0]).get(key[1])
-                entry = self._entry_from_candidate(
-                    candidate,
-                    tenant_session_id=tenant_session_id,
-                    source=source,
-                    existing=current,
-                )
-                prepared.append((key[0], key[1], entry))
+            prepared = self._prepare_many_locked(
+                rows,
+                tenant_session_id=tenant_session_id,
+                source=source,
+            )
 
             for account_id, orderbook_id, entry in prepared:
                 self._account_positions_locked(account_id, create=True)[

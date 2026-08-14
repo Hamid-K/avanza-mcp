@@ -35,6 +35,18 @@ class CorePositionStrategyMixin:
     def ensure_position_strategy_registry_writable(self) -> None:
         self.position_strategy_registry.ensure_writable()
 
+    def preview_existing_position_strategies(
+        self,
+        candidates: Iterable[dict[str, Any]],
+        *,
+        source: str,
+    ) -> list[dict[str, Any]]:
+        return self.position_strategy_registry.preview_many_existing(
+            candidates,
+            tenant_session_id=self.active_session_id,
+            source=source,
+        )
+
     def persist_existing_position_strategies(
         self,
         candidates: Iterable[dict[str, Any]],

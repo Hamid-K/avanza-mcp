@@ -240,6 +240,188 @@ def test_intentional_holding_drift_is_acknowledged_but_remains_incomplete(tmp_pa
     assert audit["acknowledged_mismatch_orderbook_ids"] == ["ob-1"]
 
 
+def test_exception_preserving_semantic_update_keeps_reviewed_fingerprint(tmp_path):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    reviewed_state = live_state(
+        holding=9,
+        active_buy_volume=7,
+        active_sell_volume=0,
+        active_buy_count=1,
+        active_sell_count=0,
+    )
+    audit_exception = {
+        "kind": "POST_MANUAL_EXIT_DRIFT",
+        "reason": "User manually sold eight shares.",
+        "owner": "user",
+        "review_due": "SESSION_3_AND_SESSION_5_LIFECYCLE_REVIEW",
+        "allowed_mismatches": ["holding"],
+        "rebaseline_authorized": False,
+    }
+    reviewed = candidate(reviewed_state)
+    reviewed["audit_exception"] = audit_exception
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+
+    live_after_exit = live_state(
+        holding=1,
+        active_buy_volume=7,
+        active_sell_volume=0,
+        active_buy_count=1,
+        active_sell_count=0,
+    )
+    update = candidate(live_after_exit)
+    update.update(
+        {
+            "audit_status": "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY",
+            "bucket": "POST_EVENT_LOCKED_DEEP_RESIDUAL",
+            "stance": "Retain the one-share marker and locked deep residual.",
+            "next_gate": "Review only after a regular-session reversal.",
+            "audit_exception": audit_exception,
+            "preserve_audit_exception_fingerprint": True,
+        }
+    )
+
+    before_preview = path.read_bytes()
+    preview = registry.preview_many_existing(
+        [update],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+    assert path.read_bytes() == before_preview
+    assert preview[0]["holding"] == 9
+    assert preview[0]["audit_status"] == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
+    assert preview[0]["audit_exception"] == audit_exception
+
+    registry.register_many_existing(
+        [update],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+    enriched = registry.enrich(live_after_exit)
+    assert enriched["position_strategy_status"] == "STALE_MISMATCH"
+    assert enriched["position_strategy_mismatches"] == ["holding"]
+    assert (
+        enriched["position_strategy_exception_status"]
+        == "ACKNOWLEDGED_INTENTIONAL_DRIFT"
+    )
+    assert enriched["recorded_live_state"]["holding"] == 9
+    assert (
+        enriched["position_strategy"]["audit_status"]
+        == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
+    )
+    assert enriched["position_strategy"]["audit_exception"] == audit_exception
+
+    reloaded = PositionStrategyRegistry(path)
+    persisted = reloaded.enrich(live_after_exit)
+    assert persisted["recorded_live_state"]["holding"] == 9
+    assert (
+        persisted["position_strategy"]["audit_status"]
+        == "POST_MANUAL_EXIT_EXTENDED_RESIDUAL_ONLY"
+    )
+
+
+def test_exception_preserving_update_refuses_missing_or_changed_exception(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    registry.register_many_existing(
+        [candidate(live_state(holding=9))],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+    update = candidate(live_state(holding=1))
+    update["preserve_audit_exception_fingerprint"] = True
+    with pytest.raises(ValueError, match="holding-only audit_exception"):
+        registry.preview_many_existing(
+            [update],
+            tenant_session_id="darkcell",
+            source="unit_test",
+        )
+
+    path = tmp_path / "reviewed-position-strategies.json"
+    reviewed_registry = PositionStrategyRegistry(path)
+    reviewed = candidate(live_state(holding=9))
+    reviewed["audit_exception"] = {
+        "kind": "POST_MANUAL_EXIT_DRIFT",
+        "reason": "Original reviewed reason.",
+        "owner": "user",
+        "review_due": "NEXT_LIFECYCLE_REVIEW",
+        "allowed_mismatches": ["holding"],
+    }
+    reviewed_registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+    changed = candidate(live_state(holding=1))
+    changed["audit_exception"] = {
+        **reviewed["audit_exception"],
+        "reason": "Changed reason is not allowed.",
+    }
+    changed["preserve_audit_exception_fingerprint"] = True
+    with pytest.raises(ValueError, match="cannot change"):
+        reviewed_registry.preview_many_existing(
+            [changed],
+            tenant_session_id="darkcell",
+            source="unit_test",
+        )
+
+
+def test_exception_preserving_update_refuses_non_holding_drift(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    reviewed = candidate(
+        live_state(
+            holding=9,
+            active_buy_volume=7,
+            active_buy_count=1,
+        )
+    )
+    reviewed["audit_exception"] = {
+        "kind": "POST_MANUAL_EXIT_DRIFT",
+        "reason": "User controls the holding change.",
+        "owner": "user",
+        "review_due": "NEXT_LIFECYCLE_REVIEW",
+        "allowed_mismatches": ["holding"],
+    }
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="darkcell",
+        source="unit_test",
+    )
+
+    update = candidate(
+        live_state(
+            holding=1,
+            active_buy_volume=8,
+            active_buy_count=1,
+        )
+    )
+    update["preserve_audit_exception_fingerprint"] = True
+    with pytest.raises(ValueError, match="holding-only live drift"):
+        registry.preview_many_existing(
+            [update],
+            tenant_session_id="darkcell",
+            source="unit_test",
+        )
+
+    unchanged = candidate(
+        live_state(
+            holding=9,
+            active_buy_volume=7,
+            active_buy_count=1,
+        )
+    )
+    unchanged["preserve_audit_exception_fingerprint"] = True
+    with pytest.raises(ValueError, match="found: none"):
+        registry.preview_many_existing(
+            [unchanged],
+            tenant_session_id="darkcell",
+            source="unit_test",
+        )
+
+
 def test_holding_exception_never_acknowledges_order_drift(tmp_path):
     path = tmp_path / "position-strategies.json"
     registry = PositionStrategyRegistry(path)

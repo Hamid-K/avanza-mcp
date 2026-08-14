@@ -376,7 +376,7 @@ For multi-session setups:
 | `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
 | `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
 | `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
-| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; changes only the local registry, never Avanza. |
+| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; an explicit preservation flag can update semantics without rebaselining a holding-only exception, and changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
@@ -444,6 +444,16 @@ kind is `USER_CONTROLLED_ALLOCATION` or `POST_MANUAL_EXIT_DRIFT`, with an owner,
 reason, review point, and `allowed_mismatches: ["holding"]`. The audit must still
 remain incomplete, `rebaseline_authorized` is always false, and stop, order, or
 other exposure drift is never acknowledged by this mechanism.
+
+For an existing reviewed holding-only exception,
+`avanza_position_strategy_register_batch` may set
+`preserve_audit_exception_fingerprint: true` on that exact row to update only
+semantic plan fields. The request must still match current live state exactly;
+the stored fingerprint must differ only in `holding`; the existing exception
+must explicitly set `rebaseline_authorized: false`; and supplied exception
+metadata must be unchanged. Missing exceptions, no actual holding drift, or any
+stop/open-order mismatch are rejected atomically. This remains a private
+registry write and never mutates or authorizes Avanza.
 
 Mechanical registry equality does not prove that analysis sources carry the
 same meaning. Use `avanza-strategy-audit` to compare every account-position
