@@ -297,7 +297,7 @@ Multi-session MCP behavior:
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
-| `avanza_recovery_reachability` | Audit active BUY rows for practical fixed-price distance, secondary/deep residuals, reversal-trigger width, and recovery coverage without granting trade authority. |
+| `avanza_recovery_reachability` | Audit active BUY rows for practical fixed-price distance, secondary/deep residuals, reversal-trigger width, and recovery coverage, then separately reconcile explicit governed exceptions without granting trade authority. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
@@ -371,6 +371,17 @@ unpaired `DEEP_RESIDUAL` blocks practical recovery coverage. Either design
 instrument-specific reachable participation that passes every
 event/risk/friction gate, or record an explicit dormant gate and leave no
 misleading crash-only row as implemented recovery.
+
+Read the mechanical and governance results separately. Raw `complete`,
+`review_required`, `issue_count`, and instrument `issues` always preserve the
+distance/shape finding. `governance_complete` may explain those raw issues only
+through a current exact-account plan with a matching active-BUY fingerprint
+that explicitly records a named exception, locked residual, secondary review,
+or dormant review plus its next gate. It does not relabel the row as reachable.
+Missing, stale, or contradictory plans,
+`REPAIR_REQUIRED`, unclassifiable rows, and plans that still require broker
+cleanup remain blocked. Neither result is placement, edit, or cancellation
+authority.
 
 ### TradingView pre-open workflow
 

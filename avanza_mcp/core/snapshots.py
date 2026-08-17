@@ -86,7 +86,10 @@ from avanza_mcp.rendering import (
     open_order_order_book_id,
     position_order_book_id,
 )
-from avanza_mcp.recovery_reachability import audit_buy_reachability
+from avanza_mcp.recovery_reachability import (
+    audit_buy_reachability,
+    govern_recovery_reachability,
+)
 from avanza_mcp.strategy_intent import SELL_STOPLOSS_STRATEGY_INTENTS
 from avanza_mcp.utils import nested_value
 from datetime import date, datetime, timedelta, timezone
@@ -2015,12 +2018,18 @@ class CoreSnapshotsMixin:
             max_reversal_trigger_percent=max_reversal_trigger_percent,
         )
         plan_registry = getattr(self, "position_strategy_registry", None)
-        if plan_registry is not None:
-            for row in audit["instruments"]:
-                plan = plan_registry.lookup(account_id, str(row.get("orderbook_id") or ""))
-                row["position_audit_status"] = (plan or {}).get("audit_status")
-                row["position_gate"] = (plan or {}).get("gate")
-                row["position_next_gate"] = (plan or {}).get("next_gate")
+        plans_by_orderbook = {
+            str(row.get("orderbook_id") or ""): (
+                plan_registry.lookup(account_id, str(row.get("orderbook_id") or ""))
+                if plan_registry is not None
+                else None
+            )
+            for row in audit["instruments"]
+        }
+        audit = govern_recovery_reachability(
+            audit,
+            plans_by_orderbook=plans_by_orderbook,
+        )
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "account_id": account_id,

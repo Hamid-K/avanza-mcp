@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.35 - 2026-08-17
+
+- Preserved raw BUY reachability failures while adding a separate plan-aware
+  governance result for explicit named exceptions, locked residuals, secondary
+  review inventory, and dormant review inventory.
+- Kept missing or active-BUY-stale plans, `REPAIR_REQUIRED`, unclassifiable
+  rows, unresolved broker cleanup, and plan-versus-distance contradictions fail
+  closed. Explained raw issues remain visible and never become practical
+  coverage or trade authority.
+- Added focused regression coverage and documented the distinction between
+  mechanical reachability and governed review inventory.
+
 ## 0.2.34 - 2026-08-14
 
 - Added a required, explicit protection classification and instrument-specific

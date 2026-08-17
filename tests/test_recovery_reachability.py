@@ -1,6 +1,7 @@
 from avanza_mcp.recovery_reachability import (
     audit_buy_reachability,
     classify_buy_reachability,
+    govern_recovery_reachability,
 )
 
 
@@ -21,6 +22,24 @@ def _row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+def _plan(**overrides):
+    plan = {
+        "account_id": "acc-1",
+        "orderbook_id": "ob-1",
+        "active_buy_volume": 3,
+        "active_buy_count": 1,
+        "audit_status": "VALID_REACHABLE_PARTICIPATION",
+        "bucket": "VALID_REACHABLE_PARTICIPATION",
+        "protection_classification": "CORE_HOLD_EXCEPTION",
+        "gate": "Keep only while the reviewed instrument gate remains valid.",
+        "stance": "Current exact-account plan.",
+        "recommendation": "Preserve the reviewed row.",
+        "next_gate": "Review on fill or a material thesis, technical, or risk change.",
+    }
+    plan.update(overrides)
+    return plan
 
 
 def test_classifies_reachable_and_deep_fixed_buy_rows():
@@ -136,3 +155,155 @@ def test_audit_flags_wide_reversal_even_when_another_row_is_reachable():
     )
     assert report["complete"] is False
     assert report["instruments"][0]["issues"] == ["WIDE_REVERSAL_ROW"]
+
+
+def test_governance_keeps_raw_issue_but_explains_named_exception():
+    raw = audit_buy_reachability(
+        [_row(trigger_value=70)],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+    report = govern_recovery_reachability(
+        raw,
+        plans_by_orderbook={
+            "ob-1": _plan(
+                audit_status="ETH_WIDE_PROTECTION_ACTIVE",
+                bucket="NAMED_EXCEPTION_WIDE_PROTECTION_ACTIVE",
+                protection_classification="NAMED_EXCEPTION",
+            )
+        },
+    )
+    instrument = report["instruments"][0]
+    assert report["complete"] is False
+    assert report["issue_count"] == 1
+    assert report["governance_complete"] is True
+    assert report["unresolved_issue_count"] == 0
+    assert instrument["issues"] == ["DEEP_ONLY_RECOVERY"]
+    assert instrument["explained_issues"] == ["DEEP_ONLY_RECOVERY"]
+    assert instrument["governance_classification"] == "EXPLAINED_NAMED_EXCEPTION"
+
+
+def test_governance_explains_locked_residual_and_explicit_review_bands():
+    locked_raw = audit_buy_reachability(
+        [_row(trigger_value=70, strategy_intent="DEEP_RESIDUAL")],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+    locked = govern_recovery_reachability(
+        locked_raw,
+        plans_by_orderbook={
+            "ob-1": _plan(
+                audit_status="WAITING_REVERSAL_LOCKED_RESIDUAL",
+                bucket="LOCKED_REACHABLE_RESIDUAL",
+            )
+        },
+    )
+    assert locked["governance_complete"] is True
+    assert locked["explained_issue_count"] == 2
+    assert (
+        locked["instruments"][0]["governance_classification"]
+        == "EXPLAINED_LOCKED_RESIDUAL"
+    )
+
+    secondary_raw = audit_buy_reachability(
+        [_row(trigger_value=90)],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+    secondary = govern_recovery_reachability(
+        secondary_raw,
+        plans_by_orderbook={
+            "ob-1": _plan(
+                audit_status="SECONDARY_FIXED_REVIEW",
+                bucket="SECONDARY_QUALITY_REBUILD",
+            )
+        },
+    )
+    assert secondary["governance_complete"] is True
+    assert (
+        secondary["instruments"][0]["governance_classification"]
+        == "EXPLAINED_SECONDARY_REVIEW"
+    )
+
+    dormant_raw = audit_buy_reachability(
+        [_row(trigger_value=70)],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+    dormant = govern_recovery_reachability(
+        dormant_raw,
+        plans_by_orderbook={
+            "ob-1": _plan(
+                audit_status="DEEP_DORMANT_REVIEW",
+                bucket="DORMANT_QUALITY_REBUILD",
+            )
+        },
+    )
+    assert dormant["governance_complete"] is True
+    assert (
+        dormant["instruments"][0]["governance_classification"]
+        == "EXPLAINED_DORMANT_REVIEW"
+    )
+
+
+def test_governance_fails_closed_on_missing_repair_or_contradictory_plan():
+    raw = audit_buy_reachability(
+        [_row(trigger_value=70)],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+
+    missing = govern_recovery_reachability(raw, plans_by_orderbook={})
+    assert missing["governance_complete"] is False
+    assert missing["instruments"][0]["unresolved_governance_issues"] == [
+        "POSITION_PLAN_MISSING"
+    ]
+
+    repair = govern_recovery_reachability(
+        raw,
+        plans_by_orderbook={
+            "ob-1": _plan(protection_classification="REPAIR_REQUIRED")
+        },
+    )
+    assert repair["governance_complete"] is False
+    assert "POSITION_PLAN_REPAIR_REQUIRED" in repair["instruments"][0][
+        "unresolved_governance_issues"
+    ]
+
+    contradiction = govern_recovery_reachability(
+        raw,
+        plans_by_orderbook={"ob-1": _plan()},
+    )
+    assert contradiction["governance_complete"] is False
+    assert "POSITION_PLAN_REACHABILITY_CONTRADICTION" in contradiction[
+        "instruments"
+    ][0]["unresolved_governance_issues"]
+
+    stale = govern_recovery_reachability(
+        raw,
+        plans_by_orderbook={"ob-1": _plan(active_buy_volume=2)},
+    )
+    assert stale["governance_complete"] is False
+    assert "POSITION_PLAN_ACTIVE_BUY_DRIFT" in stale["instruments"][0][
+        "unresolved_governance_issues"
+    ]
+
+
+def test_governance_does_not_explain_a_dormant_plan_that_still_requires_cleanup():
+    raw = audit_buy_reachability(
+        [_row(trigger_value=70)],
+        quotes_by_orderbook={"ob-1": 100},
+    )
+    report = govern_recovery_reachability(
+        raw,
+        plans_by_orderbook={
+            "ob-1": _plan(
+                audit_status="WAITING_REVERSAL_REDESIGN",
+                bucket="DORMANT_REVERSAL_REDESIGN",
+                next_gate=(
+                    "Seek fresh exact approval only for deleting the non-practical row."
+                ),
+            )
+        },
+    )
+    instrument = report["instruments"][0]
+    assert report["governance_complete"] is False
+    assert instrument["governance_classification"] == "UNRESOLVED_REPAIR"
+    assert instrument["unresolved_governance_issues"] == [
+        "POSITION_PLAN_REDESIGN_UNRESOLVED"
+    ]

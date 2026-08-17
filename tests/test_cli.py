@@ -1826,6 +1826,12 @@ def test_mcp_focused_instrument_state_and_protection_summaries():
     assert reachability["instrument_count"] == 1
     assert reachability["review_required"] is True
     assert reachability["instruments"][0]["issues"] == ["WIDE_REVERSAL_ROW"]
+    assert reachability["governance_complete"] is False
+    assert reachability["governance_review_required"] is True
+    assert reachability["unresolved_issue_count"] == 1
+    assert reachability["instruments"][0]["unresolved_governance_issues"] == [
+        "POSITION_PLAN_MISSING"
+    ]
     assert reachability["broker_mutation"] is False
     assert reachability["trade_authority"] is False
 

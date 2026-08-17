@@ -389,7 +389,7 @@ For multi-session setups:
 | `avanza_instrument_state` | Read one instrument's quote, position, stops, orders, transactions, and mechanical full-holding diagnostic. |
 | `avanza_protection_gaps` | Audit exact strategy SELL targets, failed SELL stops, and overcoverage without inferring a full-core exit. |
 | `avanza_sold_today_buyback_state` | Summarize same-day sold instruments using fail-closed recovery attribution; same-day BUY fills offset sales, while pre-existing/generic BUY stops and unattributed regular BUY orders remain conditional exposure rather than assumed repair. |
-| `avanza_recovery_reachability` | Audit every active BUY row for practical fixed-price distance, secondary/deep residuals, reversal-trigger width, and recovery coverage; thresholds are fail-closed review limits, never placement advice. |
+| `avanza_recovery_reachability` | Audit every active BUY row for practical fixed-price distance, secondary/deep residuals, reversal-trigger width, and recovery coverage, while separately reconciling explicit named, locked, secondary, or dormant position-plan semantics; raw issues remain visible and thresholds are never placement advice. |
 | `avanza_recent_fills_needing_protection` | Review recent BUY fills; report a SELL gap only against an explicit percentage or exact strategy target. |
 | `avanza_verify_no_raw_failed_orders` | Compact post-mutation check for failed/rejected open orders. |
 | `avanza_verify_protection` | Verify exact strategy SELL targets; default mode checks failed SELL rows and overcoverage only. |
@@ -500,6 +500,17 @@ practical participation is blocked as recovery coverage. Event, thesis,
 technical, risk, factor, capacity, and full-friction gates still determine
 whether a correction is a nearer row or an explicit dormant review with no
 active BUY.
+
+The raw `complete`, `review_required`, `issue_count`, and per-instrument
+`issues` fields remain mechanical and are never suppressed. The separate
+`governance_complete` result is true only when every active BUY instrument has
+a current exact-account position plan with a matching active-BUY fingerprint
+and every raw issue is explicitly
+classified as a named exception, locked residual, secondary review, or dormant
+review. Missing or stale plans, `REPAIR_REQUIRED`, unclassifiable rows, live cleanup
+requirements, and plan-versus-distance contradictions remain unresolved and
+fail closed. An explained issue is review inventory, not practical recovery
+coverage and not order authority.
 
 ```bash
 avanza-strategy-audit \

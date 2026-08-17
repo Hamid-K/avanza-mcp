@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 from typing import Any, Iterable
 
 from avanza_mcp.utils import scalar_number
@@ -198,3 +199,250 @@ def audit_buy_reachability(
         "broker_mutation": False,
         "trade_authority": False,
     }
+
+
+_EXPLAINABLE_RAW_ISSUES = frozenset(
+    {
+        "DEEP_ONLY_RECOVERY",
+        "SECONDARY_ONLY_RECOVERY",
+        "WIDE_REVERSAL_ROW",
+        "DEEP_RESIDUAL_WITHOUT_PARTICIPATION",
+    }
+)
+
+
+def _plan_token(plan: dict[str, Any], key: str) -> str:
+    return str(plan.get(key) or "").strip().upper()
+
+
+def _plan_text(plan: dict[str, Any]) -> str:
+    return " ".join(
+        str(plan.get(key) or "").strip()
+        for key in (
+            "audit_status",
+            "bucket",
+            "protection_classification",
+            "protection_reason",
+            "gate",
+            "stance",
+            "recommendation",
+            "next_gate",
+        )
+    ).upper()
+
+
+def classify_recovery_governance(
+    instrument: dict[str, Any],
+    *,
+    position_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile raw BUY reachability with an explicit reviewed position plan."""
+
+    row = dict(instrument)
+    raw_issues = [str(issue) for issue in row.get("issues") or []]
+    row.update(
+        {
+            "position_audit_status": None,
+            "position_bucket": None,
+            "position_protection_classification": None,
+            "position_gate": None,
+            "position_next_gate": None,
+            "governance_classification": "MISSING_OR_CONTRADICTORY_PLAN",
+            "explained_issues": [],
+            "unresolved_governance_issues": [],
+            "governance_clean": False,
+            "governance_reason": None,
+        }
+    )
+
+    if not position_plan:
+        row["unresolved_governance_issues"] = ["POSITION_PLAN_MISSING"]
+        row["governance_reason"] = (
+            "Raw reachability cannot be governed without a current exact-account position plan."
+        )
+        return row
+
+    audit_status = _plan_token(position_plan, "audit_status")
+    bucket = _plan_token(position_plan, "bucket")
+    protection = _plan_token(position_plan, "protection_classification")
+    next_gate = str(position_plan.get("next_gate") or "").strip()
+    plan_text = _plan_text(position_plan)
+    row.update(
+        {
+            "position_audit_status": position_plan.get("audit_status"),
+            "position_bucket": position_plan.get("bucket"),
+            "position_protection_classification": position_plan.get(
+                "protection_classification"
+            ),
+            "position_gate": position_plan.get("gate"),
+            "position_next_gate": position_plan.get("next_gate"),
+        }
+    )
+
+    plan_issues: list[str] = []
+    expected_account_id = str(position_plan.get("account_id") or "").strip()
+    expected_orderbook_id = str(position_plan.get("orderbook_id") or "").strip()
+    expected_buy_volume = _number(position_plan.get("active_buy_volume"))
+    expected_buy_count = _number(position_plan.get("active_buy_count"))
+    live_account_id = str(row.get("account_id") or "").strip()
+    live_orderbook_id = str(row.get("orderbook_id") or "").strip()
+    live_buy_volume = _number(row.get("active_buy_volume"))
+    live_buy_count = _number(row.get("active_buy_count"))
+    if (
+        not expected_account_id
+        or not expected_orderbook_id
+        or expected_buy_volume is None
+        or expected_buy_count is None
+    ):
+        plan_issues.append("POSITION_PLAN_FINGERPRINT_MISSING")
+    elif (
+        expected_account_id != live_account_id
+        or expected_orderbook_id != live_orderbook_id
+        or expected_buy_volume != live_buy_volume
+        or expected_buy_count != live_buy_count
+    ):
+        plan_issues.append("POSITION_PLAN_ACTIVE_BUY_DRIFT")
+    if not audit_status or not bucket:
+        plan_issues.append("POSITION_PLAN_SEMANTICS_MISSING")
+    if not protection:
+        plan_issues.append("POSITION_PROTECTION_CLASSIFICATION_MISSING")
+    if "REPAIR_REQUIRED" in {audit_status, bucket, protection}:
+        plan_issues.append("POSITION_PLAN_REPAIR_REQUIRED")
+    if raw_issues and not next_gate:
+        plan_issues.append("POSITION_NEXT_GATE_MISSING")
+    if raw_issues and (
+        audit_status == "VALID_REACHABLE_PARTICIPATION"
+        or bucket == "VALID_REACHABLE_PARTICIPATION"
+    ):
+        plan_issues.append("POSITION_PLAN_REACHABILITY_CONTRADICTION")
+    if "UNCLASSIFIABLE_ACTIVE_BUY" in raw_issues:
+        plan_issues.append("MECHANICAL_REACHABILITY_UNCLASSIFIABLE")
+
+    cleanup_required = any(
+        phrase in plan_text
+        for phrase in (
+            "APPROVAL ONLY FOR DELETING",
+            "APPROVAL ONLY TO DELETE",
+            "DELETE-ONLY CLEANUP",
+            "REPLACE THE NON-PRACTICAL ROW",
+        )
+    )
+    if "APPROVAL_REQUIRED" in audit_status or cleanup_required:
+        plan_issues.append("POSITION_PLAN_REDESIGN_UNRESOLVED")
+
+    if plan_issues:
+        row["governance_classification"] = (
+            "UNRESOLVED_REPAIR"
+            if any(
+                issue
+                in {
+                    "POSITION_PLAN_REPAIR_REQUIRED",
+                    "POSITION_PLAN_REDESIGN_UNRESOLVED",
+                }
+                for issue in plan_issues
+            )
+            else "MISSING_OR_CONTRADICTORY_PLAN"
+        )
+        row["unresolved_governance_issues"] = list(dict.fromkeys(plan_issues))
+        row["governance_reason"] = (
+            "The current plan is missing, contradictory, or still requires reachability repair."
+        )
+        return row
+
+    if not raw_issues:
+        row.update(
+            {
+                "governance_classification": "PRACTICAL_RECOVERY",
+                "governance_clean": True,
+                "governance_reason": (
+                    "The raw active BUY design is practical under the configured review limits "
+                    "and has a current governed position plan."
+                ),
+            }
+        )
+        return row
+
+    raw_issue_set = set(raw_issues)
+    named_exception = protection == "NAMED_EXCEPTION"
+    locked_residual = raw_issue_set <= {
+        "DEEP_ONLY_RECOVERY",
+        "DEEP_RESIDUAL_WITHOUT_PARTICIPATION",
+    } and ("LOCKED" in audit_status or "LOCKED" in bucket)
+    secondary_review = raw_issue_set <= {"SECONDARY_ONLY_RECOVERY"} and (
+        "SECONDARY" in audit_status or "SECONDARY" in bucket
+    )
+    dormant_review = (
+        raw_issue_set <= _EXPLAINABLE_RAW_ISSUES and "DORMANT" in plan_text
+    )
+
+    if named_exception:
+        governance_classification = "EXPLAINED_NAMED_EXCEPTION"
+    elif locked_residual:
+        governance_classification = "EXPLAINED_LOCKED_RESIDUAL"
+    elif secondary_review:
+        governance_classification = "EXPLAINED_SECONDARY_REVIEW"
+    elif dormant_review:
+        governance_classification = "EXPLAINED_DORMANT_REVIEW"
+    else:
+        row["unresolved_governance_issues"] = [
+            "RAW_REACHABILITY_ISSUE_UNEXPLAINED"
+        ]
+        row["governance_reason"] = (
+            "The raw reachability issue is not covered by an explicit named, locked, "
+            "secondary, or dormant position-plan classification."
+        )
+        return row
+
+    row.update(
+        {
+            "governance_classification": governance_classification,
+            "explained_issues": raw_issues,
+            "governance_clean": True,
+            "governance_reason": (
+                "Raw reachability remains visible, but the current exact-account plan "
+                "explicitly classifies the row as review inventory rather than practical coverage."
+            ),
+        }
+    )
+    return row
+
+
+def govern_recovery_reachability(
+    audit: dict[str, Any],
+    *,
+    plans_by_orderbook: dict[str, dict[str, Any] | None],
+) -> dict[str, Any]:
+    """Add plan-aware governance without weakening the raw reachability audit."""
+
+    report = deepcopy(audit)
+    governed: list[dict[str, Any]] = []
+    for instrument in report.get("instruments") or []:
+        orderbook_id = str(instrument.get("orderbook_id") or "").strip()
+        governed.append(
+            classify_recovery_governance(
+                instrument,
+                position_plan=plans_by_orderbook.get(orderbook_id),
+            )
+        )
+
+    unresolved_issue_count = sum(
+        len(row["unresolved_governance_issues"]) for row in governed
+    )
+    explained_issue_count = sum(len(row["explained_issues"]) for row in governed)
+    report.update(
+        {
+            "instruments": governed,
+            "governance_complete": unresolved_issue_count == 0,
+            "governance_review_required": unresolved_issue_count > 0,
+            "unresolved_issue_count": unresolved_issue_count,
+            "explained_issue_count": explained_issue_count,
+            "governance_policy_note": (
+                "Raw complete/review_required/issue_count fields remain mechanical and are never "
+                "suppressed. Governance is complete only when every active BUY instrument has a "
+                "current non-contradictory plan and each raw issue is explicitly named, locked, "
+                "secondary, or dormant; missing, unclassifiable, cleanup-required, and "
+                "REPAIR_REQUIRED states remain blocked."
+            ),
+        }
+    )
+    return report
