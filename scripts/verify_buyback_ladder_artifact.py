@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import argparse
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,284 @@ TABLE_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_LADDER_TABLE_20260806.md"
 DAILY_COVERAGE_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.md"
 DAILY_COVERAGE_JSON_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.json"
 CANDIDATE_OVERLAY_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_CANDIDATE_LIVE_OVERLAY_20260806_0311.json"
+DYNAMIC_LIVE_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
+
+DYNAMIC_BUYBACK_STATES = {
+    "LADDER_ACTIVE",
+    "LADDER_DORMANT",
+    "LEDGER_ONLY",
+    "LADDER_GAP",
+    "REPAIR_REQUIRED",
+    "NAMED_EXCEPTION",
+}
+DYNAMIC_LOW_EXPOSURE_STATES = {
+    "BUILD_REVIEW",
+    "INTENTIONAL_MARKER_OR_CORE_HOLD",
+    "EXIT_OR_NO_REENTRY_REVIEW",
+    "NAMED_EXCEPTION",
+    "NON_STOP_ELIGIBLE",
+    "REPAIR_REQUIRED",
+}
+EXPECTED_DYNAMIC_SCOPES = {
+    ("personal", "5227886"),
+    ("darkcell", "7616265"),
+}
 
 
 def _require(condition: bool, message: str, errors: list[str]) -> None:
     if not condition:
         errors.append(message)
+
+
+def latest_dynamic_coverage_path() -> Path | None:
+    """Return the latest dated live-universe artifact without a fixed row count."""
+
+    paths = sorted((ROOT / "output").glob(DYNAMIC_LIVE_GLOB))
+    return paths[-1] if paths else None
+
+
+def _count_states(rows: list[dict[str, Any]], field: str, states: set[str]) -> dict[str, int]:
+    counts = Counter(str(row.get(field) or "") for row in rows)
+    return {state: counts.get(state, 0) for state in sorted(states)}
+
+
+def _normalized_state_summary(value: Any, states: set[str]) -> dict[str, int]:
+    source = value if isinstance(value, dict) else {}
+    return {state: int(source.get(state, 0) or 0) for state in sorted(states)}
+
+
+def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
+    """Validate current dynamic buyback governance without granting order authority."""
+
+    errors: list[str] = []
+    rows = payload.get("rows", [])
+    summary = payload.get("summary", {})
+    governance = payload.get("live_governance", {})
+    output_contract = payload.get("user_facing_output_contract", {})
+
+    _require(
+        payload.get("artifact") == "PORTFOLIO_BUYBACK_LIVE_COVERAGE",
+        "dynamic buyback artifact id missing",
+        errors,
+    )
+    _require(payload.get("authority") == "REVIEW_ONLY", "dynamic buyback authority must be REVIEW_ONLY", errors)
+    _require(payload.get("broker_mutation_authorized") is False, "dynamic buyback broker mutation must be false", errors)
+    _require(bool(str(payload.get("generated_at") or "").strip()), "dynamic buyback generated_at missing", errors)
+    _require(bool(str(payload.get("live_state_as_of") or "").strip()), "dynamic buyback live_state_as_of missing", errors)
+    _require(
+        "No fixed historical candidate count" in str(payload.get("universe_contract") or ""),
+        "dynamic universe contract must reject fixed historical counts",
+        errors,
+    )
+    _require(output_contract.get("percentage_only") is True, "dynamic output must be percentage-only", errors)
+    _require(output_contract.get("raw_prices_prohibited") is True, "dynamic output must prohibit raw prices", errors)
+    _require(output_contract.get("raw_triggers_prohibited") is True, "dynamic output must prohibit raw triggers", errors)
+    _require(
+        output_contract.get("monetary_order_values_prohibited") is True,
+        "dynamic output must prohibit monetary order values",
+        errors,
+    )
+    _require(
+        output_contract.get("unsupported_stages") == "PERCENTAGE_NOT_SET",
+        "dynamic unsupported-stage marker must be PERCENTAGE_NOT_SET",
+        errors,
+    )
+
+    scopes = {
+        (str(row.get("tenant_session_id") or ""), str(row.get("account_id") or ""))
+        for row in payload.get("scope", [])
+        if isinstance(row, dict)
+    }
+    _require(scopes == EXPECTED_DYNAMIC_SCOPES, "dynamic buyback scope must contain both exact accounts", errors)
+    _require(governance.get("sessions_verified") is True, "dynamic buyback sessions must be verified", errors)
+    _require(
+        governance.get("authorization_off") == {"personal": True, "darkcell": True},
+        "dynamic buyback live authorization must be off for both tenants",
+        errors,
+    )
+    _require(
+        governance.get("personal_unresolved_position_drift") == 0
+        and governance.get("darkcell_unresolved_position_drift") == 0,
+        "dynamic buyback position drift must be zero",
+        errors,
+    )
+    _require(isinstance(rows, list) and bool(rows), "dynamic buyback rows must be a non-empty list", errors)
+    if not isinstance(rows, list):
+        return errors
+
+    keys: list[tuple[str, str, str]] = []
+    supported_count = 0
+    percentage_not_set_count = 0
+    vectors_by_instrument: dict[tuple[float, ...], set[str]] = defaultdict(set)
+    required_fields = {
+        "tenant_session_id",
+        "account_id",
+        "instrument",
+        "orderbook_id",
+        "live_holding",
+        "selection_reasons",
+        "active_buy_volume",
+        "active_sell_volume",
+        "current_protection_classification",
+        "low_exposure_decision",
+        "buyback_coverage_state",
+        "stages_percent_below_sold_marker",
+        "coverage_reason",
+        "exact_next_gate",
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            errors.append("dynamic buyback contains a non-object row")
+            continue
+        tenant = str(row.get("tenant_session_id") or "")
+        account = str(row.get("account_id") or "")
+        orderbook = str(row.get("orderbook_id") or "")
+        instrument = str(row.get("instrument") or "").strip()
+        key = (tenant, account, orderbook)
+        keys.append(key)
+        _require(required_fields.issubset(row), f"dynamic buyback row fields missing for {key}", errors)
+        _require((tenant, account) in EXPECTED_DYNAMIC_SCOPES, f"dynamic buyback account scope invalid for {key}", errors)
+        _require(bool(orderbook), f"dynamic buyback orderbook missing for {key}", errors)
+        _require(bool(instrument), f"dynamic buyback instrument missing for {key}", errors)
+        _require(
+            isinstance(row.get("live_holding"), (int, float)) and row.get("live_holding", -1) >= 0,
+            f"dynamic buyback holding invalid for {key}",
+            errors,
+        )
+        _require(
+            isinstance(row.get("active_buy_volume"), (int, float)) and row.get("active_buy_volume", -1) >= 0,
+            f"dynamic buyback active BUY volume invalid for {key}",
+            errors,
+        )
+        _require(
+            isinstance(row.get("active_sell_volume"), (int, float)) and row.get("active_sell_volume", -1) >= 0,
+            f"dynamic buyback active SELL volume invalid for {key}",
+            errors,
+        )
+        reasons = row.get("selection_reasons")
+        _require(isinstance(reasons, list) and bool(reasons), f"dynamic buyback selection reasons missing for {key}", errors)
+        _require(
+            row.get("buyback_coverage_state") in DYNAMIC_BUYBACK_STATES,
+            f"dynamic buyback state invalid for {key}",
+            errors,
+        )
+        _require(
+            row.get("low_exposure_decision") in DYNAMIC_LOW_EXPOSURE_STATES,
+            f"dynamic low-exposure decision invalid for {key}",
+            errors,
+        )
+        _require(
+            bool(str(row.get("current_protection_classification") or "").strip()),
+            f"dynamic protection classification missing for {key}",
+            errors,
+        )
+        _require(bool(str(row.get("coverage_reason") or "").strip()), f"dynamic coverage reason missing for {key}", errors)
+        _require(bool(str(row.get("exact_next_gate") or "").strip()), f"dynamic exact next gate missing for {key}", errors)
+
+        stages = row.get("stages_percent_below_sold_marker")
+        quantities = row.get("stage_quantities")
+        state = row.get("buyback_coverage_state")
+        if stages == "PERCENTAGE_NOT_SET":
+            percentage_not_set_count += 1
+            _require(quantities is None, f"unsupported ladder must not carry stage quantities for {key}", errors)
+            _require(
+                state not in {"LADDER_ACTIVE", "LADDER_DORMANT"},
+                f"active or dormant ladder lacks supported percentages for {key}",
+                errors,
+            )
+            continue
+
+        _require(isinstance(stages, list) and 1 <= len(stages) <= 3, f"dynamic ladder must have 1-3 stages for {key}", errors)
+        if not isinstance(stages, list) or not stages:
+            continue
+        supported_count += 1
+        _require(
+            all(isinstance(value, (int, float)) and value > 0 for value in stages),
+            f"dynamic ladder percentages must be positive for {key}",
+            errors,
+        )
+        numeric_stages = tuple(float(value) for value in stages if isinstance(value, (int, float)))
+        _require(
+            len(numeric_stages) == len(stages)
+            and list(numeric_stages) == sorted(numeric_stages)
+            and len(set(numeric_stages)) == len(numeric_stages),
+            f"dynamic ladder percentages must increase strictly for {key}",
+            errors,
+        )
+        vectors_by_instrument[numeric_stages].add(orderbook)
+        target = row.get("target_rebuild_quantity")
+        _require(
+            isinstance(target, (int, float)) and target > 0,
+            f"supported dynamic ladder target quantity missing for {key}",
+            errors,
+        )
+        if quantities is not None:
+            _require(
+                isinstance(quantities, list)
+                and len(quantities) == len(stages)
+                and all(isinstance(value, int) and value > 0 for value in quantities),
+                f"dynamic ladder stage quantities invalid for {key}",
+                errors,
+            )
+            if isinstance(quantities, list) and all(isinstance(value, int) for value in quantities):
+                _require(sum(quantities) == target, f"dynamic ladder quantities do not equal target for {key}", errors)
+        if state == "LADDER_ACTIVE":
+            _require(row.get("active_buy_volume", 0) > 0, f"active dynamic ladder has no active BUY for {key}", errors)
+
+    _require(len(keys) == len(set(keys)), "dynamic buyback contains duplicate account/orderbook rows", errors)
+    for vector, orderbooks in vectors_by_instrument.items():
+        _require(
+            len(orderbooks) == 1,
+            f"dynamic ladder vector {list(vector)} is duplicated across different instruments",
+            errors,
+        )
+
+    personal_rows = sum(row.get("account_id") == "5227886" for row in rows if isinstance(row, dict))
+    darkcell_rows = sum(row.get("account_id") == "7616265" for row in rows if isinstance(row, dict))
+    one_share_rows = sum(row.get("live_holding") == 1 for row in rows if isinstance(row, dict))
+    below_20000_rows = sum(
+        row.get("market_value_band") == "BELOW_20000_SEK"
+        for row in rows
+        if isinstance(row, dict)
+    )
+    full_exit_rows = sum(
+        "FULL_EXIT" in row.get("selection_reasons", [])
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("selection_reasons"), list)
+    )
+    pending_rows = sum(bool(row.get("pending_cleanup_id")) for row in rows if isinstance(row, dict))
+    _require(summary.get("exact_account_rows") == len(rows), "dynamic summary exact row count mismatch", errors)
+    _require(summary.get("personal_rows") == personal_rows, "dynamic summary Personal count mismatch", errors)
+    _require(summary.get("darkcell_rows") == darkcell_rows, "dynamic summary DarkCell count mismatch", errors)
+    _require(personal_rows + darkcell_rows == len(rows), "dynamic rows contain an unexpected account", errors)
+    _require(summary.get("current_one_share_rows") == one_share_rows, "dynamic summary one-share count mismatch", errors)
+    _require(summary.get("below_20000_sek_rows") == below_20000_rows, "dynamic summary low-exposure count mismatch", errors)
+    _require(summary.get("full_exit_rows") == full_exit_rows, "dynamic summary full-exit count mismatch", errors)
+    _require(
+        _normalized_state_summary(summary.get("buyback_coverage_state_counts"), DYNAMIC_BUYBACK_STATES)
+        == _count_states(rows, "buyback_coverage_state", DYNAMIC_BUYBACK_STATES),
+        "dynamic buyback state counts mismatch",
+        errors,
+    )
+    _require(
+        _normalized_state_summary(summary.get("low_exposure_decision_counts"), DYNAMIC_LOW_EXPOSURE_STATES)
+        == _count_states(rows, "low_exposure_decision", DYNAMIC_LOW_EXPOSURE_STATES),
+        "dynamic low-exposure decision counts mismatch",
+        errors,
+    )
+    _require(
+        summary.get("percentage_ladders_with_supported_stages") == supported_count,
+        "dynamic supported-ladder count mismatch",
+        errors,
+    )
+    _require(
+        summary.get("percentage_not_set_rows") == percentage_not_set_count,
+        "dynamic PERCENTAGE_NOT_SET count mismatch",
+        errors,
+    )
+    _require(supported_count + percentage_not_set_count == len(rows), "dynamic percentage coverage is incomplete", errors)
+    _require(summary.get("pending_r6a_cleanup_rows") == pending_rows, "dynamic pending-cleanup count mismatch", errors)
+    return errors
 
 
 def validate_staged_row(row: dict[str, Any], expected_volumes: tuple[int, ...]) -> list[str]:
@@ -388,12 +662,25 @@ def main() -> int:
             errors.extend(validate_daily_coverage(daily_table))
             errors.extend(validate_daily_coverage_json(daily_table))
             errors.extend(validate_candidate_live_overlay())
+        dynamic_path = latest_dynamic_coverage_path()
+        if dynamic_path is None:
+            errors.append(f"dynamic live coverage missing for glob: {DYNAMIC_LIVE_GLOB}")
+        else:
+            dynamic_payload = json.loads(dynamic_path.read_text(encoding="utf-8"))
+            errors.extend(validate_dynamic_live_coverage(dynamic_payload))
     if errors:
         for error in errors:
             print(f"[buyback] FAIL: {error}")
         return 1
     ladders = plan.get("validated_ladders", plan.get("render_contract", {}).get("validated_ladders", []))
-    print(f"[buyback] PASS: {len(ladders)} validated ladders; broker inventory remains separately classified")
+    dynamic_path = latest_dynamic_coverage_path()
+    dynamic_rows = 0
+    if dynamic_path is not None:
+        dynamic_rows = len(json.loads(dynamic_path.read_text(encoding="utf-8")).get("rows", []))
+    print(
+        f"[buyback] PASS: {len(ladders)} validated ladders; "
+        f"{dynamic_rows} dynamic live rows; broker inventory remains separately classified"
+    )
     return 0
 
 

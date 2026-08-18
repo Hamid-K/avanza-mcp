@@ -95,8 +95,13 @@ scripts/verify.sh
 
 The quality gate also validates the private review artifacts without granting
 trade authority: the instrument strategy master must cover 65 instruments and
-107 account-position rows, and the buy-back ledger must remain explicitly
-stamped until a new scoped live refresh verifies both accounts. It also checks
+107 account-position rows. Buy-back governance has two separate evidence
+layers: the August 6 daily ledger remains a fixed historical snapshot, while
+the latest dated live-coverage artifact is rebuilt from the current dynamic
+universe and has no fixed candidate count. The live validator derives account,
+one-share, low-exposure, full-exit, state, and percentage-coverage totals from
+its rows and rejects copied percentage vectors across different instruments.
+It also checks
 the authoritative factor, pending-order, capital-displacement, and
 risk-governance overlays and ensures the objective-completion audit remains
 explicitly open while live and forward evidence are missing. It also checks
@@ -110,9 +115,11 @@ reconciliation overlays are checked for the same scope and authority flags.
 They also carry explicit `STAMPED_ANALYSIS_SNAPSHOT` freshness metadata and
 cannot claim current live state or authorize action without a new exact scoped
 refresh.
-Every daily
-buy-back candidate also carries explicit promotion and rejection/hold evidence;
-ledger-only rows are not generic placeholders.
+Every current buy-back row carries an explicit protection classification,
+coverage state, low-exposure decision, and exact next gate. Unsupported stages
+remain `PERCENTAGE_NOT_SET`; an ordinary broker BUY row is not promoted into a
+ladder. The fixed historical ledger still carries explicit promotion and
+rejection/hold evidence and is never presented as current coverage.
 Transaction history is audited independently: historical summary coverage,
 manual sold slices, raw-source availability, and same-day BUY attribution are
 kept separate, with missing recent/raw evidence failing closed.

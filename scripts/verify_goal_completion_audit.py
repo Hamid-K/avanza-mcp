@@ -22,6 +22,26 @@ EXPECTED_MANUAL_EXITS = {
     ("darkcell", "7616265", "SHOP"): 8,
     ("darkcell", "7616265", "NEM"): 26,
 }
+EXPECTED_BUYBACK_SCOPES = {
+    ("personal", "5227886"),
+    ("darkcell", "7616265"),
+}
+CURRENT_BUYBACK_STATES = {
+    "LADDER_ACTIVE",
+    "LADDER_DORMANT",
+    "LEDGER_ONLY",
+    "LADDER_GAP",
+    "REPAIR_REQUIRED",
+    "NAMED_EXCEPTION",
+}
+CURRENT_LOW_EXPOSURE_STATES = {
+    "BUILD_REVIEW",
+    "INTENTIONAL_MARKER_OR_CORE_HOLD",
+    "EXIT_OR_NO_REENTRY_REVIEW",
+    "NAMED_EXCEPTION",
+    "NON_STOP_ELIGIBLE",
+    "REPAIR_REQUIRED",
+}
 
 
 def latest_audit_path() -> Path:
@@ -34,6 +54,116 @@ def latest_audit_path() -> Path:
 def _require(condition: bool, message: str, errors: list[str]) -> None:
     if not condition:
         errors.append(message)
+
+
+def _validate_current_buyback_link(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    require_clean: bool,
+) -> None:
+    """Validate the latest variable-size coverage link without fixed counts."""
+
+    current = payload.get("current_buyback_coverage", {})
+    summary = current.get("summary", {})
+    governance = current.get("live_governance", {})
+    validation = current.get("validation", {})
+    _require(
+        current.get("artifact") == "PORTFOLIO_BUYBACK_LIVE_COVERAGE",
+        "current dynamic buyback coverage link is missing",
+        errors,
+    )
+    _require(
+        "PORTFOLIO_BUYBACK_LIVE_COVERAGE_" in str(current.get("source") or "")
+        and "DAILY_COVERAGE_20260806" not in str(current.get("source") or ""),
+        "current dynamic buyback source is invalid",
+        errors,
+    )
+    _require(bool(str(current.get("generated_at") or "").strip()), "current dynamic buyback generated_at missing", errors)
+    _require(bool(str(current.get("live_state_as_of") or "").strip()), "current dynamic buyback live_state_as_of missing", errors)
+    _require(current.get("authority") == "REVIEW_ONLY", "current dynamic buyback must remain review-only", errors)
+    _require(current.get("broker_mutation_authorized") is False, "current dynamic buyback broker mutation must be false", errors)
+    _require(
+        "No fixed historical candidate count" in str(current.get("universe_contract") or ""),
+        "current dynamic buyback universe must reject fixed historical counts",
+        errors,
+    )
+    scopes = {
+        (str(row.get("tenant_session_id") or ""), str(row.get("account_id") or ""))
+        for row in current.get("scope", [])
+        if isinstance(row, dict)
+    }
+    _require(scopes == EXPECTED_BUYBACK_SCOPES, "current dynamic buyback scope is incomplete", errors)
+    _require(validation.get("status") == "PASSED", "current dynamic buyback validation did not pass", errors)
+    _require(validation.get("error_count") == 0 and validation.get("errors") == [], "current dynamic buyback validation has errors", errors)
+    _require(governance.get("sessions_verified") is True, "current dynamic buyback sessions were not verified", errors)
+    _require(
+        governance.get("authorization_off") == {"personal": True, "darkcell": True},
+        "current dynamic buyback authorization must be off for both tenants",
+        errors,
+    )
+    _require(
+        governance.get("personal_unresolved_position_drift") == 0
+        and governance.get("darkcell_unresolved_position_drift") == 0,
+        "current dynamic buyback position drift must be zero",
+        errors,
+    )
+
+    row_count = current.get("row_count")
+    valid_row_count = isinstance(row_count, int) and row_count > 0
+    _require(valid_row_count, "current dynamic buyback row count is invalid", errors)
+    _require(summary.get("exact_account_rows") == row_count, "current dynamic buyback exact row count mismatch", errors)
+    personal_rows = summary.get("personal_rows")
+    darkcell_rows = summary.get("darkcell_rows")
+    _require(
+        isinstance(personal_rows, int)
+        and isinstance(darkcell_rows, int)
+        and personal_rows >= 0
+        and darkcell_rows >= 0
+        and personal_rows + darkcell_rows == row_count,
+        "current dynamic buyback account counts do not reconcile",
+        errors,
+    )
+    for field in ("current_one_share_rows", "below_20000_sek_rows", "full_exit_rows"):
+        value = summary.get(field)
+        _require(
+            valid_row_count and isinstance(value, int) and 0 <= value <= row_count,
+            f"current dynamic buyback {field} is invalid",
+            errors,
+        )
+    state_counts = summary.get("buyback_coverage_state_counts", {})
+    low_counts = summary.get("low_exposure_decision_counts", {})
+    _require(
+        isinstance(state_counts, dict)
+        and set(state_counts).issubset(CURRENT_BUYBACK_STATES)
+        and all(isinstance(value, int) and value >= 0 for value in state_counts.values())
+        and sum(state_counts.values()) == row_count,
+        "current dynamic buyback state counts do not reconcile",
+        errors,
+    )
+    _require(
+        isinstance(low_counts, dict)
+        and set(low_counts).issubset(CURRENT_LOW_EXPOSURE_STATES)
+        and all(isinstance(value, int) and value >= 0 for value in low_counts.values())
+        and sum(low_counts.values()) == row_count,
+        "current dynamic low-exposure counts do not reconcile",
+        errors,
+    )
+    supported = summary.get("percentage_ladders_with_supported_stages")
+    percentage_not_set = summary.get("percentage_not_set_rows")
+    _require(
+        isinstance(supported, int)
+        and isinstance(percentage_not_set, int)
+        and supported + percentage_not_set == row_count,
+        "current dynamic percentage coverage does not reconcile",
+        errors,
+    )
+    pending_cleanup = summary.get("pending_r6a_cleanup_rows")
+    _require(isinstance(pending_cleanup, int) and pending_cleanup >= 0, "current dynamic cleanup count is invalid", errors)
+    if require_clean:
+        _require(state_counts.get("REPAIR_REQUIRED", 0) == 0, "completed goal retains buyback REPAIR_REQUIRED rows", errors)
+        _require(low_counts.get("REPAIR_REQUIRED", 0) == 0, "completed goal retains low-exposure REPAIR_REQUIRED rows", errors)
+        _require(pending_cleanup == 0, "completed goal retains pending buyback cleanup rows", errors)
 
 
 def _validate_completed(payload: dict[str, Any]) -> list[str]:
@@ -62,6 +192,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
         "completed audit must not retain a live-refresh gate",
         errors,
     )
+    _validate_current_buyback_link(payload, errors, require_clean=True)
 
     audit_coverage = payload.get("strategy_audit_coverage", {})
     _require(
@@ -110,6 +241,20 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
         if not isinstance(control_payload, dict):
             continue
         freshness = control_payload.get("freshness", {})
+        if label == "buyback":
+            _require(
+                control_payload.get("role") == "HISTORICAL_STAMPED_SNAPSHOT"
+                and control_payload.get("historical_snapshot") is True,
+                "historical buyback snapshot role is missing",
+                errors,
+            )
+            _require(
+                freshness.get("status") == "STAMPED_REVIEW_SNAPSHOT"
+                and freshness.get("live_refresh_verified") is False,
+                "historical buyback snapshot must remain stamped and non-current",
+                errors,
+            )
+            continue
         _require(
             freshness.get("live_state_current") is True and freshness.get("live_refresh_verified") is True,
             f"{label} control must be reconciled to current live state",
@@ -123,7 +268,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
 
     buyback = controls.get("buyback", {})
     _require(buyback.get("artifact") == "PORTFOLIO_BUYBACK_DAILY_COVERAGE", "buyback coverage link is missing", errors)
-    _require(buyback.get("validated_ladder_count", 0) >= 0, "buyback validation count must be explicit", errors)
+    _require(buyback.get("historical_snapshot") is True, "buyback historical snapshot marker is missing", errors)
 
     reconciliation = controls.get("artifact_reconciliation", {})
     _require(
@@ -280,6 +425,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         "current live authorization must be off for both tenants",
         errors,
     )
+    _validate_current_buyback_link(payload, errors, require_clean=False)
 
     strategy = payload.get("strategy_coverage", {})
     _require(strategy.get("artifact") == "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER", "strategy coverage link is missing", errors)
@@ -300,27 +446,23 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
             continue
         freshness = control_payload.get("freshness", {})
         if label == "buyback":
-            current_live = freshness.get("status") in {"CURRENT_LIVE_REFRESH", "LIVE_REFRESH_VERIFIED"}
-            if current_live:
-                _require(
-                    freshness.get("live_state_current") is True
-                    and freshness.get("live_refresh_verified") is True
-                    and freshness.get("requires_new_scoped_live_refresh_before_action") is False,
-                    f"{label} current refresh must be verified without a refresh gate",
-                    errors,
-                )
-            else:
-                _require(
-                    freshness.get("status") == "STAMPED_REVIEW_SNAPSHOT",
-                    f"{label} control freshness must be stamped review snapshot",
-                    errors,
-                )
-                _require(
-                    freshness.get("live_refresh_verified") is False
-                    and freshness.get("requires_new_scoped_live_refresh_before_action") is True,
-                    f"{label} control freshness must remain review-only and refresh-gated",
-                    errors,
-                )
+            _require(
+                control_payload.get("role") == "HISTORICAL_STAMPED_SNAPSHOT"
+                and control_payload.get("historical_snapshot") is True,
+                "historical buyback snapshot role is missing",
+                errors,
+            )
+            _require(
+                freshness.get("status") == "STAMPED_REVIEW_SNAPSHOT",
+                "historical buyback control freshness must remain stamped",
+                errors,
+            )
+            _require(
+                freshness.get("live_refresh_verified") is False
+                and freshness.get("requires_new_scoped_live_refresh_before_action") is True,
+                "historical buyback control must remain non-current and refresh-gated",
+                errors,
+            )
             continue
         _require(
             freshness.get("status") == "STAMPED_ANALYSIS_SNAPSHOT",
@@ -354,15 +496,16 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
     _require(risk.get("hard_churn_brake_active") is True, "risk coverage must keep hard churn brake active", errors)
     buyback = controls.get("buyback", {})
     _require(buyback.get("artifact") == "PORTFOLIO_BUYBACK_DAILY_COVERAGE", "buyback coverage link is missing", errors)
-    _require(buyback.get("candidate_rows") == 44, "buyback coverage must report 44 candidate rows", errors)
+    _require(buyback.get("historical_snapshot") is True, "buyback historical snapshot marker is missing", errors)
+    _require(buyback.get("candidate_rows") == 44, "historical buyback snapshot must report 44 candidate rows", errors)
     _require(
         buyback.get("personal_rows") == 18 and buyback.get("darkcell_rows") == 26,
-        "buyback coverage account rows must be 18/26",
+        "historical buyback snapshot account rows must be 18/26",
         errors,
     )
-    _require(buyback.get("one_share_rows") == 42, "buyback coverage must report 42 one-share rows", errors)
-    _require(buyback.get("low_sek_rows") == 43, "buyback coverage must report 43 low-SEK rows", errors)
-    _require(buyback.get("without_active_buy_rows") == 14, "buyback coverage must report 14 rows without active BUY", errors)
+    _require(buyback.get("one_share_rows") == 42, "historical buyback snapshot must report 42 one-share rows", errors)
+    _require(buyback.get("low_sek_rows") == 43, "historical buyback snapshot must report 43 low-SEK rows", errors)
+    _require(buyback.get("without_active_buy_rows") == 14, "historical buyback snapshot must report 14 rows without active BUY", errors)
     _require(
         {
             "ladder_dormant": 8,

@@ -9,9 +9,12 @@ from scripts.build_buyback_daily_coverage_json import (
     freshness_metadata,
 )
 from scripts.verify_buyback_ladder_artifact import (
+    DYNAMIC_LIVE_GLOB,
     PLAN_PATH,
     TABLE_PATH,
+    latest_dynamic_coverage_path,
     validate_candidate_rows,
+    validate_dynamic_live_coverage,
     validate_staged_row,
     validate_live_refresh,
 )
@@ -21,9 +24,184 @@ ROOT = Path(__file__).resolve().parents[1]
 REPAIR_REFRESH_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_REPAIR_REFRESH_20260806.json"
 
 
+def dynamic_buyback_payload():
+    rows = [
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "account_label": "Personal",
+            "instrument": "Example Alpha",
+            "orderbook_id": "1001",
+            "live_holding": 1,
+            "market_value_band": "BELOW_20000_SEK",
+            "selection_reasons": ["ONE_SHARE", "BELOW_20000_SEK", "RECENT_SAME_ACCOUNT_SALE"],
+            "active_buy_volume": 1,
+            "active_sell_volume": 0,
+            "current_protection_classification": "MARKER_EXCEPTION",
+            "low_exposure_decision": "BUILD_REVIEW",
+            "buyback_coverage_state": "LADDER_ACTIVE",
+            "target_rebuild_quantity": 3,
+            "stages_percent_below_sold_marker": [8.4, 14.7],
+            "stage_quantities": [2, 1],
+            "latest_recent_sale_date": "2026-08-18",
+            "coverage_reason": "Individually calibrated from the account sale marker and current range.",
+            "exact_next_gate": "No additional BUY; review only after the residual fills or thesis changes.",
+            "pending_cleanup_id": None,
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "account_label": "Personal",
+            "instrument": "Example Beta",
+            "orderbook_id": "1002",
+            "live_holding": 2,
+            "market_value_band": "BELOW_20000_SEK",
+            "selection_reasons": ["BELOW_20000_SEK"],
+            "active_buy_volume": 0,
+            "active_sell_volume": 0,
+            "current_protection_classification": "CORE_HOLD_EXCEPTION",
+            "low_exposure_decision": "INTENTIONAL_MARKER_OR_CORE_HOLD",
+            "buyback_coverage_state": "LEDGER_ONLY",
+            "target_rebuild_quantity": None,
+            "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+            "stage_quantities": None,
+            "latest_recent_sale_date": None,
+            "coverage_reason": "No supported ladder exists under current instrument evidence.",
+            "exact_next_gate": "Require a confirmed higher low, reclaim, intact thesis, capacity, and friction clearance.",
+            "pending_cleanup_id": None,
+        },
+        {
+            "tenant_session_id": "darkcell",
+            "account_id": "7616265",
+            "account_label": "DarkCell",
+            "instrument": "Example Gamma",
+            "orderbook_id": "1003",
+            "live_holding": 0,
+            "market_value_band": "ZERO_POSITION",
+            "selection_reasons": ["BELOW_20000_SEK", "RECENT_SAME_ACCOUNT_SALE", "FULL_EXIT"],
+            "active_buy_volume": 0,
+            "active_sell_volume": 0,
+            "current_protection_classification": "FULL_EXIT_REVIEW",
+            "low_exposure_decision": "EXIT_OR_NO_REENTRY_REVIEW",
+            "buyback_coverage_state": "LADDER_GAP",
+            "target_rebuild_quantity": 4,
+            "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+            "stage_quantities": None,
+            "latest_recent_sale_date": "2026-08-18",
+            "coverage_reason": "The full exit has no supported re-entry structure yet.",
+            "exact_next_gate": "Require post-event support, a regular-session reclaim, and all risk and friction gates.",
+            "pending_cleanup_id": None,
+        },
+    ]
+    return {
+        "artifact": "PORTFOLIO_BUYBACK_LIVE_COVERAGE",
+        "generated_at": "2026-08-19T00:10:00+02:00",
+        "live_state_as_of": "2026-08-19T00:10:00+02:00",
+        "authority": "REVIEW_ONLY",
+        "broker_mutation_authorized": False,
+        "universe_contract": (
+            "Dynamic union from current holdings and account sales. "
+            "No fixed historical candidate count is trusted."
+        ),
+        "user_facing_output_contract": {
+            "percentage_only": True,
+            "raw_prices_prohibited": True,
+            "raw_triggers_prohibited": True,
+            "monetary_order_values_prohibited": True,
+            "unsupported_stages": "PERCENTAGE_NOT_SET",
+        },
+        "scope": [
+            {"tenant_session_id": "personal", "account_id": "5227886", "label": "Personal"},
+            {"tenant_session_id": "darkcell", "account_id": "7616265", "label": "DarkCell"},
+        ],
+        "live_governance": {
+            "sessions_verified": True,
+            "personal_position_rows": 2,
+            "darkcell_position_rows": 1,
+            "personal_unresolved_position_drift": 0,
+            "darkcell_unresolved_position_drift": 0,
+            "authorization_off": {"personal": True, "darkcell": True},
+            "runtime_version": "0.2.36",
+            "contract_revision": "test",
+        },
+        "summary": {
+            "exact_account_rows": 3,
+            "personal_rows": 2,
+            "darkcell_rows": 1,
+            "current_one_share_rows": 1,
+            "below_20000_sek_rows": 2,
+            "full_exit_rows": 1,
+            "buyback_coverage_state_counts": {
+                "LADDER_ACTIVE": 1,
+                "LEDGER_ONLY": 1,
+                "LADDER_GAP": 1,
+            },
+            "low_exposure_decision_counts": {
+                "BUILD_REVIEW": 1,
+                "INTENTIONAL_MARKER_OR_CORE_HOLD": 1,
+                "EXIT_OR_NO_REENTRY_REVIEW": 1,
+            },
+            "percentage_ladders_with_supported_stages": 1,
+            "percentage_not_set_rows": 2,
+            "pending_r6a_cleanup_rows": 0,
+        },
+        "rows": rows,
+    }
+
+
 def test_buyback_validator_defaults_to_current_refresh_artifacts():
     assert PLAN_PATH.name == "PORTFOLIO_BUYBACK_LADDER_LIVE_REFRESH_20260806.json"
     assert TABLE_PATH.name == "PORTFOLIO_BUYBACK_LADDER_TABLE_20260806.md"
+
+
+def test_dynamic_buyback_validator_accepts_variable_size_live_universe():
+    payload = dynamic_buyback_payload()
+
+    assert payload["summary"]["exact_account_rows"] == 3
+    assert validate_dynamic_live_coverage(payload) == []
+
+
+def test_dynamic_buyback_validator_rejects_count_drift():
+    payload = dynamic_buyback_payload()
+    payload["summary"]["personal_rows"] = 18
+
+    errors = validate_dynamic_live_coverage(payload)
+
+    assert "dynamic summary Personal count mismatch" in errors
+
+
+def test_dynamic_buyback_validator_rejects_cross_instrument_percentage_copy():
+    payload = dynamic_buyback_payload()
+    copied = copy.deepcopy(payload["rows"][0])
+    copied.update({
+        "tenant_session_id": "darkcell",
+        "account_id": "7616265",
+        "account_label": "DarkCell",
+        "instrument": "Example Delta",
+        "orderbook_id": "1004",
+    })
+    payload["rows"].append(copied)
+    payload["summary"].update({
+        "exact_account_rows": 4,
+        "darkcell_rows": 2,
+        "current_one_share_rows": 2,
+        "below_20000_sek_rows": 3,
+        "percentage_ladders_with_supported_stages": 2,
+    })
+    payload["summary"]["buyback_coverage_state_counts"]["LADDER_ACTIVE"] = 2
+    payload["summary"]["low_exposure_decision_counts"]["BUILD_REVIEW"] = 2
+
+    errors = validate_dynamic_live_coverage(payload)
+
+    assert any("duplicated across different instruments" in error for error in errors)
+
+
+def test_dynamic_buyback_selector_ignores_legacy_recheck_names():
+    path = latest_dynamic_coverage_path()
+
+    assert DYNAMIC_LIVE_GLOB == "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
+    assert path is not None
+    assert "RECHECK" not in path.name
 
 
 def test_ladder_source_records_the_verified_current_refresh():

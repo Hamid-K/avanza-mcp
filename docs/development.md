@@ -22,17 +22,22 @@ uv run scripts/verify.sh
 
 The verification script includes read-only checks for the 65-instrument/107
 account-position strategy master, the buy-back freshness/authority contract,
-and the authoritative factor/order/displacement/risk overlays. A stamped
-buy-back artifact is not treated as current broker state; both exact account
-snapshots must be refreshed before any action proposal. The gate also checks
+and the authoritative factor/order/displacement/risk overlays. The fixed
+August 6 buy-back ledger is validated only as a historical snapshot. Current
+coverage comes from the latest dated `PORTFOLIO_BUYBACK_LIVE_COVERAGE` artifact,
+whose row count and per-account split are dynamic. The validator derives every
+summary count from exact tenant/account/orderbook rows, requires percentage-only
+presentation, rejects copied vectors across different instruments, and keeps
+unsupported stages at `PERCENTAGE_NOT_SET`. Both exact account snapshots must
+be verified and live authorization must be off. The gate also checks
 that the objective-level audit remains explicitly open while live refresh,
 event windows, and forward KPI evidence remain incomplete. The forward KPI
 audit preserves all 12 scorecard definitions but records zero completed
 forward measures until aligned account/benchmark observations and the frozen
 starting-holdings replay are available. Each strategy-master
-account row must also carry exact tenant/account/orderbook scope. Each daily
-buy-back candidate must include explicit promotion and rejection/hold evidence,
-including rows classified as ledger-only. The clean-sheet, factor,
+account row must also carry exact tenant/account/orderbook scope. Each current
+buy-back row must include an explicit coverage state, low-exposure decision,
+protection classification, coverage reason, and exact next gate. The clean-sheet, factor,
 pending-order, displacement, risk, and live-reconciliation overlays must carry
 the same exact scope and fail-closed authority metadata. Transaction coverage is
 also checked independently: historical summary rows must reconcile to both
@@ -58,8 +63,11 @@ every acknowledged exception; zero unresolved mismatches alone is insufficient.
 When linked coverage requires a new scoped refresh, the completion audit must
 also mark the previous broker checkpoint as historical and set an explicit
 refresh-before-action state.
-The completion audit also links structural strategy-master and portfolio-control
-counts; those links are not a substitute for current scoped broker evidence.
+The completion audit preserves the historical buy-back snapshot as such and
+links the latest independently validated dynamic coverage separately. Fixed
+44/18/26 candidate counts are never treated as current broker truth. Structural
+strategy-master and portfolio-control links are not a substitute for current
+scoped broker evidence.
 
 ## Mandatory Quality Gates
 

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.2.36 - 2026-08-19
+
+- Added a fail-closed validator for the latest variable-size buy-back coverage
+  universe. It derives all account, one-share, low-exposure, exit, state, and
+  percentage totals from exact rows and rejects copied percentage vectors
+  across different instruments.
+- Preserved the August 6 44-row ledger as a historical stamped snapshot while
+  linking the latest dynamic live coverage separately into the objective audit;
+  fixed 44/18/26/42/43 counts are no longer treated as current truth.
+- Added regression coverage for variable universe sizes, stale filename
+  selection, count drift, cross-instrument vector reuse, and fail-closed goal
+  linkage. All artifacts remain review-only and grant no broker authority.
+
 ## 0.2.35 - 2026-08-17
 
 - Preserved raw BUY reachability failures while adding a separate plan-aware

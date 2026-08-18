@@ -2,6 +2,59 @@ from scripts.verify_goal_completion_audit import validate
 from scripts.enrich_goal_completion_transaction_gate import enrich
 
 
+def current_buyback_coverage():
+    return {
+        "artifact": "PORTFOLIO_BUYBACK_LIVE_COVERAGE",
+        "source": "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_20260819_0006.json",
+        "generated_at": "2026-08-19T00:04:46+02:00",
+        "live_state_as_of": "2026-08-19T00:04:46+02:00",
+        "authority": "REVIEW_ONLY",
+        "broker_mutation_authorized": False,
+        "universe_contract": (
+            "Dynamic union of current holdings and exact account sales. "
+            "No fixed historical candidate count is trusted."
+        ),
+        "scope": [
+            {"tenant_session_id": "personal", "account_id": "5227886", "label": "Personal"},
+            {"tenant_session_id": "darkcell", "account_id": "7616265", "label": "DarkCell"},
+        ],
+        "live_governance": {
+            "sessions_verified": True,
+            "personal_unresolved_position_drift": 0,
+            "darkcell_unresolved_position_drift": 0,
+            "authorization_off": {"personal": True, "darkcell": True},
+        },
+        "row_count": 73,
+        "summary": {
+            "exact_account_rows": 73,
+            "personal_rows": 30,
+            "darkcell_rows": 43,
+            "current_one_share_rows": 42,
+            "below_20000_sek_rows": 68,
+            "full_exit_rows": 2,
+            "buyback_coverage_state_counts": {
+                "LADDER_ACTIVE": 5,
+                "LADDER_DORMANT": 4,
+                "LADDER_GAP": 3,
+                "LEDGER_ONLY": 57,
+                "NAMED_EXCEPTION": 4,
+                "REPAIR_REQUIRED": 0,
+            },
+            "low_exposure_decision_counts": {
+                "BUILD_REVIEW": 9,
+                "EXIT_OR_NO_REENTRY_REVIEW": 2,
+                "INTENTIONAL_MARKER_OR_CORE_HOLD": 56,
+                "NAMED_EXCEPTION": 4,
+                "REPAIR_REQUIRED": 2,
+            },
+            "percentage_ladders_with_supported_stages": 9,
+            "percentage_not_set_rows": 64,
+            "pending_r6a_cleanup_rows": 0,
+        },
+        "validation": {"status": "PASSED", "error_count": 0, "errors": []},
+    }
+
+
 def complete_payload():
     return {
         "artifact": "PORTFOLIO_REQUIREMENT_LEVEL_COMPLETION_AUDIT",
@@ -10,6 +63,7 @@ def complete_payload():
         "goal_completion_claim": False,
         "broker_mutation": False,
         "registry_mutation": False,
+        "current_buyback_coverage": current_buyback_coverage(),
         "strategy_audit_coverage": {
             "artifact": "PER_ACCOUNT_STRATEGY_AUDIT_COVERAGE",
             "status": "REQUIRES_NEW_SCOPED_LIVE_REFRESH",
@@ -43,7 +97,7 @@ def complete_payload():
             "pending_order": {"artifact": "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION", "active_rows": 54, "unique_stop_ids": 54, "buy_rows": 46, "sell_rows": 8, "generic_implementation_rows": 0, "all_strategy_intents_recorded": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "displacement": {"artifact": "PORTFOLIO_CAPITAL_DISPLACEMENT", "rows": 23, "candidate_before_cancellation_remains_binding": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "risk": {"artifact": "PORTFOLIO_RISK_GOVERNANCE", "authorization": "ANALYSIS_AND_POLICY_ONLY", "hard_churn_brake_active": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
-            "buyback": {"artifact": "PORTFOLIO_BUYBACK_DAILY_COVERAGE", "candidate_rows": 44, "personal_rows": 18, "darkcell_rows": 26, "one_share_rows": 42, "low_sek_rows": 43, "without_active_buy_rows": 14, "ladder_dormant": 8, "ledger_only": 32, "ladder_gaps": 0, "repair_required": 3, "named_exceptions": 1, "freshness": {"status": "STAMPED_REVIEW_SNAPSHOT", "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
+            "buyback": {"artifact": "PORTFOLIO_BUYBACK_DAILY_COVERAGE", "role": "HISTORICAL_STAMPED_SNAPSHOT", "historical_snapshot": True, "candidate_rows": 44, "personal_rows": 18, "darkcell_rows": 26, "one_share_rows": 42, "low_sek_rows": 43, "without_active_buy_rows": 14, "ladder_dormant": 8, "ledger_only": 32, "ladder_gaps": 0, "repair_required": 3, "named_exceptions": 1, "freshness": {"status": "STAMPED_REVIEW_SNAPSHOT", "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "artifact_reconciliation": {"artifact": "PORTFOLIO_CONTROL_ARTIFACT_RECONCILIATION", "status": "BLOCKED_STALE_ARTIFACT_CONTRADICTION", "live_reconciliation_counts": {"active_rows": 62, "buy_rows": 48, "sell_rows": 14}, "pending_order_counts": {"active_rows": 54, "buy_rows": 46, "sell_rows": 8}, "count_delta_live_minus_pending": {"active_rows": 8, "buy_rows": 2, "sell_rows": 6}, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "buy_governance": {"artifact": "PORTFOLIO_ACTIVE_BUY_GOVERNANCE_AUDIT", "active_buy_rows": 46, "active_sell_rows": 8, "fixed_monetary_buy_rows": 43, "relative_buy_rows": 3, "validated_ladder_count": 0, "relative_child_cap_defects": [{}, {}, {}], "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "forward_kpi": {"artifact": "PORTFOLIO_FORWARD_KPI_COVERAGE_AUDIT", "status": "INCOMPLETE_OUTCOME_EVIDENCE", "scorecard_measure_count": 12, "completed_forward_scorecard_measures": 0, "forward_outcome_proven": False, "hard_churn_brake_active": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
@@ -99,7 +153,7 @@ def test_completion_audit_passes_only_when_open_work_is_explicit():
     assert validate(complete_payload()) == []
 
 
-def test_incomplete_audit_accepts_a_verified_read_only_buyback_refresh():
+def test_incomplete_audit_rejects_promoting_the_historical_buyback_snapshot():
     payload = complete_payload()
     payload["portfolio_control_coverage"]["buyback"]["freshness"] = {
         "status": "CURRENT_LIVE_REFRESH",
@@ -107,6 +161,26 @@ def test_incomplete_audit_accepts_a_verified_read_only_buyback_refresh():
         "live_refresh_verified": True,
         "requires_new_scoped_live_refresh_before_action": False,
     }
+
+    errors = validate(payload)
+
+    assert "historical buyback control freshness must remain stamped" in errors
+
+
+def test_incomplete_audit_accepts_a_different_dynamic_live_universe_size():
+    payload = complete_payload()
+    current = payload["current_buyback_coverage"]
+    current["row_count"] = 81
+    current["summary"].update({
+        "exact_account_rows": 81,
+        "personal_rows": 33,
+        "darkcell_rows": 48,
+        "current_one_share_rows": 47,
+        "below_20000_sek_rows": 76,
+        "percentage_not_set_rows": 72,
+    })
+    current["summary"]["buyback_coverage_state_counts"]["LEDGER_ONLY"] = 65
+    current["summary"]["low_exposure_decision_counts"]["INTENTIONAL_MARKER_OR_CORE_HOLD"] = 64
 
     assert validate(payload) == []
 
@@ -278,7 +352,9 @@ def completed_contract_payload():
     })
     for row in payload["strategy_audit_coverage"]["audits"]:
         row["current_run_status"] = "RECORDED_WITH_ZERO_RELEVANT_DRIFT_OR_ERROR"
-    for control in payload["portfolio_control_coverage"].values():
+    for name, control in payload["portfolio_control_coverage"].items():
+        if name == "buyback":
+            continue
         control["freshness"].update({
             "live_state_current": True,
             "live_refresh_verified": True,
@@ -302,6 +378,10 @@ def completed_contract_payload():
         "terminal_rows_in_active_section": 0,
     })
     payload["catalyst_coverage"]["requires_new_scoped_live_refresh_before_action"] = False
+    payload["current_buyback_coverage"]["summary"]["low_exposure_decision_counts"].update({
+        "INTENTIONAL_MARKER_OR_CORE_HOLD": 58,
+        "REPAIR_REQUIRED": 0,
+    })
     payload["completion_blockers"] = []
     for row in payload["requirements"]:
         row["status"] = "COMPLETED"
@@ -358,6 +438,15 @@ def test_completion_audit_rejects_missing_buyback_coverage():
     errors = validate(payload)
 
     assert "buyback coverage link is missing" in errors
+
+
+def test_completion_audit_rejects_missing_current_dynamic_buyback_coverage():
+    payload = complete_payload()
+    payload.pop("current_buyback_coverage")
+
+    errors = validate(payload)
+
+    assert "current dynamic buyback coverage link is missing" in errors
 
 
 def test_completion_audit_rejects_missing_forward_kpi_coverage():

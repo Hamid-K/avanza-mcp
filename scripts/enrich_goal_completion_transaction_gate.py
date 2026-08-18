@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+try:
+    from scripts.verify_buyback_ladder_artifact import validate_dynamic_live_coverage
+except ModuleNotFoundError:  # Direct script execution resolves sibling modules.
+    from verify_buyback_ladder_artifact import validate_dynamic_live_coverage
+
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT_GLOB = "PORTFOLIO_REQUIREMENT_LEVEL_COMPLETION_AUDIT_*.json"
@@ -20,6 +25,7 @@ SCHEDULER = ROOT / "output" / "PORTFOLIO_SCHEDULER_COVERAGE_AUDIT_20260806.json"
 CATALYST = ROOT / "output" / "PORTFOLIO_CATALYST_COVERAGE_AUDIT_20260806.json"
 BUYBACK = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.json"
 BUYBACK_REPAIR = ROOT / "output" / "PORTFOLIO_BUYBACK_REPAIR_REFRESH_20260806.json"
+DYNAMIC_BUYBACK_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
 STRATEGY = ROOT / "output" / "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER_20260731.json"
 FACTOR = ROOT / "output" / "PORTFOLIO_FACTOR_EXPOSURE_20260731.json"
 PENDING = ROOT / "output" / "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION_20260731.json"
@@ -28,7 +34,7 @@ RISK = ROOT / "output" / "PORTFOLIO_RISK_GOVERNANCE_20260731.json"
 LIVE = ROOT / "output" / "PORTFOLIO_LIVE_RECONCILIATION_20260731_1400.json"
 BUY_GOVERNANCE = ROOT / "output" / "PORTFOLIO_ACTIVE_BUY_GOVERNANCE_AUDIT_20260805.json"
 FORWARD_KPI = ROOT / "output" / "PORTFOLIO_FORWARD_KPI_COVERAGE_AUDIT_20260806.json"
-LIVE_STRATEGY_AUDIT = ROOT / "output" / "PORTFOLIO_PER_ACCOUNT_STRATEGY_AUDIT_LIVE_20260806.json"
+LIVE_STRATEGY_AUDIT_GLOB = "PORTFOLIO_PER_ACCOUNT_STRATEGY_AUDIT_LIVE_[0-9]*.json"
 POSITION_REGISTRY = ROOT / ".avanza_position_strategy.json"
 EXPECTED_SCOPE = [
     {"tenant_session_id": "personal", "account_id": "5227886", "account": "Personal"},
@@ -127,6 +133,61 @@ def latest_audit_path() -> Path:
     return paths[-1]
 
 
+def latest_dynamic_buyback_path() -> Path:
+    paths = sorted((ROOT / "output").glob(DYNAMIC_BUYBACK_GLOB))
+    if not paths:
+        raise FileNotFoundError("no dated dynamic buyback coverage artifact found")
+    return paths[-1]
+
+
+def latest_live_strategy_audit_path() -> Path | None:
+    paths = sorted((ROOT / "output").glob(LIVE_STRATEGY_AUDIT_GLOB))
+    return paths[-1] if paths else None
+
+
+def _current_buyback_link(payload: dict[str, Any], source: str) -> dict[str, Any]:
+    errors = validate_dynamic_live_coverage(payload)
+    rows = payload.get("rows", [])
+    return {
+        "artifact": payload.get("artifact"),
+        "source": source,
+        "generated_at": payload.get("generated_at"),
+        "live_state_as_of": payload.get("live_state_as_of"),
+        "authority": payload.get("authority"),
+        "broker_mutation_authorized": payload.get("broker_mutation_authorized"),
+        "universe_contract": payload.get("universe_contract"),
+        "scope": copy.deepcopy(payload.get("scope", [])),
+        "live_governance": copy.deepcopy(payload.get("live_governance", {})),
+        "row_count": len(rows) if isinstance(rows, list) else None,
+        "summary": copy.deepcopy(payload.get("summary", {})),
+        "validation": {
+            "status": "PASSED" if not errors else "FAILED",
+            "error_count": len(errors),
+            "errors": errors,
+        },
+    }
+
+
+def _live_audit_counts(scopes: list[dict[str, Any]]) -> dict[str, int | None]:
+    def count(tool: str, tenant: str, field: str) -> int | None:
+        for row in scopes:
+            if row.get("tool") == tool and row.get("tenant_session_id") == tenant:
+                value = row.get(field)
+                return int(value) if isinstance(value, (int, float)) else None
+        return None
+
+    return {
+        "personal_positions": count("avanza_position_strategy_audit", "personal", "row_count"),
+        "personal_planned": count("avanza_position_strategy_audit", "personal", "planned_count"),
+        "personal_stops": count("avanza_stoploss_strategy_audit", "personal", "row_count"),
+        "personal_stops_recorded": count("avanza_stoploss_strategy_audit", "personal", "recorded_count"),
+        "darkcell_positions": count("avanza_position_strategy_audit", "darkcell", "row_count"),
+        "darkcell_planned": count("avanza_position_strategy_audit", "darkcell", "planned_count"),
+        "darkcell_stops": count("avanza_stoploss_strategy_audit", "darkcell", "row_count"),
+        "darkcell_stops_recorded": count("avanza_stoploss_strategy_audit", "darkcell", "recorded_count"),
+    }
+
+
 def enrich(
     audit: dict[str, Any],
     transaction: dict[str, Any],
@@ -145,6 +206,8 @@ def enrich(
     buyback_repair: dict[str, Any] | None = None,
     manual_exit_live_reconciliation: dict[str, Any] | None = None,
     position_registry: dict[str, Any] | None = None,
+    current_buyback: dict[str, Any] | None = None,
+    current_buyback_source: str | None = None,
     *,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
@@ -346,6 +409,8 @@ def enrich(
         "buyback": {
             "artifact": "PORTFOLIO_BUYBACK_DAILY_COVERAGE",
             "source": "output/PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.json",
+            "role": "HISTORICAL_STAMPED_SNAPSHOT",
+            "historical_snapshot": True,
             "freshness": buyback.get("freshness", {}),
             "candidate_rows": buyback_universe.get("count"),
             "personal_rows": buyback_universe.get("account_rows", {}).get("personal_5227886"),
@@ -408,8 +473,24 @@ def enrich(
             "freshness": forward_kpi.get("freshness", {}),
         },
     }
+    if current_buyback is not None:
+        enriched["current_buyback_coverage"] = _current_buyback_link(
+            current_buyback,
+            current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json",
+        )
     live_strategy_audit = live_strategy_audit or {}
     live_scopes = live_strategy_audit.get("scopes", [])
+    audit_counts = _live_audit_counts(live_scopes)
+    audit_count_summary = (
+        f"Personal position {audit_counts['personal_positions']}/{audit_counts['personal_planned']} and stops "
+        f"{audit_counts['personal_stops']}/{audit_counts['personal_stops_recorded']}; DarkCell position "
+        f"{audit_counts['darkcell_positions']}/{audit_counts['darkcell_planned']} and stops "
+        f"{audit_counts['darkcell_stops']}/{audit_counts['darkcell_stops_recorded']}"
+    )
+    stop_count_summary = (
+        f"Personal {audit_counts['personal_stops']}/{audit_counts['personal_stops_recorded']} and DarkCell "
+        f"{audit_counts['darkcell_stops']}/{audit_counts['darkcell_stops_recorded']}"
+    )
     holding_only_exception_metadata = _holding_only_exception_metadata(live_strategy_audit, position_registry)
     if live_scopes:
         audit_status = "LIVE_REFRESH_VERIFIED_REVIEW_REQUIRED"
@@ -465,8 +546,9 @@ def enrich(
         if live_scopes:
             control["live_checkpoint_status"] = "CURRENT_SCOPED_LIVE_REFRESH_BUT_OTHER_GATES_OPEN"
             control["live_checkpoint"] = (
-                "Current read-only MCP refresh verified Personal 43 positions / 28 active stops and DarkCell "
-                "64 positions / 26 active stops; both exact stop audits are complete, open orders and raw failed "
+                f"Current read-only MCP refresh verified Personal {audit_counts['personal_positions']} positions / "
+                f"{audit_counts['personal_stops']} active stops and DarkCell {audit_counts['darkcell_positions']} "
+                f"positions / {audit_counts['darkcell_stops']} active stops; both exact stop audits are complete, open orders and raw failed "
                 "orders are zero, and live authorization is off. Transaction, scheduler, catalyst, forward-outcome, "
                 "and holding-only registry gates remain open."
             )
@@ -513,7 +595,7 @@ def enrich(
             "condition_to_close": (
                 "Resolve or formally retain the Personal Avanza Zero 41567 and DarkCell Newmont 3968 / Shopify 564535 "
                 "holding-only registry exceptions, then rerun both exact audits before a clean result. Stop audits are "
-                "already complete at Personal 28/28 and DarkCell 26/26 with zero stop/order/raw errors."
+                f"already complete at {stop_count_summary} with zero stop/order/raw errors."
                 if live_scopes
                 else "Refresh both exact tenant sessions, run avanza_position_strategy_audit and avanza_stoploss_strategy_audit "
                 "separately for Personal 5227886 and DarkCell 7616265, and reconcile every audit result to the strategy "
@@ -585,8 +667,7 @@ def enrich(
             row["evidence"] = _append_once(
                 row.get("evidence"),
                 (
-                    "Separate per-account position and stop audits were run after the live refresh: Personal position "
-                    "43/43 and stops 28/28; DarkCell position 64/64 and stops 26/26. Stop/order/raw-error drift is "
+                    f"Separate per-account position and stop audits were run after the live refresh: {audit_count_summary}. Stop/order/raw-error drift is "
                     "zero; position audits remain review-required only for the three acknowledged holding-only exceptions."
                     if live_scopes
                     else "Separate per-account position and stop audit calls are represented as a required control, but the current bridge session is unavailable and the four exact audits have not run."
@@ -620,8 +701,8 @@ def enrich(
                 )
             if row.get("id") == "R4" and live_scopes:
                 row["evidence"] = (
-                    "Retained-core and 3x full-friction rules remain binding; stop metadata is complete at Personal 28/28 and DarkCell 26/26; no regular open orders, raw failures, or protection gaps were read; the August manual-exit lifecycle remains observation-only. "
-                    "Separate per-account position and stop audits were run after the live refresh: Personal position 43/43 and stops 28/28; DarkCell position 64/64 and stops 26/26. Stop/order/raw-error drift is zero; position audits remain review-required only for the three acknowledged holding-only exceptions."
+                    f"Retained-core and 3x full-friction rules remain binding; stop metadata is complete at {stop_count_summary}; no regular open orders, raw failures, or protection gaps were read; the August manual-exit lifecycle remains observation-only. "
+                    f"Separate per-account position and stop audits were run after the live refresh: {audit_count_summary}. Stop/order/raw-error drift is zero; position audits remain review-required only for the three acknowledged holding-only exceptions."
                 )
                 row["remaining_proof"] = (
                     "Future fills and lifecycle observations are required to prove realized behavior. "
@@ -649,8 +730,15 @@ def main() -> int:
     buy_governance = json.loads(BUY_GOVERNANCE.read_text(encoding="utf-8"))
     forward_kpi = json.loads(FORWARD_KPI.read_text(encoding="utf-8"))
     buyback_repair = json.loads(BUYBACK_REPAIR.read_text(encoding="utf-8")) if BUYBACK_REPAIR.exists() else {}
+    current_buyback_path = latest_dynamic_buyback_path()
+    current_buyback = json.loads(current_buyback_path.read_text(encoding="utf-8"))
     manual_exit_live_reconciliation = json.loads(MANUAL_EXIT_LIVE.read_text(encoding="utf-8")) if MANUAL_EXIT_LIVE.exists() else {}
-    live_strategy_audit = json.loads(LIVE_STRATEGY_AUDIT.read_text(encoding="utf-8")) if LIVE_STRATEGY_AUDIT.exists() else {}
+    live_strategy_audit_path = latest_live_strategy_audit_path()
+    live_strategy_audit = (
+        json.loads(live_strategy_audit_path.read_text(encoding="utf-8"))
+        if live_strategy_audit_path is not None
+        else {}
+    )
     position_registry = json.loads(POSITION_REGISTRY.read_text(encoding="utf-8")) if POSITION_REGISTRY.exists() else {}
     audit_path.write_text(
         json.dumps(
@@ -672,6 +760,8 @@ def main() -> int:
                 buyback_repair,
                 manual_exit_live_reconciliation,
                 position_registry=position_registry,
+                current_buyback=current_buyback,
+                current_buyback_source=f"output/{current_buyback_path.name}",
             ),
             indent=2,
         )
