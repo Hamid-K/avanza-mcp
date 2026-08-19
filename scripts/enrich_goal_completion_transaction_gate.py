@@ -12,9 +12,19 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 try:
-    from scripts.verify_buyback_ladder_artifact import validate_dynamic_live_coverage
+    from scripts.verify_buyback_ladder_artifact import (
+        sold_marker_dynamic_reconciliation_rows,
+        validate_dynamic_against_sold_marker_recovery,
+        validate_dynamic_live_coverage,
+        validate_sold_marker_remediation,
+    )
 except ModuleNotFoundError:  # Direct script execution resolves sibling modules.
-    from verify_buyback_ladder_artifact import validate_dynamic_live_coverage
+    from verify_buyback_ladder_artifact import (
+        sold_marker_dynamic_reconciliation_rows,
+        validate_dynamic_against_sold_marker_recovery,
+        validate_dynamic_live_coverage,
+        validate_sold_marker_remediation,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +36,7 @@ CATALYST = ROOT / "output" / "PORTFOLIO_CATALYST_COVERAGE_AUDIT_20260806.json"
 BUYBACK = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.json"
 BUYBACK_REPAIR = ROOT / "output" / "PORTFOLIO_BUYBACK_REPAIR_REFRESH_20260806.json"
 DYNAMIC_BUYBACK_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
+SOLD_MARKER_REMEDIATION_GLOB = "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.json"
 STRATEGY = ROOT / "output" / "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER_20260731.json"
 FACTOR = ROOT / "output" / "PORTFOLIO_FACTOR_EXPOSURE_20260731.json"
 PENDING = ROOT / "output" / "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION_20260731.json"
@@ -94,6 +105,7 @@ def _holding_only_exception_metadata(
             "tenant_session_id": tenant,
             "account_id": account,
             "orderbook_id": orderbook,
+            "instrument": position.get("instrument") or position.get("broker_instrument"),
             "kind": metadata.get("kind"),
             "owner": metadata.get("owner"),
             "reason": metadata.get("reason"),
@@ -140,6 +152,13 @@ def latest_dynamic_buyback_path() -> Path:
     return paths[-1]
 
 
+def latest_sold_marker_remediation_path() -> Path:
+    paths = sorted((ROOT / "output").glob(SOLD_MARKER_REMEDIATION_GLOB))
+    if not paths:
+        raise FileNotFoundError("no dated sold-marker remediation artifact found")
+    return paths[-1]
+
+
 def latest_live_strategy_audit_path() -> Path | None:
     paths = sorted((ROOT / "output").glob(LIVE_STRATEGY_AUDIT_GLOB))
     return paths[-1] if paths else None
@@ -161,6 +180,40 @@ def _current_buyback_link(payload: dict[str, Any], source: str) -> dict[str, Any
         "row_count": len(rows) if isinstance(rows, list) else None,
         "summary": copy.deepcopy(payload.get("summary", {})),
         "validation": {
+            "status": "PASSED" if not errors else "FAILED",
+            "error_count": len(errors),
+            "errors": errors,
+        },
+    }
+
+
+def _current_sold_marker_recovery_link(
+    payload: dict[str, Any],
+    source: str,
+    current_buyback: dict[str, Any],
+    current_buyback_source: str,
+) -> dict[str, Any]:
+    errors = validate_sold_marker_remediation(payload)
+    errors.extend(validate_dynamic_against_sold_marker_recovery(current_buyback, payload))
+    errors = list(dict.fromkeys(errors))
+    return {
+        "artifact": payload.get("artifact"),
+        "source": source,
+        "generated_at": payload.get("generated_at"),
+        "verified_at": payload.get("verified_at"),
+        "path_snapshot_at": payload.get("path_snapshot_at"),
+        "status": payload.get("status"),
+        "authority": copy.deepcopy(payload.get("authority", {})),
+        "sources": copy.deepcopy(payload.get("sources", [])),
+        "summary": copy.deepcopy(payload.get("summary", {})),
+        "controls": copy.deepcopy(payload.get("controls", [])),
+        "row_count": len(payload.get("rows", [])) if isinstance(payload.get("rows"), list) else None,
+        "rows": copy.deepcopy(payload.get("rows", [])),
+        "dynamic_reconciliation": {
+            "source": current_buyback_source,
+            "generated_at": current_buyback.get("generated_at"),
+            "row_count": len(payload.get("rows", [])) if isinstance(payload.get("rows"), list) else None,
+            "rows": sold_marker_dynamic_reconciliation_rows(current_buyback, payload),
             "status": "PASSED" if not errors else "FAILED",
             "error_count": len(errors),
             "errors": errors,
@@ -209,6 +262,8 @@ def enrich(
     current_buyback: dict[str, Any] | None = None,
     current_buyback_source: str | None = None,
     *,
+    sold_marker_recovery: dict[str, Any] | None = None,
+    sold_marker_recovery_source: str | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     # Do not mutate the caller's nested requirement/blocker rows.  The verifier
@@ -478,6 +533,13 @@ def enrich(
             current_buyback,
             current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json",
         )
+    if sold_marker_recovery is not None and current_buyback is not None:
+        enriched["current_sold_marker_recovery"] = _current_sold_marker_recovery_link(
+            sold_marker_recovery,
+            sold_marker_recovery_source or "output/PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_LATEST.json",
+            current_buyback,
+            current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json",
+        )
     live_strategy_audit = live_strategy_audit or {}
     live_scopes = live_strategy_audit.get("scopes", [])
     audit_counts = _live_audit_counts(live_scopes)
@@ -492,6 +554,31 @@ def enrich(
         f"{audit_counts['darkcell_stops']}/{audit_counts['darkcell_stops_recorded']}"
     )
     holding_only_exception_metadata = _holding_only_exception_metadata(live_strategy_audit, position_registry)
+    holding_only_exception_count = int(holding_only_exception_metadata.get("count", 0) or 0)
+    holding_only_exception_labels = ", ".join(
+        f"{entry.get('instrument') or entry.get('orderbook_id')} {entry.get('orderbook_id')}"
+        for entry in holding_only_exception_metadata.get("entries", [])
+        if isinstance(entry, dict)
+    )
+    position_audits = {
+        str(row.get("tenant_session_id") or ""): row
+        for row in live_scopes
+        if isinstance(row, dict) and row.get("tool") == "avanza_position_strategy_audit"
+    }
+    stop_audits = {
+        str(row.get("tenant_session_id") or ""): row
+        for row in live_scopes
+        if isinstance(row, dict) and row.get("tool") == "avanza_stoploss_strategy_audit"
+    }
+    protection_repair_count = sum(
+        int(row.get("protection_repair_required_count", 0) or 0)
+        for row in position_audits.values()
+    )
+    protection_repair_labels = ", ".join(
+        f"{tenant}:{orderbook_id}"
+        for tenant, row in position_audits.items()
+        for orderbook_id in row.get("protection_repair_required_orderbook_ids", [])
+    )
     if live_scopes:
         audit_status = "LIVE_REFRESH_VERIFIED_REVIEW_REQUIRED"
         audit_live_refresh_verified = True
@@ -531,6 +618,21 @@ def enrich(
         "holding_only_exception_metadata": holding_only_exception_metadata,
         "required_action": audit_action,
     }
+    if live_scopes:
+        control = enriched.setdefault("current_control_state", {})
+        for tenant, field in (("personal", "personal"), ("darkcell", "darkcell")):
+            position = position_audits.get(tenant, {})
+            stop = stop_audits.get(tenant, {})
+            repairs = int(position.get("protection_repair_required_count", 0) or 0)
+            repair_ids = ", ".join(str(value) for value in position.get("protection_repair_required_orderbook_ids", [])) or "none"
+            control[field] = (
+                f"{position.get('row_count')} positions; {position.get('planned_count')} planned / "
+                f"{position.get('recorded_count')} recorded; {position.get('acknowledged_mismatch_count', 0)} acknowledged "
+                f"holding-only exception(s); {stop.get('row_count')}/{stop.get('recorded_count')} stop metadata; "
+                f"{repairs} protection repair(s) ({repair_ids}); zero unresolved position mismatch and stop/order errors."
+            )
+        if current_buyback is not None and isinstance(current_buyback.get("rows"), list):
+            control["buyback_candidates"] = len(current_buyback["rows"])
     refresh_required = any(
         coverage.get("requires_new_scoped_live_refresh_before_action") is True
         for coverage in (
@@ -550,7 +652,7 @@ def enrich(
                 f"{audit_counts['personal_stops']} active stops and DarkCell {audit_counts['darkcell_positions']} "
                 f"positions / {audit_counts['darkcell_stops']} active stops; both exact stop audits are complete, open orders and raw failed "
                 "orders are zero, and live authorization is off. Transaction, scheduler, catalyst, forward-outcome, "
-                "and holding-only registry gates remain open."
+                "holding-only registry, and complete-path sold-marker recovery gates remain open."
             )
         else:
             control["live_checkpoint_status"] = "STAMPED_SNAPSHOT_REQUIRES_NEW_SCOPED_REFRESH"
@@ -559,7 +661,11 @@ def enrich(
                 "the operator-controlled MCP session is unavailable for a current refresh."
             )
     transaction_live = transaction.get("status") == "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP"
-    blockers = [row for row in enriched.get("completion_blockers", []) if row.get("id") not in {"B4", "B5", "B6"}]
+    blockers = [
+        row
+        for row in enriched.get("completion_blockers", [])
+        if row.get("id") not in {"B4", "B5", "B6", "B11"}
+    ]
     blockers.append(
         {
             "id": "B4",
@@ -588,13 +694,15 @@ def enrich(
             "id": "B6",
             "type": "PER_ACCOUNT_STRATEGY_AUDIT_GAP",
             "item": (
-                "Position audits remain review-required for acknowledged holding-only registry exceptions"
+                f"Position audits retain {protection_repair_count} protection repairs and "
+                f"{holding_only_exception_count} acknowledged holding-only registry exceptions"
                 if live_scopes
                 else "Separate position-strategy and stop-loss-strategy audits for both exact tenant/account scopes"
             ),
             "condition_to_close": (
-                "Resolve or formally retain the Personal Avanza Zero 41567 and DarkCell Newmont 3968 / Shopify 564535 "
-                "holding-only registry exceptions, then rerun both exact audits before a clean result. Stop audits are "
+                f"Close the protection repair identities ({protection_repair_labels}) and resolve or formally retain the "
+                f"{holding_only_exception_count} holding-only registry exceptions ({holding_only_exception_labels}), then rerun both "
+                "exact audits before a clean result. Stop audits are "
                 f"already complete at {stop_count_summary} with zero stop/order/raw errors."
                 if live_scopes
                 else "Refresh both exact tenant sessions, run avanza_position_strategy_audit and avanza_stoploss_strategy_audit "
@@ -603,6 +711,36 @@ def enrich(
             ),
         }
     )
+    sold_marker_link = enriched.get("current_sold_marker_recovery", {})
+    sold_marker_summary = sold_marker_link.get("summary", {})
+    sold_marker_validation = sold_marker_link.get("dynamic_reconciliation", {})
+    sold_marker_open = any(
+        int(sold_marker_summary.get(field, 0) or 0) > 0
+        for field in (
+            "repair_required_missed_path_rows",
+            "percentage_not_set_open_rows",
+            "open_material_rows",
+            "remaining_open_quantity_across_material_rows",
+        )
+    )
+    if sold_marker_validation.get("status") != "PASSED" or sold_marker_open:
+        enriched["completion_blockers"].append(
+            {
+                "id": "B11",
+                "type": "SOLD_MARKER_PATH_RECOVERY_GAP",
+                "item": (
+                    f"Complete-path sold-marker audit retains "
+                    f"{int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
+                    f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
+                    f"and {int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial recovery rows"
+                ),
+                "condition_to_close": (
+                    "Reconcile the complete authenticated post-sale path to the latest dynamic buyback ledger and live position audit. "
+                    "Close every exact open quantity through a qualifying same-sale recovery, an explicit partial/no-reentry decision, "
+                    "or a supported stock-specific ladder; a rebound or latest quote cannot erase a crossed unserved stage."
+                ),
+            }
+        )
     for row in enriched.get("requirements", []):
         if row.get("id") == "R1":
             if transaction_live:
@@ -668,7 +806,8 @@ def enrich(
                 row.get("evidence"),
                 (
                     f"Separate per-account position and stop audits were run after the live refresh: {audit_count_summary}. Stop/order/raw-error drift is "
-                    "zero; position audits remain review-required only for the three acknowledged holding-only exceptions."
+                    f"zero; position audits retain {protection_repair_count} protection repairs and "
+                    f"{holding_only_exception_count} acknowledged holding-only exceptions."
                     if live_scopes
                     else "Separate per-account position and stop audit calls are represented as a required control, but the current bridge session is unavailable and the four exact audits have not run."
                 ),
@@ -683,11 +822,26 @@ def enrich(
                     else (),
                 ),
                 (
-                    "Resolve or formally retain the three holding-only registry exceptions, then rerun both audits before a clean result."
+                    f"Close {protection_repair_count} protection repairs, resolve or formally retain the "
+                    f"{holding_only_exception_count} holding-only registry exceptions, then rerun both audits before a clean result."
                     if live_scopes
                     else "Run and reconcile both audit tools separately for both exact tenant/account scopes after the live refresh."
                 ),
             )
+            if sold_marker_link:
+                row["evidence"] = _append_once(
+                    row.get("evidence"),
+                    (
+                        "The latest complete-path sold-marker remediation is linked to the current dynamic buyback ledger; "
+                        f"it retains {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
+                        f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
+                        f"and {int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows without allowing a rebound to erase them."
+                    ),
+                )
+                row["remaining_proof"] = _append_once(
+                    row.get("remaining_proof"),
+                    "Close blocker B11 with exact full-path recovery or explicit partial/no-reentry evidence; latest-quote status alone is insufficient.",
+                )
     if transaction_live or live_scopes:
         for row in enriched.get("requirements", []):
             if row.get("id") == "R1" and transaction_live:
@@ -702,15 +856,34 @@ def enrich(
             if row.get("id") == "R4" and live_scopes:
                 row["evidence"] = (
                     f"Retained-core and 3x full-friction rules remain binding; stop metadata is complete at {stop_count_summary}; no regular open orders, raw failures, or protection gaps were read; the August manual-exit lifecycle remains observation-only. "
-                    f"Separate per-account position and stop audits were run after the live refresh: {audit_count_summary}. Stop/order/raw-error drift is zero; position audits remain review-required only for the three acknowledged holding-only exceptions."
+                    f"Separate per-account position and stop audits were run after the live refresh: {audit_count_summary}. Stop/order/raw-error drift is zero; "
+                    f"position audits retain {protection_repair_count} protection repairs and {holding_only_exception_count} acknowledged holding-only exceptions."
                 )
                 row["remaining_proof"] = (
                     "Future fills and lifecycle observations are required to prove realized behavior. "
-                    "Resolve or formally retain the three holding-only registry exceptions, then rerun both audits before a clean result."
+                    f"Close {protection_repair_count} protection repairs, resolve or formally retain the "
+                    f"{holding_only_exception_count} holding-only registry exceptions, then rerun both audits before a clean result."
                 )
             for field in ("evidence", "remaining_proof"):
                 if field in row:
                     row[field] = _canonical_text(row[field]).replace(";;z", "")
+    if sold_marker_link:
+        for row in enriched.get("requirements", []):
+            if row.get("id") != "R4":
+                continue
+            row["evidence"] = _append_once(
+                row.get("evidence"),
+                (
+                    "The latest complete-path sold-marker remediation is linked to the current dynamic buyback ledger; "
+                    f"it retains {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
+                    f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
+                    f"and {int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows without allowing a rebound to erase them."
+                ),
+            )
+            row["remaining_proof"] = _append_once(
+                row.get("remaining_proof"),
+                "Close blocker B11 with exact full-path recovery or explicit partial/no-reentry evidence; latest-quote status alone is insufficient.",
+            )
     return enriched
 
 
@@ -732,6 +905,8 @@ def main() -> int:
     buyback_repair = json.loads(BUYBACK_REPAIR.read_text(encoding="utf-8")) if BUYBACK_REPAIR.exists() else {}
     current_buyback_path = latest_dynamic_buyback_path()
     current_buyback = json.loads(current_buyback_path.read_text(encoding="utf-8"))
+    sold_marker_recovery_path = latest_sold_marker_remediation_path()
+    sold_marker_recovery = json.loads(sold_marker_recovery_path.read_text(encoding="utf-8"))
     manual_exit_live_reconciliation = json.loads(MANUAL_EXIT_LIVE.read_text(encoding="utf-8")) if MANUAL_EXIT_LIVE.exists() else {}
     live_strategy_audit_path = latest_live_strategy_audit_path()
     live_strategy_audit = (
@@ -762,6 +937,8 @@ def main() -> int:
                 position_registry=position_registry,
                 current_buyback=current_buyback,
                 current_buyback_source=f"output/{current_buyback_path.name}",
+                sold_marker_recovery=sold_marker_recovery,
+                sold_marker_recovery_source=f"output/{sold_marker_recovery_path.name}",
             ),
             indent=2,
         )

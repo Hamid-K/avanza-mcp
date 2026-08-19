@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +167,223 @@ def _validate_current_buyback_link(
         _require(pending_cleanup == 0, "completed goal retains pending buyback cleanup rows", errors)
 
 
+def _artifact_time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sold_marker_has_open_work(payload: dict[str, Any]) -> bool:
+    summary = payload.get("current_sold_marker_recovery", {}).get("summary", {})
+    return any(
+        int(summary.get(field, 0) or 0) > 0
+        for field in (
+            "repair_required_missed_path_rows",
+            "percentage_not_set_open_rows",
+            "open_material_rows",
+            "remaining_open_quantity_across_material_rows",
+        )
+    )
+
+
+def _sold_marker_repair_ids(payload: dict[str, Any]) -> dict[str, list[str]]:
+    rows = payload.get("current_sold_marker_recovery", {}).get("rows", [])
+    return {
+        tenant: sorted(
+            str(row.get("orderbook_id"))
+            for row in rows
+            if isinstance(row, dict)
+            and row.get("tenant_session_id") == tenant
+            and str(row.get("state") or "").startswith("REPAIR_REQUIRED")
+        )
+        for tenant in ("personal", "darkcell")
+    }
+
+
+def _validate_sold_marker_strategy_reconciliation(payload: dict[str, Any], errors: list[str]) -> None:
+    audit = payload.get("strategy_audit_coverage", {})
+    if audit.get("live_refresh_verified") is not True:
+        return
+    expected = _sold_marker_repair_ids(payload)
+    position_rows = {
+        str(row.get("tenant_session_id") or ""): row
+        for row in audit.get("audits", [])
+        if isinstance(row, dict) and row.get("tool") == "avanza_position_strategy_audit"
+    }
+    for tenant in ("personal", "darkcell"):
+        row = position_rows.get(tenant, {})
+        actual = sorted(str(value) for value in row.get("protection_repair_required_orderbook_ids", []))
+        _require(
+            actual == expected[tenant]
+            and row.get("protection_repair_required_count") == len(expected[tenant]),
+            f"{tenant} position repair identities contradict complete-path sold-marker evidence",
+            errors,
+        )
+
+
+def _validate_sold_marker_recovery_link(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    require_clean: bool,
+) -> None:
+    """Require complete-path recovery evidence to supersede a rebound snapshot."""
+
+    current = payload.get("current_sold_marker_recovery", {})
+    summary = current.get("summary", {})
+    authority = current.get("authority", {})
+    rows = current.get("rows", [])
+    reconciliation = current.get("dynamic_reconciliation", {})
+    controls = current.get("controls", [])
+
+    _require(
+        current.get("artifact") == "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE",
+        "current sold-marker recovery link is missing",
+        errors,
+    )
+    _require(
+        "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_" in str(current.get("source") or ""),
+        "current sold-marker recovery source is invalid",
+        errors,
+    )
+    _require(bool(str(current.get("generated_at") or "").strip()), "current sold-marker recovery generated_at missing", errors)
+    _require(bool(str(current.get("path_snapshot_at") or "").strip()), "current sold-marker path snapshot missing", errors)
+    _require(authority.get("broker_mutation") is False, "current sold-marker broker mutation must be false", errors)
+    _require(authority.get("paper_mutation") is False, "current sold-marker paper mutation must be false", errors)
+    _require(authority.get("trade_authority") is False, "current sold-marker trade authority must be false", errors)
+    _require(
+        any("PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_" in str(source) for source in current.get("sources", [])),
+        "current sold-marker recovery must cite complete-path evidence",
+        errors,
+    )
+    _require(isinstance(rows, list), "current sold-marker recovery rows must be a list", errors)
+    if not isinstance(rows, list):
+        return
+    _require(current.get("row_count") == len(rows), "current sold-marker recovery row count mismatch", errors)
+
+    keys = [
+        (
+            str(row.get("tenant_session_id") or ""),
+            str(row.get("account_id") or ""),
+            str(row.get("orderbook_id") or ""),
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    _require(len(keys) == len(rows), "current sold-marker recovery contains a non-object row", errors)
+    _require(len(keys) == len(set(keys)), "current sold-marker recovery contains duplicate rows", errors)
+    repair_rows = [row for row in rows if str(row.get("state") or "").startswith("REPAIR_REQUIRED")]
+    percentage_gap_rows = [row for row in rows if row.get("state") == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"]
+    partial_rows = [row for row in rows if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")]
+    no_reentry_rows = [row for row in rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"]
+    open_rows = [row for row in rows if int(row.get("remaining_open_quantity", 0) or 0) > 0]
+    remaining = sum(int(row.get("remaining_open_quantity", 0) or 0) for row in rows)
+    _require(summary.get("repair_required_missed_path_rows") == len(repair_rows), "current sold-marker repair count mismatch", errors)
+    _require(summary.get("percentage_not_set_open_rows") == len(percentage_gap_rows), "current sold-marker unsupported count mismatch", errors)
+    _require(summary.get("partial_sale_attributed_active_rows") == len(partial_rows), "current sold-marker partial count mismatch", errors)
+    _require(summary.get("explicit_no_reentry_rows") == len(no_reentry_rows), "current sold-marker no-reentry count mismatch", errors)
+    _require(summary.get("open_material_rows") == len(open_rows), "current sold-marker open-row count mismatch", errors)
+    _require(summary.get("remaining_open_quantity_across_material_rows") == remaining, "current sold-marker quantity mismatch", errors)
+    _require(
+        summary.get("all_path_active_buy_attribution_gaps_after_registry_correction") == 0,
+        "current sold-marker recovery retains attribution gaps",
+        errors,
+    )
+    _require(
+        summary.get("silent_active_buy_attribution_gaps_in_material_rows") == 0,
+        "current sold-marker recovery retains silent material gaps",
+        errors,
+    )
+    _require(summary.get("broker_mutations") == 0, "current sold-marker recovery must record zero broker mutations", errors)
+
+    control_text = " ".join(str(control).lower() for control in controls if isinstance(control, str))
+    for phrase in (
+        "complete authenticated price path",
+        "rebound never erases",
+        "durable metadata identifies the exact account",
+        "percentage_not_set is fail-closed",
+        "8 percent sold-marker drawdown is a mandatory review alarm",
+        "do not chase a rebound",
+    ):
+        _require(phrase in control_text, f"current sold-marker control missing: {phrase}", errors)
+
+    current_buyback = payload.get("current_buyback_coverage", {})
+    _require(
+        reconciliation.get("source") == current_buyback.get("source"),
+        "sold-marker reconciliation does not use the current dynamic buyback source",
+        errors,
+    )
+    _require(reconciliation.get("status") == "PASSED", "sold-marker dynamic reconciliation did not pass", errors)
+    _require(
+        reconciliation.get("error_count") == 0 and reconciliation.get("errors") == [],
+        "sold-marker dynamic reconciliation has errors",
+        errors,
+    )
+    reconciliation_rows = reconciliation.get("rows", [])
+    _require(isinstance(reconciliation_rows, list), "sold-marker dynamic reconciliation rows missing", errors)
+    if not isinstance(reconciliation_rows, list):
+        return
+    _require(reconciliation.get("row_count") == len(rows) == len(reconciliation_rows), "sold-marker reconciliation count mismatch", errors)
+    reconciliation_by_key = {
+        (
+            str(row.get("tenant_session_id") or ""),
+            str(row.get("account_id") or ""),
+            str(row.get("orderbook_id") or ""),
+        ): row
+        for row in reconciliation_rows
+        if isinstance(row, dict)
+    }
+    _require(set(reconciliation_by_key) == set(keys), "sold-marker reconciliation identities mismatch", errors)
+    for recovery in rows:
+        if not isinstance(recovery, dict):
+            continue
+        key = (
+            str(recovery.get("tenant_session_id") or ""),
+            str(recovery.get("account_id") or ""),
+            str(recovery.get("orderbook_id") or ""),
+        )
+        dynamic = reconciliation_by_key.get(key, {})
+        state = str(recovery.get("state") or "")
+        _require(dynamic.get("dynamic_row_found") is True, f"sold-marker dynamic row missing for {key}", errors)
+        _require(
+            dynamic.get("dynamic_active_buy_volume") == recovery.get("sale_attributed_active_buy_quantity"),
+            f"sold-marker dynamic active BUY attribution mismatch for {key}",
+            errors,
+        )
+        if state.startswith("REPAIR_REQUIRED"):
+            _require(
+                dynamic.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED"
+                and dynamic.get("dynamic_low_exposure_decision") == "REPAIR_REQUIRED"
+                and dynamic.get("dynamic_protection_classification") == "REPAIR_REQUIRED",
+                f"sold-marker missed path is not retained as REPAIR_REQUIRED for {key}",
+                errors,
+            )
+        elif state == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET":
+            _require(
+                dynamic.get("dynamic_buyback_coverage_state") == "LADDER_GAP"
+                and dynamic.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
+                f"sold-marker unsupported material path is not retained as LADDER_GAP for {key}",
+                errors,
+            )
+
+    current_generated = _artifact_time(current.get("generated_at"))
+    dynamic_generated = _artifact_time(reconciliation.get("generated_at"))
+    _require(current_generated is not None, "current sold-marker recovery timestamp is invalid", errors)
+    _require(dynamic_generated is not None, "sold-marker dynamic reconciliation timestamp is invalid", errors)
+    if current_generated is not None and dynamic_generated is not None:
+        _require(dynamic_generated >= current_generated, "dynamic buyback coverage predates sold-marker remediation", errors)
+
+    if require_clean:
+        for field in (
+            "repair_required_missed_path_rows",
+            "percentage_not_set_open_rows",
+            "open_material_rows",
+            "remaining_open_quantity_across_material_rows",
+        ):
+            _require(int(summary.get(field, 0) or 0) == 0, f"completed goal retains sold-marker work in {field}", errors)
+
+
 def _validate_completed(payload: dict[str, Any]) -> list[str]:
     """Validate the positive completion contract after live evidence exists."""
 
@@ -193,6 +411,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     _validate_current_buyback_link(payload, errors, require_clean=True)
+    _validate_sold_marker_recovery_link(payload, errors, require_clean=True)
 
     audit_coverage = payload.get("strategy_audit_coverage", {})
     _require(
@@ -220,6 +439,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
         "every exact position and stop audit must be recorded with zero relevant drift or error",
         errors,
     )
+    _validate_sold_marker_strategy_reconciliation(payload, errors)
 
     strategy = payload.get("strategy_coverage", {})
     _require(strategy.get("unique_instruments") == 65, "strategy coverage must report 65 instruments", errors)
@@ -415,6 +635,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
                 f"holding-only exception metadata is incomplete for {entry.get('orderbook_id')}",
                 errors,
             )
+    _validate_sold_marker_strategy_reconciliation(payload, errors)
 
     control = payload.get("current_control_state", {})
     _require(control.get("broker_mutation") is False, "current broker mutation flag must be false", errors)
@@ -426,6 +647,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     _validate_current_buyback_link(payload, errors, require_clean=False)
+    _validate_sold_marker_recovery_link(payload, errors, require_clean=False)
 
     strategy = payload.get("strategy_coverage", {})
     _require(strategy.get("artifact") == "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER", "strategy coverage link is missing", errors)
@@ -703,6 +925,12 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         "per-account strategy audit blocker B6 must remain explicit",
         errors,
     )
+    if _sold_marker_has_open_work(payload):
+        _require(
+            any(str(blocker.get("id")) == "B11" for blocker in blockers if isinstance(blocker, dict)),
+            "complete-path sold-marker blocker B11 must remain explicit",
+            errors,
+        )
     if int(scheduler.get("terminal_rows_in_active_section", 0) or 0) > 0:
         _require(
             any(str(blocker.get("id")) == "B5" for blocker in blockers if isinstance(blocker, dict)),

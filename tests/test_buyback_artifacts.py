@@ -1,5 +1,6 @@
 import copy
 import json
+from collections import Counter
 from pathlib import Path
 
 from scripts.build_buyback_daily_coverage_json import (
@@ -10,11 +11,15 @@ from scripts.build_buyback_daily_coverage_json import (
 )
 from scripts.verify_buyback_ladder_artifact import (
     DYNAMIC_LIVE_GLOB,
+    SOLD_MARKER_REMEDIATION_GLOB,
     PLAN_PATH,
     TABLE_PATH,
     latest_dynamic_coverage_path,
+    latest_sold_marker_remediation_path,
     validate_candidate_rows,
+    validate_dynamic_against_sold_marker_recovery,
     validate_dynamic_live_coverage,
+    validate_sold_marker_remediation,
     validate_staged_row,
     validate_live_refresh,
 )
@@ -149,6 +154,215 @@ def dynamic_buyback_payload():
     }
 
 
+def sold_marker_reconciled_payloads():
+    dynamic = dynamic_buyback_payload()
+    dynamic["generated_at"] = "2026-08-19T00:20:00+02:00"
+    dynamic["live_state_as_of"] = "2026-08-19T00:20:00+02:00"
+    template = dynamic["rows"][1]
+    rows = []
+
+    def add_row(**updates):
+        row = copy.deepcopy(template)
+        row.update(updates)
+        rows.append(row)
+
+    add_row(
+        tenant_session_id="personal",
+        account_id="5227886",
+        account_label="Personal",
+        instrument="Marvell Technology",
+        orderbook_id="3340",
+        selection_reasons=["ONE_SHARE", "BELOW_20000_SEK", "SOLD_SLICE"],
+        current_protection_classification="REPAIR_REQUIRED",
+        low_exposure_decision="REPAIR_REQUIRED",
+        buyback_coverage_state="REPAIR_REQUIRED",
+        target_rebuild_quantity=11,
+        coverage_reason="Complete post-sale path crossed two review bands without service; rebound does not erase the repair.",
+        exact_next_gate="Wait for the event and a fresh regular-session higher low/reclaim; do not chase.",
+    )
+    add_row(
+        tenant_session_id="darkcell",
+        account_id="7616265",
+        account_label="DarkCell",
+        instrument="Fastly A",
+        orderbook_id="956885",
+        selection_reasons=["ONE_SHARE", "BELOW_20000_SEK", "RECENT_SAME_ACCOUNT_SALE"],
+        current_protection_classification="REPAIR_REQUIRED",
+        low_exposure_decision="REPAIR_REQUIRED",
+        buyback_coverage_state="REPAIR_REQUIRED",
+        target_rebuild_quantity=98,
+        stages_percent_below_sold_marker=[11.1, 19.3, 25.4],
+        stage_quantities=[33, 33, 32],
+        latest_recent_sale_date="2026-08-10",
+        coverage_reason="Stage 1 crossed without service; the later reclaim remains REPAIR_REQUIRED.",
+        exact_next_gate="Confirm reclaim persistence and pass every risk, capacity, churn, spread, and friction gate.",
+    )
+    add_row(
+        tenant_session_id="personal",
+        account_id="5227886",
+        account_label="Personal",
+        instrument="SoundHound AI",
+        orderbook_id="1393460",
+        selection_reasons=["BELOW_20000_SEK", "SOLD_SLICE"],
+        current_protection_classification="CORE_HOLD_EXCEPTION",
+        low_exposure_decision="INTENTIONAL_MARKER_OR_CORE_HOLD",
+        buyback_coverage_state="LADDER_GAP",
+        target_rebuild_quantity=158,
+        coverage_reason="Material complete-path gap remains PERCENTAGE_NOT_SET pending stock-specific evidence.",
+        exact_next_gate="Set stages only after support, catalyst, risk, capacity, churn, spread, and friction pass.",
+    )
+    add_row(
+        tenant_session_id="personal",
+        account_id="5227886",
+        account_label="Personal",
+        instrument="Advanced Micro Devices",
+        orderbook_id="529720",
+        selection_reasons=["ONE_SHARE", "BELOW_20000_SEK", "SOLD_SLICE"],
+        active_buy_volume=3,
+        current_protection_classification="MARKER_EXCEPTION",
+        low_exposure_decision="INTENTIONAL_MARKER_OR_CORE_HOLD",
+        buyback_coverage_state="LEDGER_ONLY",
+        target_rebuild_quantity=7,
+        coverage_reason="Sale-attributed active BUY 3 from 2026-07-28 serves part of sold Antal 7; remaining 4 stays open.",
+        exact_next_gate="Keep BUY 3 unchanged; remaining 4 requires a fresh base and full gate clearance.",
+    )
+    add_row(
+        tenant_session_id="darkcell",
+        account_id="7616265",
+        account_label="DarkCell",
+        instrument="Coinbase",
+        orderbook_id="1211627",
+        selection_reasons=["ONE_SHARE", "BELOW_20000_SEK", "SOLD_SLICE"],
+        current_protection_classification="MARKER_EXCEPTION",
+        low_exposure_decision="EXIT_OR_NO_REENTRY_REVIEW",
+        buyback_coverage_state="LEDGER_ONLY",
+        target_rebuild_quantity=None,
+        coverage_reason="Explicit no-reentry decision preserves the marker and closes the sold quantity under the current thesis.",
+        exact_next_gate="Reopen only after a new catalyst, uptrend, risk, capacity, churn, and friction pass.",
+    )
+    dynamic["rows"] = rows
+    dynamic["summary"] = {
+        "exact_account_rows": 5,
+        "personal_rows": 3,
+        "darkcell_rows": 2,
+        "current_one_share_rows": 0,
+        "below_20000_sek_rows": 5,
+        "full_exit_rows": 0,
+        "buyback_coverage_state_counts": dict(Counter(row["buyback_coverage_state"] for row in rows)),
+        "low_exposure_decision_counts": dict(Counter(row["low_exposure_decision"] for row in rows)),
+        "percentage_ladders_with_supported_stages": 1,
+        "percentage_not_set_rows": 4,
+        "pending_r6a_cleanup_rows": 0,
+    }
+    remediation_rows = [
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "instrument": "Marvell Technology",
+            "orderbook_id": "3340",
+            "sale_date": "2026-07-02",
+            "sold_quantity": 11,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 11,
+            "state": "REPAIR_REQUIRED_HISTORICAL_PATH_MISSED",
+        },
+        {
+            "tenant_session_id": "darkcell",
+            "account_id": "7616265",
+            "instrument": "Fastly A",
+            "orderbook_id": "956885",
+            "sale_date": "2026-08-10",
+            "sold_quantity": 98,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 98,
+            "state": "REPAIR_REQUIRED_RECLAIM_OBSERVED_AWAITING_FULL_PREFLIGHT",
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "instrument": "SoundHound AI",
+            "orderbook_id": "1393460",
+            "sale_date": "2026-07-28",
+            "sold_quantity": 316,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 158,
+            "state": "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET",
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "instrument": "Advanced Micro Devices",
+            "orderbook_id": "529720",
+            "sale_date": "2026-07-28",
+            "sold_quantity": 7,
+            "sale_attributed_active_buy_quantity": 3,
+            "remaining_open_quantity": 4,
+            "state": "PARTIAL_SOLD_SLICE_RECOVERY_ACTIVE_DEEP_STAGE",
+        },
+        {
+            "tenant_session_id": "darkcell",
+            "account_id": "7616265",
+            "instrument": "Coinbase",
+            "orderbook_id": "1211627",
+            "sale_date": "2026-07-13",
+            "sold_quantity": 16,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 0,
+            "state": "EXPLICIT_NO_REENTRY_CURRENT_THESIS",
+        },
+    ]
+    remediation = {
+        "artifact": "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE",
+        "schema_version": 1,
+        "status": "ACTIVE_REPAIR_REQUIRED",
+        "generated_at": "2026-08-19T00:10:00+02:00",
+        "verified_at": "2026-08-19T00:15:00+02:00",
+        "path_snapshot_at": "2026-08-19T00:05:00+02:00",
+        "sources": ["output/PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_20260819_0005.json"],
+        "authority": {"broker_mutation": False, "paper_mutation": False, "trade_authority": False},
+        "controls": [
+            "Evaluate the complete authenticated price path after every same-account sale, not only the latest quote.",
+            "A rebound never erases a crossed but unserved stage or an unsupported material-path gap.",
+            "Credit an active BUY only when durable metadata identifies the exact account, sale date or sold slice, intended quantity, and recovery intent.",
+            "PERCENTAGE_NOT_SET is fail-closed and never complete coverage.",
+            "An 8 percent sold-marker drawdown is a mandatory review alarm, not a universal ladder stage.",
+            "Do not chase a rebound to conceal a missed crossing.",
+        ],
+        "summary": {
+            "exact_account_rows_with_prior_same_account_sales": 5,
+            "repair_required_missed_path_rows": 2,
+            "percentage_not_set_open_rows": 1,
+            "partial_sale_attributed_active_rows": 1,
+            "explicit_no_reentry_rows": 1,
+            "open_material_rows": 4,
+            "remaining_open_quantity_across_material_rows": 271,
+            "all_path_active_buy_attribution_gaps_after_registry_correction": 0,
+            "silent_active_buy_attribution_gaps_in_material_rows": 0,
+            "broker_mutations": 0,
+        },
+        "verification": {
+            "personal": {
+                "tenant_session_id": "personal",
+                "account_id": "5227886",
+                "session_authenticated": True,
+                "live_authorization_off": True,
+                "recovery_reachability_unresolved": 0,
+                "position_repair_required_orderbook_ids": ["3340"],
+            },
+            "darkcell": {
+                "tenant_session_id": "darkcell",
+                "account_id": "7616265",
+                "session_authenticated": True,
+                "live_authorization_off": True,
+                "recovery_reachability_unresolved": 0,
+                "position_repair_required_orderbook_ids": ["956885"],
+            },
+        },
+        "rows": remediation_rows,
+    }
+    return dynamic, remediation
+
+
 def test_buyback_validator_defaults_to_current_refresh_artifacts():
     assert PLAN_PATH.name == "PORTFOLIO_BUYBACK_LADDER_LIVE_REFRESH_20260806.json"
     assert TABLE_PATH.name == "PORTFOLIO_BUYBACK_LADDER_TABLE_20260806.md"
@@ -202,6 +416,63 @@ def test_dynamic_buyback_selector_ignores_legacy_recheck_names():
     assert DYNAMIC_LIVE_GLOB == "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
     assert path is not None
     assert "RECHECK" not in path.name
+
+
+def test_sold_marker_recovery_accepts_exact_full_path_reconciliation():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+
+    assert validate_sold_marker_remediation(remediation) == []
+    assert validate_dynamic_against_sold_marker_recovery(dynamic, remediation) == []
+
+
+def test_sold_marker_recovery_rejects_rebound_erasing_missed_marvell_path():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    marvell = next(row for row in dynamic["rows"] if row["orderbook_id"] == "3340")
+    marvell.update({
+        "current_protection_classification": "MARKER_EXCEPTION",
+        "low_exposure_decision": "INTENTIONAL_MARKER_OR_CORE_HOLD",
+        "buyback_coverage_state": "LEDGER_ONLY",
+    })
+    dynamic["summary"]["buyback_coverage_state_counts"] = dict(
+        Counter(row["buyback_coverage_state"] for row in dynamic["rows"])
+    )
+    dynamic["summary"]["low_exposure_decision_counts"] = dict(
+        Counter(row["low_exposure_decision"] for row in dynamic["rows"])
+    )
+
+    errors = validate_dynamic_against_sold_marker_recovery(dynamic, remediation)
+
+    assert any("missed sold-marker path is not REPAIR_REQUIRED" in error for error in errors)
+
+
+def test_sold_marker_recovery_rejects_unsupported_material_path_as_ordinary_ledger():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    soundhound = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
+    soundhound["buyback_coverage_state"] = "LEDGER_ONLY"
+    dynamic["summary"]["buyback_coverage_state_counts"] = dict(
+        Counter(row["buyback_coverage_state"] for row in dynamic["rows"])
+    )
+
+    errors = validate_dynamic_against_sold_marker_recovery(dynamic, remediation)
+
+    assert any("unsupported material sold-marker path is not LADDER_GAP" in error for error in errors)
+
+
+def test_sold_marker_recovery_rejects_dynamic_snapshot_older_than_path_overlay():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    dynamic["generated_at"] = "2026-08-19T00:09:59+02:00"
+
+    errors = validate_dynamic_against_sold_marker_recovery(dynamic, remediation)
+
+    assert "dynamic buyback coverage predates the authoritative sold-marker remediation" in errors
+
+
+def test_sold_marker_selector_is_dated_and_current():
+    path = latest_sold_marker_remediation_path()
+
+    assert SOLD_MARKER_REMEDIATION_GLOB == "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.json"
+    assert path is not None
+    assert "REMEDIATION_LIVE_" in path.name
 
 
 def test_ladder_source_records_the_verified_current_refresh():

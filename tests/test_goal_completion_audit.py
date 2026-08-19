@@ -34,17 +34,18 @@ def current_buyback_coverage():
             "full_exit_rows": 2,
             "buyback_coverage_state_counts": {
                 "LADDER_ACTIVE": 5,
-                "LADDER_DORMANT": 4,
-                "LADDER_GAP": 3,
-                "LEDGER_ONLY": 57,
+                "LADDER_DORMANT": 3,
+                "LADDER_GAP": 1,
+                "LEDGER_ONLY": 58,
                 "NAMED_EXCEPTION": 4,
-                "REPAIR_REQUIRED": 0,
+                "REPAIR_REQUIRED": 2,
             },
             "low_exposure_decision_counts": {
-                "BUILD_REVIEW": 9,
+                "BUILD_REVIEW": 8,
                 "EXIT_OR_NO_REENTRY_REVIEW": 2,
-                "INTENTIONAL_MARKER_OR_CORE_HOLD": 56,
+                "INTENTIONAL_MARKER_OR_CORE_HOLD": 55,
                 "NAMED_EXCEPTION": 4,
+                "NON_STOP_ELIGIBLE": 2,
                 "REPAIR_REQUIRED": 2,
             },
             "percentage_ladders_with_supported_stages": 9,
@@ -52,6 +53,139 @@ def current_buyback_coverage():
             "pending_r6a_cleanup_rows": 0,
         },
         "validation": {"status": "PASSED", "error_count": 0, "errors": []},
+    }
+
+
+def current_sold_marker_recovery():
+    rows = [
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "instrument": "Marvell Technology",
+            "orderbook_id": "3340",
+            "sale_date": "2026-07-02",
+            "sold_quantity": 11,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 11,
+            "state": "REPAIR_REQUIRED_HISTORICAL_PATH_MISSED",
+        },
+        {
+            "tenant_session_id": "darkcell",
+            "account_id": "7616265",
+            "instrument": "Fastly A",
+            "orderbook_id": "956885",
+            "sale_date": "2026-08-10",
+            "sold_quantity": 98,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 98,
+            "state": "REPAIR_REQUIRED_RECLAIM_OBSERVED_AWAITING_FULL_PREFLIGHT",
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "instrument": "SoundHound AI",
+            "orderbook_id": "1393460",
+            "sale_date": "2026-07-28",
+            "sold_quantity": 316,
+            "sale_attributed_active_buy_quantity": 0,
+            "remaining_open_quantity": 158,
+            "state": "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET",
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "instrument": "Advanced Micro Devices",
+            "orderbook_id": "529720",
+            "sale_date": "2026-07-28",
+            "sold_quantity": 7,
+            "sale_attributed_active_buy_quantity": 3,
+            "remaining_open_quantity": 4,
+            "state": "PARTIAL_SOLD_SLICE_RECOVERY_ACTIVE_DEEP_STAGE",
+        },
+    ]
+    reconciliation_rows = [
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "3340",
+            "recovery_state": "REPAIR_REQUIRED_HISTORICAL_PATH_MISSED",
+            "dynamic_row_found": True,
+            "dynamic_buyback_coverage_state": "REPAIR_REQUIRED",
+            "dynamic_low_exposure_decision": "REPAIR_REQUIRED",
+            "dynamic_protection_classification": "REPAIR_REQUIRED",
+            "dynamic_active_buy_volume": 0,
+        },
+        {
+            "tenant_session_id": "darkcell",
+            "account_id": "7616265",
+            "orderbook_id": "956885",
+            "recovery_state": "REPAIR_REQUIRED_RECLAIM_OBSERVED_AWAITING_FULL_PREFLIGHT",
+            "dynamic_row_found": True,
+            "dynamic_buyback_coverage_state": "REPAIR_REQUIRED",
+            "dynamic_low_exposure_decision": "REPAIR_REQUIRED",
+            "dynamic_protection_classification": "REPAIR_REQUIRED",
+            "dynamic_active_buy_volume": 0,
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "1393460",
+            "recovery_state": "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET",
+            "dynamic_row_found": True,
+            "dynamic_buyback_coverage_state": "LADDER_GAP",
+            "dynamic_stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+            "dynamic_active_buy_volume": 0,
+        },
+        {
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "529720",
+            "recovery_state": "PARTIAL_SOLD_SLICE_RECOVERY_ACTIVE_DEEP_STAGE",
+            "dynamic_row_found": True,
+            "dynamic_buyback_coverage_state": "LEDGER_ONLY",
+            "dynamic_stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+            "dynamic_active_buy_volume": 3,
+        },
+    ]
+    return {
+        "artifact": "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE",
+        "source": "output/PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_20260819_0010.json",
+        "generated_at": "2026-08-19T00:10:00+02:00",
+        "verified_at": "2026-08-19T00:15:00+02:00",
+        "path_snapshot_at": "2026-08-19T00:05:00+02:00",
+        "status": "ACTIVE_REPAIR_REQUIRED",
+        "authority": {"broker_mutation": False, "paper_mutation": False, "trade_authority": False},
+        "sources": ["output/PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_20260819_0005.json"],
+        "controls": [
+            "Evaluate the complete authenticated price path after every same-account sale.",
+            "A rebound never erases a crossed but unserved stage.",
+            "Durable metadata identifies the exact account and sale.",
+            "PERCENTAGE_NOT_SET is fail-closed.",
+            "An 8 percent sold-marker drawdown is a mandatory review alarm.",
+            "Do not chase a rebound.",
+        ],
+        "row_count": 4,
+        "summary": {
+            "repair_required_missed_path_rows": 2,
+            "percentage_not_set_open_rows": 1,
+            "partial_sale_attributed_active_rows": 1,
+            "explicit_no_reentry_rows": 0,
+            "open_material_rows": 4,
+            "remaining_open_quantity_across_material_rows": 271,
+            "all_path_active_buy_attribution_gaps_after_registry_correction": 0,
+            "silent_active_buy_attribution_gaps_in_material_rows": 0,
+            "broker_mutations": 0,
+        },
+        "rows": rows,
+        "dynamic_reconciliation": {
+            "source": "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_20260819_0006.json",
+            "generated_at": "2026-08-19T00:20:00+02:00",
+            "row_count": 4,
+            "rows": reconciliation_rows,
+            "status": "PASSED",
+            "error_count": 0,
+            "errors": [],
+        },
     }
 
 
@@ -64,6 +198,7 @@ def complete_payload():
         "broker_mutation": False,
         "registry_mutation": False,
         "current_buyback_coverage": current_buyback_coverage(),
+        "current_sold_marker_recovery": current_sold_marker_recovery(),
         "strategy_audit_coverage": {
             "artifact": "PER_ACCOUNT_STRATEGY_AUDIT_COVERAGE",
             "status": "REQUIRES_NEW_SCOPED_LIVE_REFRESH",
@@ -140,6 +275,7 @@ def complete_payload():
             {"id": "B4", "condition_to_close": "refresh transactions"},
             {"id": "B5", "condition_to_close": "archive"},
             {"id": "B6", "condition_to_close": "run audits"},
+            {"id": "B11", "condition_to_close": "close complete-path sold-marker gaps"},
         ],
         "next_required_checks": [{"date": "2026-08-06", "purpose": "review"}],
         "requirements": [
@@ -179,8 +315,8 @@ def test_incomplete_audit_accepts_a_different_dynamic_live_universe_size():
         "below_20000_sek_rows": 76,
         "percentage_not_set_rows": 72,
     })
-    current["summary"]["buyback_coverage_state_counts"]["LEDGER_ONLY"] = 65
-    current["summary"]["low_exposure_decision_counts"]["INTENTIONAL_MARKER_OR_CORE_HOLD"] = 64
+    current["summary"]["buyback_coverage_state_counts"]["LEDGER_ONLY"] = 66
+    current["summary"]["low_exposure_decision_counts"]["INTENTIONAL_MARKER_OR_CORE_HOLD"] = 63
 
     assert validate(payload) == []
 
@@ -202,6 +338,8 @@ def test_incomplete_audit_accepts_current_scoped_refresh_with_open_gates():
             "tenant_session_id": "personal",
             "account_id": "5227886",
             "unresolved_mismatch_count": 0,
+            "protection_repair_required_count": 1,
+            "protection_repair_required_orderbook_ids": ["3340"],
         },
         {
             "tool": "avanza_stoploss_strategy_audit",
@@ -214,6 +352,8 @@ def test_incomplete_audit_accepts_current_scoped_refresh_with_open_gates():
             "tenant_session_id": "darkcell",
             "account_id": "7616265",
             "unresolved_mismatch_count": 0,
+            "protection_repair_required_count": 1,
+            "protection_repair_required_orderbook_ids": ["956885"],
         },
         {
             "tool": "avanza_stoploss_strategy_audit",
@@ -352,6 +492,9 @@ def completed_contract_payload():
     })
     for row in payload["strategy_audit_coverage"]["audits"]:
         row["current_run_status"] = "RECORDED_WITH_ZERO_RELEVANT_DRIFT_OR_ERROR"
+        if row["tool"] == "avanza_position_strategy_audit":
+            row["protection_repair_required_count"] = 0
+            row["protection_repair_required_orderbook_ids"] = []
     for name, control in payload["portfolio_control_coverage"].items():
         if name == "buyback":
             continue
@@ -378,9 +521,29 @@ def completed_contract_payload():
         "terminal_rows_in_active_section": 0,
     })
     payload["catalyst_coverage"]["requires_new_scoped_live_refresh_before_action"] = False
-    payload["current_buyback_coverage"]["summary"]["low_exposure_decision_counts"].update({
-        "INTENTIONAL_MARKER_OR_CORE_HOLD": 58,
+    payload["current_buyback_coverage"]["summary"]["buyback_coverage_state_counts"].update({
+        "LADDER_GAP": 0,
+        "LEDGER_ONLY": 61,
         "REPAIR_REQUIRED": 0,
+    })
+    payload["current_buyback_coverage"]["summary"]["low_exposure_decision_counts"].update({
+        "INTENTIONAL_MARKER_OR_CORE_HOLD": 57,
+        "REPAIR_REQUIRED": 0,
+    })
+    payload["current_sold_marker_recovery"]["status"] = "COMPLETE"
+    payload["current_sold_marker_recovery"]["rows"] = []
+    payload["current_sold_marker_recovery"]["row_count"] = 0
+    payload["current_sold_marker_recovery"]["summary"].update({
+        "repair_required_missed_path_rows": 0,
+        "percentage_not_set_open_rows": 0,
+        "partial_sale_attributed_active_rows": 0,
+        "explicit_no_reentry_rows": 0,
+        "open_material_rows": 0,
+        "remaining_open_quantity_across_material_rows": 0,
+    })
+    payload["current_sold_marker_recovery"]["dynamic_reconciliation"].update({
+        "row_count": 0,
+        "rows": [],
     })
     payload["completion_blockers"] = []
     for row in payload["requirements"]:
@@ -447,6 +610,49 @@ def test_completion_audit_rejects_missing_current_dynamic_buyback_coverage():
     errors = validate(payload)
 
     assert "current dynamic buyback coverage link is missing" in errors
+
+
+def test_completion_audit_rejects_missing_complete_path_sold_marker_link():
+    payload = complete_payload()
+    payload.pop("current_sold_marker_recovery")
+
+    errors = validate(payload)
+
+    assert "current sold-marker recovery link is missing" in errors
+
+
+def test_completion_audit_rejects_open_sold_marker_work_without_b11():
+    payload = complete_payload()
+    payload["completion_blockers"] = [
+        blocker for blocker in payload["completion_blockers"] if blocker["id"] != "B11"
+    ]
+
+    errors = validate(payload)
+
+    assert "complete-path sold-marker blocker B11 must remain explicit" in errors
+
+
+def test_completion_audit_rejects_rebound_snapshot_that_hides_repair_identity():
+    payload = complete_payload()
+    row = payload["current_sold_marker_recovery"]["dynamic_reconciliation"]["rows"][0]
+    row.update({
+        "dynamic_buyback_coverage_state": "LEDGER_ONLY",
+        "dynamic_low_exposure_decision": "INTENTIONAL_MARKER_OR_CORE_HOLD",
+        "dynamic_protection_classification": "MARKER_EXCEPTION",
+    })
+
+    errors = validate(payload)
+
+    assert any("missed path is not retained as REPAIR_REQUIRED" in error for error in errors)
+
+
+def test_completion_audit_rejects_clean_claim_with_open_sold_marker_quantity():
+    payload = completed_contract_payload()
+    payload["current_sold_marker_recovery"] = current_sold_marker_recovery()
+
+    errors = validate(payload)
+
+    assert any("completed goal retains sold-marker work" in error for error in errors)
 
 
 def test_completion_audit_rejects_missing_forward_kpi_coverage():
@@ -531,6 +737,7 @@ def test_completion_enrichment_is_idempotent_for_transaction_and_scheduler_block
 
     assert ids.count("B4") == 1
     assert ids.count("B5") == 1
+    assert ids.count("B11") == 1
     r1 = next(row for row in twice["requirements"] if row["id"] == "R1")
     r5 = next(row for row in twice["requirements"] if row["id"] == "R5")
     assert r1["evidence"].count("Historical summary transaction coverage") == 1

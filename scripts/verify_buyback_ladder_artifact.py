@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import argparse
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ DAILY_COVERAGE_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_202608
 DAILY_COVERAGE_JSON_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.json"
 CANDIDATE_OVERLAY_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_CANDIDATE_LIVE_OVERLAY_20260806_0311.json"
 DYNAMIC_LIVE_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
+SOLD_MARKER_REMEDIATION_GLOB = "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.json"
 
 DYNAMIC_BUYBACK_STATES = {
     "LADDER_ACTIVE",
@@ -54,6 +56,295 @@ def latest_dynamic_coverage_path() -> Path | None:
 
     paths = sorted((ROOT / "output").glob(DYNAMIC_LIVE_GLOB))
     return paths[-1] if paths else None
+
+
+def latest_sold_marker_remediation_path() -> Path | None:
+    """Return the newest complete-path sold-marker remediation overlay."""
+
+    paths = sorted((ROOT / "output").glob(SOLD_MARKER_REMEDIATION_GLOB))
+    return paths[-1] if paths else None
+
+
+def _artifact_time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _remediation_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("tenant_session_id") or ""),
+        str(row.get("account_id") or ""),
+        str(row.get("orderbook_id") or ""),
+    )
+
+
+def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
+    """Validate complete-path evidence without treating it as trade authority."""
+
+    errors: list[str] = []
+    rows = payload.get("rows", [])
+    summary = payload.get("summary", {})
+    authority = payload.get("authority", {})
+    controls = payload.get("controls", [])
+    verification = payload.get("verification", {})
+
+    _require(
+        payload.get("artifact") == "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE",
+        "sold-marker remediation artifact id missing",
+        errors,
+    )
+    _require(bool(str(payload.get("generated_at") or "").strip()), "sold-marker remediation generated_at missing", errors)
+    _require(bool(str(payload.get("path_snapshot_at") or "").strip()), "sold-marker remediation path snapshot missing", errors)
+    _require(authority.get("broker_mutation") is False, "sold-marker remediation broker mutation must be false", errors)
+    _require(authority.get("paper_mutation") is False, "sold-marker remediation paper mutation must be false", errors)
+    _require(authority.get("trade_authority") is False, "sold-marker remediation trade authority must be false", errors)
+    _require(isinstance(rows, list), "sold-marker remediation rows must be a list", errors)
+    if not isinstance(rows, list):
+        return errors
+
+    keys = [_remediation_key(row) for row in rows if isinstance(row, dict)]
+    _require(len(keys) == len(rows), "sold-marker remediation contains a non-object row", errors)
+    _require(len(keys) == len(set(keys)), "sold-marker remediation contains duplicate account/orderbook rows", errors)
+    _require(
+        all(key[:2] in EXPECTED_DYNAMIC_SCOPES and key[2] for key in keys),
+        "sold-marker remediation account scope is invalid",
+        errors,
+    )
+    _require(
+        any("PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_" in str(source) for source in payload.get("sources", [])),
+        "sold-marker remediation must cite the complete-path source",
+        errors,
+    )
+
+    repair_rows = [row for row in rows if str(row.get("state") or "").startswith("REPAIR_REQUIRED")]
+    percentage_gap_rows = [row for row in rows if row.get("state") == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"]
+    partial_rows = [
+        row for row in rows
+        if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")
+    ]
+    no_reentry_rows = [row for row in rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"]
+    open_rows = [row for row in rows if int(row.get("remaining_open_quantity", 0) or 0) > 0]
+    remaining_quantity = sum(int(row.get("remaining_open_quantity", 0) or 0) for row in rows)
+
+    _require(
+        summary.get("repair_required_missed_path_rows") == len(repair_rows),
+        "sold-marker remediation repair count mismatch",
+        errors,
+    )
+    _require(
+        summary.get("percentage_not_set_open_rows") == len(percentage_gap_rows),
+        "sold-marker remediation PERCENTAGE_NOT_SET count mismatch",
+        errors,
+    )
+    _require(
+        summary.get("partial_sale_attributed_active_rows") == len(partial_rows),
+        "sold-marker remediation partial-attribution count mismatch",
+        errors,
+    )
+    _require(
+        summary.get("explicit_no_reentry_rows") == len(no_reentry_rows),
+        "sold-marker remediation no-reentry count mismatch",
+        errors,
+    )
+    _require(summary.get("open_material_rows") == len(open_rows), "sold-marker remediation open-row count mismatch", errors)
+    _require(
+        summary.get("remaining_open_quantity_across_material_rows") == remaining_quantity,
+        "sold-marker remediation remaining quantity mismatch",
+        errors,
+    )
+    _require(
+        isinstance(summary.get("exact_account_rows_with_prior_same_account_sales"), int)
+        and summary.get("exact_account_rows_with_prior_same_account_sales", 0) >= len(rows),
+        "sold-marker remediation full-universe count is invalid",
+        errors,
+    )
+    _require(
+        summary.get("all_path_active_buy_attribution_gaps_after_registry_correction") == 0,
+        "sold-marker remediation retains active-BUY attribution gaps",
+        errors,
+    )
+    _require(
+        summary.get("silent_active_buy_attribution_gaps_in_material_rows") == 0,
+        "sold-marker remediation retains silent material attribution gaps",
+        errors,
+    )
+    _require(summary.get("broker_mutations") == 0, "sold-marker remediation must record zero broker mutations", errors)
+
+    control_text = " ".join(str(control).lower() for control in controls if isinstance(control, str))
+    required_control_phrases = {
+        "complete authenticated price path": "complete-path control missing",
+        "rebound never erases": "rebound-persistence control missing",
+        "durable metadata identifies the exact account": "exact-attribution control missing",
+        "percentage_not_set is fail-closed": "PERCENTAGE_NOT_SET fail-closed control missing",
+        "8 percent sold-marker drawdown is a mandatory review alarm": "8 percent review-alarm control missing",
+        "do not chase a rebound": "no-rebound-chasing control missing",
+    }
+    for phrase, message in required_control_phrases.items():
+        _require(phrase in control_text, message, errors)
+
+    repair_ids_by_tenant = {
+        tenant: sorted(
+            str(row.get("orderbook_id"))
+            for row in repair_rows
+            if row.get("tenant_session_id") == tenant
+        )
+        for tenant in ("personal", "darkcell")
+    }
+    for tenant, account in (("personal", "5227886"), ("darkcell", "7616265")):
+        proof = verification.get(tenant, {})
+        _require(proof.get("tenant_session_id") == tenant, f"sold-marker {tenant} tenant proof missing", errors)
+        _require(proof.get("account_id") == account, f"sold-marker {tenant} account proof missing", errors)
+        _require(proof.get("session_authenticated") is True, f"sold-marker {tenant} session not authenticated", errors)
+        _require(proof.get("live_authorization_off") is True, f"sold-marker {tenant} authorization must be off", errors)
+        _require(
+            proof.get("recovery_reachability_unresolved") == 0,
+            f"sold-marker {tenant} recovery reachability is unresolved",
+            errors,
+        )
+        _require(
+            sorted(str(value) for value in proof.get("position_repair_required_orderbook_ids", []))
+            == repair_ids_by_tenant[tenant],
+            f"sold-marker {tenant} repair identities do not reconcile",
+            errors,
+        )
+    return errors
+
+
+def sold_marker_dynamic_reconciliation_rows(
+    dynamic_payload: dict[str, Any],
+    remediation_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build exact rows retained in the goal audit for independent verification."""
+
+    dynamic_rows = {
+        _remediation_key(row): row
+        for row in dynamic_payload.get("rows", [])
+        if isinstance(row, dict)
+    }
+    result: list[dict[str, Any]] = []
+    for recovery in remediation_payload.get("rows", []):
+        if not isinstance(recovery, dict):
+            continue
+        key = _remediation_key(recovery)
+        dynamic = dynamic_rows.get(key, {})
+        result.append({
+            "tenant_session_id": key[0],
+            "account_id": key[1],
+            "orderbook_id": key[2],
+            "instrument": recovery.get("instrument"),
+            "sale_date": recovery.get("sale_date"),
+            "sold_quantity": recovery.get("sold_quantity"),
+            "remaining_open_quantity": recovery.get("remaining_open_quantity"),
+            "sale_attributed_active_buy_quantity": recovery.get("sale_attributed_active_buy_quantity"),
+            "recovery_state": recovery.get("state"),
+            "dynamic_row_found": bool(dynamic),
+            "dynamic_buyback_coverage_state": dynamic.get("buyback_coverage_state"),
+            "dynamic_low_exposure_decision": dynamic.get("low_exposure_decision"),
+            "dynamic_protection_classification": dynamic.get("current_protection_classification"),
+            "dynamic_active_buy_volume": dynamic.get("active_buy_volume"),
+            "dynamic_target_rebuild_quantity": dynamic.get("target_rebuild_quantity"),
+            "dynamic_stages_percent_below_sold_marker": dynamic.get("stages_percent_below_sold_marker"),
+            "dynamic_stage_quantities": dynamic.get("stage_quantities"),
+            "dynamic_coverage_reason": dynamic.get("coverage_reason"),
+        })
+    return result
+
+
+def validate_dynamic_against_sold_marker_recovery(
+    dynamic_payload: dict[str, Any],
+    remediation_payload: dict[str, Any],
+) -> list[str]:
+    """Prevent a latest quote or rebound from hiding an earlier unserved path."""
+
+    errors = validate_sold_marker_remediation(remediation_payload)
+    dynamic_errors = validate_dynamic_live_coverage(dynamic_payload)
+    errors.extend(dynamic_errors)
+    dynamic_generated = _artifact_time(dynamic_payload.get("generated_at"))
+    remediation_generated = _artifact_time(remediation_payload.get("generated_at"))
+    _require(dynamic_generated is not None, "dynamic buyback generated_at is invalid", errors)
+    _require(remediation_generated is not None, "sold-marker remediation generated_at is invalid", errors)
+    if dynamic_generated is not None and remediation_generated is not None:
+        _require(
+            dynamic_generated >= remediation_generated,
+            "dynamic buyback coverage predates the authoritative sold-marker remediation",
+            errors,
+        )
+
+    rows = sold_marker_dynamic_reconciliation_rows(dynamic_payload, remediation_payload)
+    for row in rows:
+        key = (row["tenant_session_id"], row["account_id"], row["orderbook_id"])
+        state = str(row.get("recovery_state") or "")
+        _require(row.get("dynamic_row_found") is True, f"dynamic buyback row missing for sold-marker recovery {key}", errors)
+        if not row.get("dynamic_row_found"):
+            continue
+        _require(
+            row.get("dynamic_active_buy_volume") == row.get("sale_attributed_active_buy_quantity"),
+            f"dynamic active BUY attribution mismatch for sold-marker recovery {key}",
+            errors,
+        )
+        reason = str(row.get("dynamic_coverage_reason") or "").lower()
+        if state.startswith("REPAIR_REQUIRED"):
+            _require(
+                row.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED"
+                and row.get("dynamic_low_exposure_decision") == "REPAIR_REQUIRED"
+                and row.get("dynamic_protection_classification") == "REPAIR_REQUIRED",
+                f"missed sold-marker path is not REPAIR_REQUIRED in dynamic coverage for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_target_rebuild_quantity") == row.get("remaining_open_quantity"),
+                f"repair target does not preserve exact open sold quantity for {key}",
+                errors,
+            )
+        elif state == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET":
+            _require(
+                row.get("dynamic_buyback_coverage_state") == "LADDER_GAP",
+                f"unsupported material sold-marker path is not LADDER_GAP for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
+                f"unsupported material sold-marker path invented percentages for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_target_rebuild_quantity") == row.get("remaining_open_quantity"),
+                f"material gap target does not preserve exact open sold quantity for {key}",
+                errors,
+            )
+        elif state.startswith("PARTIAL_SOLD_SLICE_RECOVERY"):
+            _require(
+                row.get("dynamic_buyback_coverage_state") == "LEDGER_ONLY"
+                and row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
+                f"partial sold-slice row must remain explicit ledger-only coverage for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_target_rebuild_quantity") == row.get("sold_quantity"),
+                f"partial sold-slice target does not preserve exact sold quantity for {key}",
+                errors,
+            )
+            _require(
+                "sale-attributed" in reason and str(row.get("sale_date") or "") in reason,
+                f"partial sold-slice provenance is missing from dynamic coverage for {key}",
+                errors,
+            )
+        elif state == "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
+            _require(
+                row.get("dynamic_buyback_coverage_state") == "LEDGER_ONLY"
+                and row.get("dynamic_active_buy_volume") == 0
+                and row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
+                f"explicit no-reentry row is contradicted by dynamic coverage for {key}",
+                errors,
+            )
+            _require(
+                "no-reentry" in reason or "no re-entry" in reason,
+                f"explicit no-reentry reason is missing from dynamic coverage for {key}",
+                errors,
+            )
+    return errors
 
 
 def _count_states(rows: list[dict[str, Any]], field: str, states: set[str]) -> dict[str, int]:
@@ -667,7 +958,17 @@ def main() -> int:
             errors.append(f"dynamic live coverage missing for glob: {DYNAMIC_LIVE_GLOB}")
         else:
             dynamic_payload = json.loads(dynamic_path.read_text(encoding="utf-8"))
-            errors.extend(validate_dynamic_live_coverage(dynamic_payload))
+            remediation_path = latest_sold_marker_remediation_path()
+            if remediation_path is None:
+                errors.append(f"sold-marker remediation missing for glob: {SOLD_MARKER_REMEDIATION_GLOB}")
+            else:
+                remediation_payload = json.loads(remediation_path.read_text(encoding="utf-8"))
+                errors.extend(
+                    validate_dynamic_against_sold_marker_recovery(
+                        dynamic_payload,
+                        remediation_payload,
+                    )
+                )
     if errors:
         for error in errors:
             print(f"[buyback] FAIL: {error}")
@@ -677,9 +978,14 @@ def main() -> int:
     dynamic_rows = 0
     if dynamic_path is not None:
         dynamic_rows = len(json.loads(dynamic_path.read_text(encoding="utf-8")).get("rows", []))
+    remediation_path = latest_sold_marker_remediation_path()
+    remediation_rows = 0
+    if remediation_path is not None:
+        remediation_rows = len(json.loads(remediation_path.read_text(encoding="utf-8")).get("rows", []))
     print(
         f"[buyback] PASS: {len(ladders)} validated ladders; "
-        f"{dynamic_rows} dynamic live rows; broker inventory remains separately classified"
+        f"{dynamic_rows} dynamic live rows; {remediation_rows} sold-marker remediation rows; "
+        "broker inventory remains separately classified"
     )
     return 0
 
