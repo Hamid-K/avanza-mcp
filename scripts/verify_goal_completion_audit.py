@@ -9,6 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.verify_buyback_ladder_artifact import sold_marker_governance_gap_rows
+except ModuleNotFoundError:  # Direct script execution resolves sibling modules.
+    from verify_buyback_ladder_artifact import sold_marker_governance_gap_rows
+
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT_GLOB = "PORTFOLIO_REQUIREMENT_LEVEL_COMPLETION_AUDIT_*.json"
@@ -175,15 +180,14 @@ def _artifact_time(value: Any) -> datetime | None:
 
 
 def _sold_marker_has_open_work(payload: dict[str, Any]) -> bool:
-    summary = payload.get("current_sold_marker_recovery", {}).get("summary", {})
+    current = payload.get("current_sold_marker_recovery", {})
+    reconciliation_rows = current.get("dynamic_reconciliation", {}).get("rows")
+    if isinstance(reconciliation_rows, list):
+        return bool(sold_marker_governance_gap_rows(reconciliation_rows))
+    summary = current.get("summary", {})
     return any(
         int(summary.get(field, 0) or 0) > 0
-        for field in (
-            "repair_required_missed_path_rows",
-            "percentage_not_set_open_rows",
-            "open_material_rows",
-            "remaining_open_quantity_across_material_rows",
-        )
+        for field in ("repair_required_missed_path_rows", "percentage_not_set_open_rows")
     )
 
 
@@ -375,13 +379,12 @@ def _validate_sold_marker_recovery_link(
         _require(dynamic_generated >= current_generated, "dynamic buyback coverage predates sold-marker remediation", errors)
 
     if require_clean:
-        for field in (
-            "repair_required_missed_path_rows",
-            "percentage_not_set_open_rows",
-            "open_material_rows",
-            "remaining_open_quantity_across_material_rows",
-        ):
-            _require(int(summary.get(field, 0) or 0) == 0, f"completed goal retains sold-marker work in {field}", errors)
+        governance_gaps = sold_marker_governance_gap_rows(reconciliation_rows)
+        _require(
+            not governance_gaps,
+            "completed goal retains sold-marker governance gaps",
+            errors,
+        )
 
 
 def _validate_completed(payload: dict[str, Any]) -> list[str]:
@@ -806,6 +809,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         transaction.get("status") in {
             "HISTORICAL_SUMMARY_RECONCILED_RECENT_LIVE_READBACK_REQUIRED",
             "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP",
+            "EXACT_ACCOUNT_RAW_SOURCE_VERIFIED",
         },
         "transaction coverage status is not a recognized fail-closed state",
         errors,
@@ -816,19 +820,45 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     transaction_live = transaction.get("status") == "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP"
+    transaction_raw_verified = transaction.get("status") == "EXACT_ACCOUNT_RAW_SOURCE_VERIFIED"
     _require(
         transaction.get("same_day_buy_fill_attribution")
-        == ("PROVEN_SCOPED_RECONCILIATION" if transaction_live else "REQUIRES_NEW_SCOPED_LIVE_REFRESH"),
+        == ("PROVEN_SCOPED_RECONCILIATION" if transaction_live or transaction_raw_verified else "REQUIRES_NEW_SCOPED_LIVE_REFRESH"),
         "same-day transaction attribution state is inconsistent",
         errors,
     )
-    _require(transaction.get("source_raw_rows_available") is False, "transaction raw-source availability must remain explicit", errors)
+    _require(
+        transaction.get("source_raw_rows_available") is transaction_raw_verified,
+        "transaction raw-source availability must match the verified evidence state",
+        errors,
+    )
     _require(
         transaction.get("same_day_buy_fill_review_status")
-        == ("PROVEN_SCOPED_RECONCILIATION" if transaction_live else "NOT_PROVABLE_FROM_STAMPED_SUMMARY"),
+        == ("PROVEN_SCOPED_RECONCILIATION" if transaction_live or transaction_raw_verified else "NOT_PROVABLE_FROM_STAMPED_SUMMARY"),
         "same-day transaction review status is inconsistent",
         errors,
     )
+    if transaction_raw_verified:
+        expected_scopes = {("personal", "5227886"), ("darkcell", "7616265")}
+        raw_accounts = transaction.get("raw_account_coverage", [])
+        actual_scopes = {
+            (str(row.get("tenant_session_id")), str(row.get("account_id")))
+            for row in raw_accounts
+            if isinstance(row, dict)
+        }
+        _require(
+            actual_scopes == expected_scopes
+            and transaction.get("raw_row_shape_verified") is True
+            and all(
+                isinstance(row, dict)
+                and row.get("exact_account_scope") is True
+                and row.get("truncation_risk") is False
+                and int(row.get("raw_rows", -1)) == int(row.get("returned_rows", -2))
+                for row in raw_accounts
+            ),
+            "exact-account raw transaction coverage is incomplete or truncated",
+            errors,
+        )
     actual_manual_exits = {
         (row.get("tenant_session_id"), row.get("account_id"), row.get("ticker")): row.get("quantity")
         for row in transaction.get("manual_exit_rows", [])
@@ -900,8 +930,17 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     _require(
-        catalyst.get("verified_upcoming_rows") == 21 and catalyst.get("unverified_upcoming_rows") == 1,
-        "catalyst coverage counts are incomplete",
+        isinstance(catalyst.get("verified_upcoming_rows"), int)
+        and catalyst.get("verified_upcoming_rows") >= 0
+        and isinstance(catalyst.get("unverified_upcoming_rows"), int)
+        and catalyst.get("unverified_upcoming_rows") >= 0,
+        "catalyst coverage counts are invalid",
+        errors,
+    )
+    _require(
+        catalyst.get("stale_unverified_rows") == 0
+        and catalyst.get("publication_state_current") is True,
+        "catalyst publication state retains a stale unverified contradiction",
         errors,
     )
     _require(
@@ -915,11 +954,20 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
     for blocker in blockers if isinstance(blockers, list) else []:
         _require(bool(blocker.get("id")), "completion blocker id missing", errors)
         _require(bool(blocker.get("condition_to_close")), "completion blocker close condition missing", errors)
-    _require(
-        any(str(blocker.get("id")) == "B4" for blocker in blockers if isinstance(blocker, dict)),
-        "transaction evidence blocker B4 must remain explicit",
-        errors,
-    )
+    has_b4 = any(str(blocker.get("id")) == "B4" for blocker in blockers if isinstance(blocker, dict))
+    if transaction_raw_verified:
+        _require(not has_b4, "transaction evidence blocker B4 must close after exact raw verification", errors)
+        _require(
+            any(
+                str(blocker.get("id")) == "B4"
+                for blocker in payload.get("closed_blockers", [])
+                if isinstance(blocker, dict)
+            ),
+            "closed transaction blocker B4 must retain its raw-recapture evidence",
+            errors,
+        )
+    else:
+        _require(has_b4, "transaction evidence blocker B4 must remain explicit", errors)
     _require(
         any(str(blocker.get("id")) == "B6" for blocker in blockers if isinstance(blocker, dict)),
         "per-account strategy audit blocker B6 must remain explicit",

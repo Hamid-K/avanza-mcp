@@ -267,7 +267,9 @@ def complete_payload():
         "catalyst_coverage": {
             "artifact": "PORTFOLIO_CATALYST_COVERAGE_AUDIT",
             "verified_upcoming_rows": 21,
-            "unverified_upcoming_rows": 1,
+            "unverified_upcoming_rows": 0,
+            "stale_unverified_rows": 0,
+            "publication_state_current": True,
             "requires_new_scoped_live_refresh_before_action": True,
         },
         "completion_blockers": [
@@ -383,6 +385,45 @@ def test_incomplete_audit_accepts_current_scoped_refresh_with_open_gates():
     assert validate(payload) == []
 
 
+def test_incomplete_audit_accepts_exact_raw_transaction_recovery_with_other_gates_open():
+    payload = complete_payload()
+    payload["transaction_coverage"].update({
+        "source": "output/PORTFOLIO_RAW_TRANSACTION_RECOVERY_20260820_1046.json",
+        "status": "EXACT_ACCOUNT_RAW_SOURCE_VERIFIED",
+        "source_raw_rows_available": True,
+        "same_day_buy_fill_attribution": "PROVEN_SCOPED_RECONCILIATION",
+        "same_day_buy_fill_review_status": "PROVEN_SCOPED_RECONCILIATION",
+        "requires_new_scoped_live_refresh_before_action": False,
+        "raw_row_shape_verified": True,
+        "raw_account_coverage": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": "5227886",
+                "exact_account_scope": True,
+                "raw_rows": 492,
+                "returned_rows": 492,
+                "truncation_risk": False,
+            },
+            {
+                "tenant_session_id": "darkcell",
+                "account_id": "7616265",
+                "exact_account_scope": True,
+                "raw_rows": 720,
+                "returned_rows": 720,
+                "truncation_risk": False,
+            },
+        ],
+    })
+    payload["completion_blockers"] = [
+        row for row in payload["completion_blockers"] if row["id"] != "B4"
+    ]
+    payload["closed_blockers"] = [
+        {"id": "B4", "evidence": "Exact raw rows recaptured for both accounts."}
+    ]
+
+    assert validate(payload) == []
+
+
 def test_live_enrichment_removes_obsolete_unavailable_audit_claims():
     payload = complete_payload()
     payload["requirements"][0]["evidence"] = (
@@ -456,6 +497,77 @@ def test_live_manual_exit_reconciliation_is_linked_to_transaction_coverage():
     assert exception_metadata["status"] == "COMPLETE"
     assert exception_metadata["expected_count"] == 0
     assert exception_metadata["count"] == 0
+
+
+def test_raw_transaction_recovery_closes_b4_without_hiding_other_blockers():
+    payload = complete_payload()
+    transaction = {
+        "artifact": "PORTFOLIO_TRANSACTION_COVERAGE_AUDIT",
+        "status": "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP",
+        "validation": {
+            "historical_account_position_rows": 107,
+            "source_raw_rows_available": False,
+        },
+    }
+    raw_recovery = {
+        "artifact": "PORTFOLIO_RAW_TRANSACTION_RECOVERY",
+        "status": "COMPLETE_EXACT_ACCOUNT_RAW_SOURCE_RECAPTURED",
+        "verified_raw_row_shape": ["id", "tradeDate", "account"],
+        "accounts": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": "5227886",
+                "exact_account_scope": True,
+                "raw_rows": 492,
+                "returned_rows": 492,
+                "truncation_risk": False,
+            },
+            {
+                "tenant_session_id": "darkcell",
+                "account_id": "7616265",
+                "exact_account_scope": True,
+                "raw_rows": 720,
+                "returned_rows": 720,
+                "truncation_risk": False,
+            },
+        ],
+        "manual_exit_raw_proof": [
+            {
+                "tenant_session_id": tenant,
+                "account_id": account,
+                "ticker": ticker,
+                "orderbook_id": "1",
+                "trade_date": "2026-08-04",
+                "sell_quantity": quantity,
+                "same_day_buy_quantity": 0,
+                "raw_transaction_id": f"{tenant}-{ticker}",
+                "cancelled": False,
+            }
+            for (tenant, account, ticker), quantity in {
+                ("personal", "5227886", "PLTR"): 18,
+                ("darkcell", "7616265", "PLTR"): 26,
+                ("darkcell", "7616265", "W"): 34,
+                ("darkcell", "7616265", "SHOP"): 8,
+                ("darkcell", "7616265", "NEM"): 26,
+            }.items()
+        ],
+    }
+    payload["closed_blockers"] = [{"id": "B4", "evidence": "Raw recovery."}]
+
+    enriched = enrich(
+        payload,
+        transaction,
+        raw_transaction_recovery=raw_recovery,
+        raw_transaction_recovery_source="output/PORTFOLIO_RAW_TRANSACTION_RECOVERY_20260820_1046.json",
+    )
+
+    assert enriched["transaction_coverage"]["status"] == "EXACT_ACCOUNT_RAW_SOURCE_VERIFIED"
+    assert enriched["transaction_coverage"]["source_raw_rows_available"] is True
+    assert all(row["id"] != "B4" for row in enriched["completion_blockers"])
+    assert any(row["id"] == "B6" for row in enriched["completion_blockers"])
+    r1 = next(row for row in enriched["requirements"] if row["id"] == "R1")
+    assert "Exact-account raw BUY/SELL history is recaptured" in r1["evidence"]
+    assert "Complete raw-source recovery" not in r1["remaining_proof"]
 
 
 def test_completion_audit_rejects_false_completion_or_authority():
@@ -552,8 +664,89 @@ def completed_contract_payload():
     return payload
 
 
+def add_governed_dormant_sold_marker_ladder(payload):
+    recovery = {
+        "tenant_session_id": "personal",
+        "account_id": "5227886",
+        "instrument": "SoundHound AI",
+        "orderbook_id": "1393460",
+        "sale_date": "2026-07-28",
+        "sold_quantity": 316,
+        "sale_attributed_active_buy_quantity": 0,
+        "remaining_open_quantity": 158,
+        "recorded_stage_percentages_below_marker": [8.2, 15.3],
+        "recorded_stage_quantities": [79, 79],
+        "state": "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED",
+    }
+    reconciliation = {
+        "tenant_session_id": "personal",
+        "account_id": "5227886",
+        "orderbook_id": "1393460",
+        "recovery_state": "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED",
+        "remaining_open_quantity": 158,
+        "sale_attributed_active_buy_quantity": 0,
+        "recovery_recorded_stage_percentages_below_marker": [8.2, 15.3],
+        "recovery_recorded_stage_quantities": [79, 79],
+        "dynamic_row_found": True,
+        "dynamic_buyback_coverage_state": "LADDER_DORMANT",
+        "dynamic_low_exposure_decision": "BUILD_REVIEW",
+        "dynamic_protection_classification": "CORE_HOLD_EXCEPTION",
+        "dynamic_active_buy_volume": 0,
+        "dynamic_target_rebuild_quantity": 158,
+        "dynamic_stages_percent_below_sold_marker": [8.2, 15.3],
+        "dynamic_stage_quantities": [79, 79],
+        "dynamic_coverage_reason": "Stock-specific dormant review ladder for the remaining same-sale slice.",
+    }
+    current = payload["current_sold_marker_recovery"]
+    current.update({"rows": [recovery], "row_count": 1})
+    current["summary"].update({
+        "repair_required_missed_path_rows": 0,
+        "percentage_not_set_open_rows": 0,
+        "partial_sale_attributed_active_rows": 0,
+        "explicit_no_reentry_rows": 0,
+        "open_material_rows": 1,
+        "remaining_open_quantity_across_material_rows": 158,
+    })
+    current["dynamic_reconciliation"].update({"rows": [reconciliation], "row_count": 1})
+    return recovery, reconciliation
+
+
 def test_completion_audit_accepts_a_proven_current_live_contract():
     assert validate(completed_contract_payload()) == []
+
+
+def test_completion_audit_accepts_open_fully_governed_dormant_ladder():
+    payload = completed_contract_payload()
+    add_governed_dormant_sold_marker_ladder(payload)
+
+    assert validate(payload) == []
+
+
+def test_enrichment_does_not_block_a_fully_governed_dormant_ladder():
+    payload = completed_contract_payload()
+    add_governed_dormant_sold_marker_ladder(payload)
+
+    enriched = enrich(payload, {})
+
+    assert all(row.get("id") != "B11" for row in enriched["completion_blockers"])
+    assert all(row.get("id") != "B9" for row in enriched["completion_blockers"])
+
+
+def test_enrichment_replaces_stale_global_percentage_not_set_blocker():
+    payload = complete_payload()
+    payload["completion_blockers"].append({
+        "id": "B9",
+        "type": "BUYBACK_EVIDENCE_GAPS",
+        "item": "Sixty-one dynamic rows remain PERCENTAGE_NOT_SET",
+        "condition_to_close": "Replace stale semantics.",
+    })
+
+    enriched = enrich(payload, {})
+    b9 = [row for row in enriched["completion_blockers"] if row.get("id") == "B9"]
+
+    assert len(b9) == 1
+    assert "Sixty-one" not in b9[0]["item"]
+    assert "terminal hold/no-reentry/named-exception rows are excluded" in b9[0]["item"]
 
 
 def test_completion_audit_rejects_completed_contract_with_unresolved_audit():
@@ -646,13 +839,48 @@ def test_completion_audit_rejects_rebound_snapshot_that_hides_repair_identity():
     assert any("missed path is not retained as REPAIR_REQUIRED" in error for error in errors)
 
 
-def test_completion_audit_rejects_clean_claim_with_open_sold_marker_quantity():
+def test_completion_audit_rejects_clean_claim_with_partial_uncovered_remainder():
     payload = completed_contract_payload()
-    payload["current_sold_marker_recovery"] = current_sold_marker_recovery()
+    recovery, reconciliation = add_governed_dormant_sold_marker_ladder(payload)
+    recovery.update({
+        "sold_quantity": 7,
+        "sale_attributed_active_buy_quantity": 3,
+        "remaining_open_quantity": 4,
+        "state": "PARTIAL_SOLD_SLICE_RECOVERY_ACTIVE_DEEP_STAGE",
+    })
+    recovery.pop("recorded_stage_percentages_below_marker")
+    recovery.pop("recorded_stage_quantities")
+    reconciliation.update({
+        "recovery_state": "PARTIAL_SOLD_SLICE_RECOVERY_ACTIVE_DEEP_STAGE",
+        "remaining_open_quantity": 4,
+        "sale_attributed_active_buy_quantity": 3,
+        "recovery_recorded_stage_percentages_below_marker": None,
+        "recovery_recorded_stage_quantities": None,
+        "dynamic_buyback_coverage_state": "LEDGER_ONLY",
+        "dynamic_low_exposure_decision": "INTENTIONAL_MARKER_OR_CORE_HOLD",
+        "dynamic_active_buy_volume": 3,
+        "dynamic_target_rebuild_quantity": 7,
+        "dynamic_stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+        "dynamic_stage_quantities": None,
+    })
+    payload["current_sold_marker_recovery"]["summary"].update({
+        "partial_sale_attributed_active_rows": 1,
+        "remaining_open_quantity_across_material_rows": 4,
+    })
 
     errors = validate(payload)
 
-    assert any("completed goal retains sold-marker work" in error for error in errors)
+    assert "completed goal retains sold-marker governance gaps" in errors
+
+
+def test_completion_audit_rejects_underquantified_dormant_ladder():
+    payload = completed_contract_payload()
+    _, reconciliation = add_governed_dormant_sold_marker_ladder(payload)
+    reconciliation["dynamic_stage_quantities"] = [79, 78]
+
+    errors = validate(payload)
+
+    assert "completed goal retains sold-marker governance gaps" in errors
 
 
 def test_completion_audit_rejects_missing_forward_kpi_coverage():
@@ -722,7 +950,13 @@ def test_completion_enrichment_is_idempotent_for_transaction_and_scheduler_block
     catalyst = {
         "artifact": "PORTFOLIO_CATALYST_COVERAGE_AUDIT",
         "status": "VALIDATED_FAIL_CLOSED",
-        "validation": {"verified_upcoming_rows": 21, "unverified_upcoming_rows": 1, "event_refresh_rows": 4},
+        "validation": {
+            "verified_upcoming_rows": 21,
+            "unverified_upcoming_rows": 0,
+            "stale_unverified_rows": 0,
+            "publication_state_current": True,
+            "event_refresh_rows": 4,
+        },
         "freshness": {"requires_new_scoped_live_refresh_before_action": True},
     }
     buyback = {
@@ -749,3 +983,43 @@ def test_completion_enrichment_is_idempotent_for_transaction_and_scheduler_block
     assert twice["current_control_state"]["live_state_current"] is False
     assert twice["current_control_state"]["live_refresh_required_before_action"] is True
     assert twice["current_control_state"]["live_checkpoint_status"] == "STAMPED_SNAPSHOT_REQUIRES_NEW_SCOPED_REFRESH"
+
+
+def test_current_catalyst_and_scheduler_migration_remove_stale_prose():
+    payload = complete_payload()
+    r5 = next(row for row in payload["requirements"] if row["id"] == "R5")
+    r5["evidence"] = (
+        "The legacy catalyst-coverage snapshot still contains a stale SoundHound WAITING_OFFICIAL_DATE row even though "
+        "the official August 5 release is now verified elsewhere, so R5 remains fail-closed pending a regenerated current catalyst audit. "
+        "The scheduler contract is validated separately; five terminal rows remain in its active section and are explicitly blocked from silent completion."
+    )
+    r5["remaining_proof"] = (
+        "Regenerate current catalyst coverage so verified publications supersede stale date labels, then continue issuer-first call and regular-session reversal review for every due non-terminal row; refresh quote, spread, technical, factor, capacity, and friction evidence before any proposal. "
+        "Resolve the active/archive ledger gap and complete the next scoped publication/reversal scan."
+    )
+    scheduler = {
+        "artifact": "PORTFOLIO_SCHEDULER_COVERAGE_AUDIT",
+        "validation": {
+            "canonical_approval_c_rows": 18,
+            "terminal_rows_in_active_section": 0,
+        },
+        "freshness": {"requires_new_scoped_live_refresh_before_action": True},
+    }
+    catalyst = {
+        "artifact": "PORTFOLIO_CATALYST_COVERAGE_AUDIT",
+        "validation": {
+            "verified_upcoming_rows": 21,
+            "unverified_upcoming_rows": 0,
+            "stale_unverified_rows": 0,
+            "publication_state_current": True,
+        },
+        "freshness": {"requires_new_scoped_live_refresh_before_action": True},
+    }
+
+    enriched = enrich(payload, {}, scheduler=scheduler, catalyst=catalyst)
+    r5 = next(row for row in enriched["requirements"] if row["id"] == "R5")
+
+    assert "stale SoundHound" not in r5["evidence"]
+    assert "five terminal rows" not in r5["evidence"]
+    assert "Regenerate current catalyst coverage" not in r5["remaining_proof"]
+    assert "Resolve the active/archive ledger gap" not in r5["remaining_proof"]

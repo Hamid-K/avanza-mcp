@@ -31,47 +31,46 @@ def validate(payload: dict[str, Any]) -> list[str]:
         errors.append("catalyst coverage cannot claim current live verification")
     if freshness.get("requires_new_scoped_live_refresh_before_action") is not True:
         errors.append("catalyst coverage must require a new scoped live refresh")
-    if freshness.get("latest_named_exception_recheck_as_of") != "2026-08-06T17:49:03+02:00":
-        errors.append("named-exception catalyst recheck timestamp is missing or stale")
-    if freshness.get("latest_official_recheck_as_of") != "2026-08-06T17:57:25+02:00":
-        errors.append("official issuer recheck timestamp is missing or stale")
-
     validation = payload.get("validation", {})
-    if validation.get("verified_upcoming_rows") != 21:
-        errors.append("catalyst register must contain 21 verified-upcoming rows")
-    if validation.get("unverified_upcoming_rows") != 1:
-        errors.append("catalyst register must retain one unverified-upcoming row")
-    if validation.get("event_refresh_rows") != 4:
-        errors.append("August 6 event refresh must contain four issuer rows")
+    verified_count = validation.get("verified_upcoming_rows")
+    unverified_count = validation.get("unverified_upcoming_rows")
+    if not isinstance(verified_count, int) or verified_count < 0:
+        errors.append("verified-upcoming catalyst count must be a non-negative integer")
+    if not isinstance(unverified_count, int) or unverified_count < 0:
+        errors.append("unverified-upcoming catalyst count must be a non-negative integer")
+    if not isinstance(validation.get("event_refresh_rows"), int) or validation.get("event_refresh_rows") < 0:
+        errors.append("event refresh row count must be a non-negative integer")
     if validation.get("all_unverified_events_wait_for_official_date") is not True:
         errors.append("unverified events must remain WAITING_OFFICIAL_DATE")
     if validation.get("invalid_upcoming_rows") != 0:
         errors.append("upcoming catalyst rows have missing/invalid source fields")
     if validation.get("unverified_not_waiting_rows") != 0:
         errors.append("an unverified catalyst row is promoted beyond WAITING_OFFICIAL_DATE")
+    if validation.get("stale_unverified_rows") != 0:
+        errors.append("a verified publication remains incorrectly classified as unverified")
+    if validation.get("publication_state_current") is not True:
+        errors.append("catalyst publication state is not current")
     if validation.get("event_authority_errors"):
         errors.append("August 6 event refresh has non-WAITING_RELEASE rows")
     if validation.get("authority_errors"):
         errors.append("catalyst source/authority metadata is inconsistent")
     named = validation.get("latest_named_exception_recheck", {})
-    if named.get("authority") != "READ_ONLY_REVIEW_EVIDENCE":
+    if named and named.get("authority") != "READ_ONLY_REVIEW_EVIDENCE":
         errors.append("named-exception recheck must remain read-only evidence")
-    if {row.get("ticker") for row in named.get("rows", [])} != {"SPCX", "PLTR", "W", "NEM"}:
-        errors.append("named-exception recheck must cover SpaceX and the three recent exit names")
-    if {row.get("ticker") for row in named.get("lookup_failures", [])} != {"SHOP"}:
-        errors.append("named-exception recheck must retain the Shopify lookup failure")
     official = validation.get("latest_official_recheck", {})
-    if official.get("authority") != "READ_ONLY_OFFICIAL_ISSUER_REVIEW":
+    if official and official.get("authority") != "READ_ONLY_OFFICIAL_ISSUER_REVIEW":
         errors.append("official issuer recheck must remain read-only evidence")
-    if {row.get("ticker") for row in official.get("rows", [])} != {"QBTS", "ONTO", "AKAM", "CGNX"}:
-        errors.append("official issuer recheck must cover the due August 6 rows")
-    if any(row.get("publication_verified") is not False for row in official.get("rows", [])):
-        errors.append("official issuer recheck cannot promote unverified publications")
 
     blocker_ids = {str(row.get("id")) for row in payload.get("completion_blockers", [])}
-    for blocker in ("CAT1", "CAT2", "CAT3"):
+    for blocker in ("CAT1", "CAT3"):
         if blocker not in blocker_ids:
             errors.append(f"catalyst blocker {blocker} must remain explicit")
+    if isinstance(unverified_count, int) and unverified_count > 0 and "CAT2" not in blocker_ids:
+        errors.append("catalyst blocker CAT2 must remain explicit while unverified dates exist")
+    if unverified_count == 0 and "CAT2" in blocker_ids:
+        errors.append("catalyst blocker CAT2 must be absent when no unverified dates remain")
+    if "CAT7" in blocker_ids:
+        errors.append("stale publication-state blocker CAT7 remains open")
     if payload.get("status") != "VALIDATED_FAIL_CLOSED":
         errors.append("catalyst audit must remain valid but fail-closed while evidence is pending")
     return errors

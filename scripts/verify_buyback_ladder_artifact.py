@@ -239,6 +239,10 @@ def sold_marker_dynamic_reconciliation_rows(
             "remaining_open_quantity": recovery.get("remaining_open_quantity"),
             "sale_attributed_active_buy_quantity": recovery.get("sale_attributed_active_buy_quantity"),
             "recovery_state": recovery.get("state"),
+            "recovery_recorded_stage_percentages_below_marker": recovery.get(
+                "recorded_stage_percentages_below_marker"
+            ),
+            "recovery_recorded_stage_quantities": recovery.get("recorded_stage_quantities"),
             "dynamic_row_found": bool(dynamic),
             "dynamic_buyback_coverage_state": dynamic.get("buyback_coverage_state"),
             "dynamic_low_exposure_decision": dynamic.get("low_exposure_decision"),
@@ -249,6 +253,92 @@ def sold_marker_dynamic_reconciliation_rows(
             "dynamic_stage_quantities": dynamic.get("stage_quantities"),
             "dynamic_coverage_reason": dynamic.get("coverage_reason"),
         })
+    return result
+
+
+def _dormant_ladder_governance_gaps(row: dict[str, Any]) -> list[str]:
+    """Return fail-closed defects for an open, fully governed dormant ladder."""
+
+    gaps: list[str] = []
+    remaining = int(row.get("remaining_open_quantity", 0) or 0)
+    target = row.get("dynamic_target_rebuild_quantity")
+    stages = row.get("dynamic_stages_percent_below_sold_marker")
+    quantities = row.get("dynamic_stage_quantities")
+    recorded_stages = row.get("recovery_recorded_stage_percentages_below_marker")
+    recorded_quantities = row.get("recovery_recorded_stage_quantities")
+
+    if row.get("dynamic_buyback_coverage_state") != "LADDER_DORMANT":
+        gaps.append("dynamic state is not LADDER_DORMANT")
+    if row.get("dynamic_low_exposure_decision") != "BUILD_REVIEW":
+        gaps.append("low-exposure decision is not BUILD_REVIEW")
+    if row.get("dynamic_protection_classification") == "REPAIR_REQUIRED":
+        gaps.append("protection classification remains REPAIR_REQUIRED")
+    if not isinstance(target, (int, float)) or float(target) != remaining:
+        gaps.append("target rebuild quantity does not equal the remaining sold slice")
+    if not isinstance(stages, list) or not 1 <= len(stages) <= 3:
+        gaps.append("stage percentages are not a one-to-three-stage list")
+    elif (
+        any(not isinstance(value, (int, float)) or float(value) <= 0 for value in stages)
+        or any(float(left) >= float(right) for left, right in zip(stages, stages[1:]))
+    ):
+        gaps.append("stage percentages are not positive and strictly increasing")
+    if not isinstance(quantities, list) or not isinstance(stages, list) or len(quantities) != len(stages):
+        gaps.append("stage quantities do not align with stage percentages")
+    elif (
+        any(not isinstance(value, (int, float)) or int(value) <= 0 or float(value) != int(value) for value in quantities)
+        or sum(int(value) for value in quantities) != remaining
+    ):
+        gaps.append("stage quantities do not exactly cover the remaining sold slice")
+    if recorded_stages != stages:
+        gaps.append("dynamic percentages do not match the authenticated recovery record")
+    if recorded_quantities != quantities:
+        gaps.append("dynamic quantities do not match the authenticated recovery record")
+    return gaps
+
+
+def sold_marker_governance_gap_rows(
+    reconciliation_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only unresolved governance rows, not every unfilled dormant ladder."""
+
+    result: list[dict[str, Any]] = []
+    for row in reconciliation_rows:
+        if not isinstance(row, dict):
+            result.append({"governance_gap_reasons": ["reconciliation row is not an object"]})
+            continue
+        state = str(row.get("recovery_state") or "")
+        remaining = int(row.get("remaining_open_quantity", 0) or 0)
+        reasons: list[str] = []
+        if row.get("dynamic_row_found") is not True:
+            reasons.append("dynamic buyback row is missing")
+        if row.get("dynamic_active_buy_volume") != row.get("sale_attributed_active_buy_quantity"):
+            reasons.append("active BUY attribution does not match the sold-slice record")
+
+        if state.startswith("REPAIR_REQUIRED"):
+            reasons.append("sold-marker path remains REPAIR_REQUIRED")
+        elif state == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET":
+            reasons.append("material sold-marker path remains PERCENTAGE_NOT_SET")
+        elif state.startswith("PARTIAL_SOLD_SLICE_RECOVERY") and remaining > 0:
+            reasons.append("partial recovery retains an uncovered sold-slice remainder")
+        elif state == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED":
+            reasons.extend(_dormant_ladder_governance_gaps(row))
+        elif state == "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
+            reason = str(row.get("dynamic_coverage_reason") or "").lower()
+            if (
+                remaining != 0
+                or row.get("dynamic_buyback_coverage_state") != "LEDGER_ONLY"
+                or row.get("dynamic_active_buy_volume") != 0
+                or row.get("dynamic_stages_percent_below_sold_marker") != "PERCENTAGE_NOT_SET"
+                or ("no-reentry" not in reason and "no re-entry" not in reason)
+            ):
+                reasons.append("explicit no-reentry state is incomplete or contradicted")
+        elif remaining > 0:
+            reasons.append("open sold-slice state has no recognized governed resolution")
+
+        if reasons:
+            item = dict(row)
+            item["governance_gap_reasons"] = list(dict.fromkeys(reasons))
+            result.append(item)
     return result
 
 
@@ -331,6 +421,9 @@ def validate_dynamic_against_sold_marker_recovery(
                 f"partial sold-slice provenance is missing from dynamic coverage for {key}",
                 errors,
             )
+        elif state == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED":
+            for gap in _dormant_ladder_governance_gaps(row):
+                errors.append(f"dormant sold-marker ladder is not fully governed for {key}: {gap}")
         elif state == "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
             _require(
                 row.get("dynamic_buyback_coverage_state") == "LEDGER_ONLY"

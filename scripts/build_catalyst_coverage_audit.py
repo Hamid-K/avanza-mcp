@@ -23,10 +23,20 @@ def read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
-    catalyst = read(CATALYST)
-    event_refresh = read(EVENT_REFRESH)
-    technical_refresh = read(TECHNICAL_REFRESH) if TECHNICAL_REFRESH.exists() else {}
+def build_audit(
+    *,
+    generated_at: str | None = None,
+    catalyst_payload: dict[str, Any] | None = None,
+    event_refresh_payload: dict[str, Any] | None = None,
+    technical_refresh_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    catalyst = catalyst_payload if catalyst_payload is not None else read(CATALYST)
+    event_refresh = event_refresh_payload if event_refresh_payload is not None else read(EVENT_REFRESH)
+    technical_refresh = (
+        technical_refresh_payload
+        if technical_refresh_payload is not None
+        else read(TECHNICAL_REFRESH) if TECHNICAL_REFRESH.exists() else {}
+    )
     named_exception_recheck = technical_refresh.get("latest_named_exception_recheck", {})
     upcoming = catalyst.get("verified_upcoming", [])
     unverified = catalyst.get("unverified_upcoming", [])
@@ -43,6 +53,16 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
     ]
     unverified_not_waiting = [
         row for row in unverified if row.get("status") != "WAITING_OFFICIAL_DATE"
+    ]
+    verified_publication_tickers = {
+        str(value.get("ticker"))
+        for value in catalyst.values()
+        if isinstance(value, dict)
+        and value.get("publication_verified") is True
+        and value.get("ticker")
+    }
+    stale_unverified = [
+        row for row in unverified if str(row.get("ticker")) in verified_publication_tickers
     ]
     event_authority_errors = []
     for row in event_rows:
@@ -67,17 +87,20 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
             "condition_to_close": "Refresh both exact accounts and current market/evidence sources before treating any catalyst row as current or promotion-ready.",
         },
         {
-            "id": "CAT2",
-            "type": "UNVERIFIED_EVENT_DATE",
-            "ticker": "SOUN",
-            "condition_to_close": "Official SoundHound IR must publish or confirm the event date; TradingView estimates cannot complete the gate.",
-        },
-        {
             "id": "CAT3",
             "type": "POST_RELEASE_REVIEW_REQUIRED",
             "condition_to_close": "For each due event, verify actual publication, guidance, thesis, quote/spread, regular-session reversal, factors, capacity, friction, and exact order/error state before any proposal.",
         },
     ]
+    if unverified:
+        blockers.append(
+            {
+                "id": "CAT2",
+                "type": "UNVERIFIED_EVENT_DATE",
+                "tickers": sorted({str(row.get("ticker")) for row in unverified if row.get("ticker")}),
+                "condition_to_close": "Official issuer evidence must publish or confirm every event date; estimates cannot complete the gate.",
+            }
+        )
     if invalid_upcoming:
         blockers.append(
             {
@@ -104,6 +127,16 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
                 "condition_to_close": "Restore read-only authority flags and source-identity status before using event evidence.",
             }
         )
+    if stale_unverified:
+        blockers.append(
+            {
+                "id": "CAT7",
+                "type": "STALE_UNVERIFIED_PUBLICATION_STATE",
+                "tickers": sorted({str(row.get("ticker")) for row in stale_unverified}),
+                "count": len(stale_unverified),
+                "condition_to_close": "Remove each unverified row superseded by verified issuer publication and retain the post-release review state.",
+            }
+        )
 
     return {
         "artifact": "PORTFOLIO_CATALYST_COVERAGE_AUDIT",
@@ -119,7 +152,7 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
             "scheduler_mutation": False,
             "trade_authority": False,
         },
-        "status": "VALIDATED_FAIL_CLOSED" if not (invalid_upcoming or unverified_not_waiting or event_authority_errors or authority_errors) else "BLOCKED_METADATA_OR_STATUS",
+        "status": "VALIDATED_FAIL_CLOSED" if not (invalid_upcoming or unverified_not_waiting or event_authority_errors or authority_errors or stale_unverified) else "BLOCKED_METADATA_OR_STATUS",
         "freshness": {
             "current_live_verified": False,
             "catalyst_register_as_of": catalyst.get("generated_at"),
@@ -142,6 +175,9 @@ def build_audit(*, generated_at: str | None = None) -> dict[str, Any]:
             "latest_official_recheck": official_recheck,
             "invalid_upcoming_rows": len(invalid_upcoming),
             "unverified_not_waiting_rows": len(unverified_not_waiting),
+            "stale_unverified_rows": len(stale_unverified),
+            "publication_state_current": not stale_unverified,
+            "verified_publication_tickers": sorted(verified_publication_tickers),
             "event_authority_errors": event_authority_errors,
             "authority_errors": authority_errors,
             "all_unverified_events_wait_for_official_date": not unverified_not_waiting,

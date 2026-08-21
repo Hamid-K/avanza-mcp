@@ -16,6 +16,8 @@ from scripts.verify_buyback_ladder_artifact import (
     TABLE_PATH,
     latest_dynamic_coverage_path,
     latest_sold_marker_remediation_path,
+    sold_marker_dynamic_reconciliation_rows,
+    sold_marker_governance_gap_rows,
     validate_candidate_rows,
     validate_dynamic_against_sold_marker_recovery,
     validate_dynamic_live_coverage,
@@ -363,6 +365,32 @@ def sold_marker_reconciled_payloads():
     return dynamic, remediation
 
 
+def promote_soundhound_to_governed_dormant_ladder(dynamic, remediation):
+    soundhound = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
+    soundhound.update({
+        "current_protection_classification": "CORE_HOLD_EXCEPTION",
+        "low_exposure_decision": "BUILD_REVIEW",
+        "buyback_coverage_state": "LADDER_DORMANT",
+        "target_rebuild_quantity": 158,
+        "stages_percent_below_sold_marker": [8.2, 15.3],
+        "stage_quantities": [79, 79],
+        "coverage_reason": "The remaining same-sale slice has a stock-specific dormant two-stage review ladder.",
+    })
+    dynamic["summary"].update({
+        "buyback_coverage_state_counts": dict(Counter(row["buyback_coverage_state"] for row in dynamic["rows"])),
+        "low_exposure_decision_counts": dict(Counter(row["low_exposure_decision"] for row in dynamic["rows"])),
+        "percentage_ladders_with_supported_stages": 2,
+        "percentage_not_set_rows": 3,
+    })
+    recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1393460")
+    recovery.update({
+        "state": "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED",
+        "recorded_stage_percentages_below_marker": [8.2, 15.3],
+        "recorded_stage_quantities": [79, 79],
+    })
+    remediation["summary"]["percentage_not_set_open_rows"] = 0
+
+
 def test_buyback_validator_defaults_to_current_refresh_artifacts():
     assert PLAN_PATH.name == "PORTFOLIO_BUYBACK_LADDER_LIVE_REFRESH_20260806.json"
     assert TABLE_PATH.name == "PORTFOLIO_BUYBACK_LADDER_TABLE_20260806.md"
@@ -423,6 +451,31 @@ def test_sold_marker_recovery_accepts_exact_full_path_reconciliation():
 
     assert validate_sold_marker_remediation(remediation) == []
     assert validate_dynamic_against_sold_marker_recovery(dynamic, remediation) == []
+
+
+def test_governed_dormant_ladder_is_not_an_open_completion_gap():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    promote_soundhound_to_governed_dormant_ladder(dynamic, remediation)
+
+    assert validate_dynamic_against_sold_marker_recovery(dynamic, remediation) == []
+    reconciliation = sold_marker_dynamic_reconciliation_rows(dynamic, remediation)
+    gaps = sold_marker_governance_gap_rows(reconciliation)
+
+    assert all(row.get("orderbook_id") != "1393460" for row in gaps)
+
+
+def test_underquantified_dormant_ladder_remains_a_completion_gap():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    promote_soundhound_to_governed_dormant_ladder(dynamic, remediation)
+    soundhound = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
+    soundhound["stage_quantities"] = [79, 78]
+
+    errors = validate_dynamic_against_sold_marker_recovery(dynamic, remediation)
+    reconciliation = sold_marker_dynamic_reconciliation_rows(dynamic, remediation)
+    gaps = sold_marker_governance_gap_rows(reconciliation)
+
+    assert any("stage quantities do not exactly cover" in error for error in errors)
+    assert any(row.get("orderbook_id") == "1393460" for row in gaps)
 
 
 def test_sold_marker_recovery_rejects_rebound_erasing_missed_marvell_path():

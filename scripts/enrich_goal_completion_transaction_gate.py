@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 try:
     from scripts.verify_buyback_ladder_artifact import (
         sold_marker_dynamic_reconciliation_rows,
+        sold_marker_governance_gap_rows,
         validate_dynamic_against_sold_marker_recovery,
         validate_dynamic_live_coverage,
         validate_sold_marker_remediation,
@@ -21,6 +22,7 @@ try:
 except ModuleNotFoundError:  # Direct script execution resolves sibling modules.
     from verify_buyback_ladder_artifact import (
         sold_marker_dynamic_reconciliation_rows,
+        sold_marker_governance_gap_rows,
         validate_dynamic_against_sold_marker_recovery,
         validate_dynamic_live_coverage,
         validate_sold_marker_remediation,
@@ -30,6 +32,7 @@ except ModuleNotFoundError:  # Direct script execution resolves sibling modules.
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT_GLOB = "PORTFOLIO_REQUIREMENT_LEVEL_COMPLETION_AUDIT_*.json"
 TRANSACTION = ROOT / "output" / "PORTFOLIO_TRANSACTION_COVERAGE_AUDIT_20260806.json"
+RAW_TRANSACTION_RECOVERY_GLOB = "PORTFOLIO_RAW_TRANSACTION_RECOVERY_[0-9]*.json"
 MANUAL_EXIT_LIVE = ROOT / "output" / "PORTFOLIO_MANUAL_EXIT_LIVE_RECONCILIATION_20260806_1936.json"
 SCHEDULER = ROOT / "output" / "PORTFOLIO_SCHEDULER_COVERAGE_AUDIT_20260806.json"
 CATALYST = ROOT / "output" / "PORTFOLIO_CATALYST_COVERAGE_AUDIT_20260806.json"
@@ -164,6 +167,34 @@ def latest_live_strategy_audit_path() -> Path | None:
     return paths[-1] if paths else None
 
 
+def latest_raw_transaction_recovery_path() -> Path | None:
+    paths = sorted((ROOT / "output").glob(RAW_TRANSACTION_RECOVERY_GLOB))
+    return paths[-1] if paths else None
+
+
+def _raw_transaction_recovery_is_complete(payload: dict[str, Any]) -> bool:
+    accounts = payload.get("accounts", [])
+    expected_scopes = {(row["tenant_session_id"], row["account_id"]) for row in EXPECTED_SCOPE}
+    actual_scopes = {
+        (str(row.get("tenant_session_id")), str(row.get("account_id")))
+        for row in accounts
+        if isinstance(row, dict)
+    }
+    return (
+        payload.get("artifact") == "PORTFOLIO_RAW_TRANSACTION_RECOVERY"
+        and payload.get("status") == "COMPLETE_EXACT_ACCOUNT_RAW_SOURCE_RECAPTURED"
+        and actual_scopes == expected_scopes
+        and bool(payload.get("verified_raw_row_shape"))
+        and all(
+            isinstance(row, dict)
+            and row.get("exact_account_scope") is True
+            and row.get("truncation_risk") is False
+            and int(row.get("raw_rows", -1)) == int(row.get("returned_rows", -2))
+            for row in accounts
+        )
+    )
+
+
 def _current_buyback_link(payload: dict[str, Any], source: str) -> dict[str, Any]:
     errors = validate_dynamic_live_coverage(payload)
     rows = payload.get("rows", [])
@@ -196,6 +227,26 @@ def _current_sold_marker_recovery_link(
     errors = validate_sold_marker_remediation(payload)
     errors.extend(validate_dynamic_against_sold_marker_recovery(current_buyback, payload))
     errors = list(dict.fromkeys(errors))
+    reconciliation_rows = sold_marker_dynamic_reconciliation_rows(current_buyback, payload)
+    governance_gap_rows = sold_marker_governance_gap_rows(reconciliation_rows)
+    governed_open_rows = [
+        row
+        for row in reconciliation_rows
+        if int(row.get("remaining_open_quantity", 0) or 0) > 0
+        and not any(
+            (
+                gap.get("tenant_session_id"),
+                gap.get("account_id"),
+                gap.get("orderbook_id"),
+            )
+            == (
+                row.get("tenant_session_id"),
+                row.get("account_id"),
+                row.get("orderbook_id"),
+            )
+            for gap in governance_gap_rows
+        )
+    ]
     return {
         "artifact": payload.get("artifact"),
         "source": source,
@@ -213,10 +264,18 @@ def _current_sold_marker_recovery_link(
             "source": current_buyback_source,
             "generated_at": current_buyback.get("generated_at"),
             "row_count": len(payload.get("rows", [])) if isinstance(payload.get("rows"), list) else None,
-            "rows": sold_marker_dynamic_reconciliation_rows(current_buyback, payload),
+            "rows": reconciliation_rows,
             "status": "PASSED" if not errors else "FAILED",
             "error_count": len(errors),
             "errors": errors,
+            "governance_gap_row_count": len(governance_gap_rows),
+            "governance_gap_remaining_quantity": sum(
+                int(row.get("remaining_open_quantity", 0) or 0) for row in governance_gap_rows
+            ),
+            "governed_open_row_count": len(governed_open_rows),
+            "governed_open_remaining_quantity": sum(
+                int(row.get("remaining_open_quantity", 0) or 0) for row in governed_open_rows
+            ),
         },
     }
 
@@ -258,12 +317,14 @@ def enrich(
     live_strategy_audit: dict[str, Any] | None = None,
     buyback_repair: dict[str, Any] | None = None,
     manual_exit_live_reconciliation: dict[str, Any] | None = None,
+    raw_transaction_recovery: dict[str, Any] | None = None,
     position_registry: dict[str, Any] | None = None,
     current_buyback: dict[str, Any] | None = None,
     current_buyback_source: str | None = None,
     *,
     sold_marker_recovery: dict[str, Any] | None = None,
     sold_marker_recovery_source: str | None = None,
+    raw_transaction_recovery_source: str | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     # Do not mutate the caller's nested requirement/blocker rows.  The verifier
@@ -284,6 +345,38 @@ def enrich(
             "requires_new_scoped_live_refresh_before_action"
         ),
     }
+    raw_transaction_recovery = raw_transaction_recovery or {}
+    raw_transaction_verified = _raw_transaction_recovery_is_complete(raw_transaction_recovery)
+    if raw_transaction_verified:
+        raw_manual_exits = raw_transaction_recovery.get("manual_exit_raw_proof", [])
+        enriched["transaction_coverage"].update(
+            {
+                "source": raw_transaction_recovery_source or "output/PORTFOLIO_RAW_TRANSACTION_RECOVERY.json",
+                "status": "EXACT_ACCOUNT_RAW_SOURCE_VERIFIED",
+                "recent_manual_exit_rows": len(raw_manual_exits),
+                "manual_exit_rows": [
+                    {
+                        "tenant_session_id": row.get("tenant_session_id"),
+                        "account_id": str(row.get("account_id")),
+                        "ticker": row.get("ticker"),
+                        "orderbook_id": str(row.get("orderbook_id")),
+                        "trade_date": row.get("trade_date"),
+                        "quantity": row.get("sell_quantity"),
+                        "same_day_buy_quantity": row.get("same_day_buy_quantity"),
+                        "raw_transaction_id": row.get("raw_transaction_id"),
+                        "cancelled": row.get("cancelled"),
+                    }
+                    for row in raw_manual_exits
+                    if isinstance(row, dict)
+                ],
+                "source_raw_rows_available": True,
+                "same_day_buy_fill_review_status": "PROVEN_SCOPED_RECONCILIATION",
+                "same_day_buy_fill_attribution": "PROVEN_SCOPED_RECONCILIATION",
+                "requires_new_scoped_live_refresh_before_action": False,
+                "raw_account_coverage": copy.deepcopy(raw_transaction_recovery.get("accounts", [])),
+                "raw_row_shape_verified": bool(raw_transaction_recovery.get("verified_raw_row_shape")),
+            }
+        )
     manual_exit_live_reconciliation = manual_exit_live_reconciliation or {}
     live_exit_rows = manual_exit_live_reconciliation.get("exits", [])
     if isinstance(live_exit_rows, list):
@@ -302,7 +395,7 @@ def enrich(
                 and "active_sell_quantity" in row
                 for row in live_exit_rows
             ),
-            "source_raw_rows_available": manual_exit_live_reconciliation.get(
+            "source_raw_rows_available": True if raw_transaction_verified else manual_exit_live_reconciliation.get(
                 "transaction_window", {}
             ).get("source_raw_rows_available"),
         }
@@ -328,6 +421,8 @@ def enrich(
         "status": catalyst.get("status"),
         "verified_upcoming_rows": catalyst.get("validation", {}).get("verified_upcoming_rows"),
         "unverified_upcoming_rows": catalyst.get("validation", {}).get("unverified_upcoming_rows"),
+        "stale_unverified_rows": catalyst.get("validation", {}).get("stale_unverified_rows"),
+        "publication_state_current": catalyst.get("validation", {}).get("publication_state_current"),
         "event_refresh_rows": catalyst.get("validation", {}).get("event_refresh_rows"),
         "technical_refresh_rows": catalyst.get("validation", {}).get("technical_refresh_rows"),
         "technical_lookup_failures": catalyst.get("validation", {}).get("technical_lookup_failures", []),
@@ -642,6 +737,15 @@ def enrich(
         )
     )
     if refresh_required:
+        refresh_gate_names = [
+            name
+            for name, coverage in (
+                ("transaction", enriched["transaction_coverage"]),
+                ("scheduler", enriched["scheduler_coverage"]),
+                ("catalyst", enriched["catalyst_coverage"]),
+            )
+            if coverage.get("requires_new_scoped_live_refresh_before_action") is True
+        ]
         control = enriched.setdefault("current_control_state", {})
         control["live_state_current"] = bool(live_scopes)
         control["live_refresh_required_before_action"] = True
@@ -651,8 +755,9 @@ def enrich(
                 f"Current read-only MCP refresh verified Personal {audit_counts['personal_positions']} positions / "
                 f"{audit_counts['personal_stops']} active stops and DarkCell {audit_counts['darkcell_positions']} "
                 f"positions / {audit_counts['darkcell_stops']} active stops; both exact stop audits are complete, open orders and raw failed "
-                "orders are zero, and live authorization is off. Transaction, scheduler, catalyst, forward-outcome, "
-                "holding-only registry, and complete-path sold-marker recovery gates remain open."
+                "orders are zero, and live authorization is off. "
+                f"{', '.join(refresh_gate_names).capitalize()} refresh gates plus forward-outcome, holding-only registry, "
+                "and complete-path sold-marker recovery gates remain open."
             )
         else:
             control["live_checkpoint_status"] = "STAMPED_SNAPSHOT_REQUIRES_NEW_SCOPED_REFRESH"
@@ -660,25 +765,31 @@ def enrich(
                 "The prior exact-account checkpoint is retained as historical evidence only; "
                 "the operator-controlled MCP session is unavailable for a current refresh."
             )
-    transaction_live = transaction.get("status") == "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP"
+    transaction_status = enriched["transaction_coverage"].get("status")
+    transaction_live = transaction_status == "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP"
+    transaction_raw_verified = (
+        transaction_status == "EXACT_ACCOUNT_RAW_SOURCE_VERIFIED"
+        and enriched["transaction_coverage"].get("source_raw_rows_available") is True
+    )
     blockers = [
         row
         for row in enriched.get("completion_blockers", [])
-        if row.get("id") not in {"B4", "B5", "B6", "B11"}
+        if row.get("id") not in {"B4", "B5", "B6", "B9", "B11", "B12"}
     ]
-    blockers.append(
-        {
-            "id": "B4",
-            "type": "TRANSACTION_EVIDENCE_GAP",
-            "item": "Historical raw transaction source remains unavailable" if transaction_live else "Historical raw and recent scoped transaction coverage",
-            "condition_to_close": (
-                "Restore or recapture the raw transaction source and verify row shape without treating the current normalized live history as raw evidence."
-                if transaction_live
-                else "Restore or recapture the raw transaction source, refresh both exact accounts with a complete date window, "
-                "and attribute every manual-exit date's BUY/SELL rows before any recovery interpretation."
-            ),
-        }
-    )
+    if not transaction_raw_verified:
+        blockers.append(
+            {
+                "id": "B4",
+                "type": "TRANSACTION_EVIDENCE_GAP",
+                "item": "Historical raw transaction source remains unavailable" if transaction_live else "Historical raw and recent scoped transaction coverage",
+                "condition_to_close": (
+                    "Restore or recapture the raw transaction source and verify row shape without treating the current normalized live history as raw evidence."
+                    if transaction_live
+                    else "Restore or recapture the raw transaction source, refresh both exact accounts with a complete date window, "
+                    "and attribute every manual-exit date's BUY/SELL rows before any recovery interpretation."
+                ),
+            }
+        )
     enriched["completion_blockers"] = blockers
     if int(scheduler.get("validation", {}).get("terminal_rows_in_active_section", 0) or 0) > 0:
         enriched["completion_blockers"].append(
@@ -714,25 +825,74 @@ def enrich(
     sold_marker_link = enriched.get("current_sold_marker_recovery", {})
     sold_marker_summary = sold_marker_link.get("summary", {})
     sold_marker_validation = sold_marker_link.get("dynamic_reconciliation", {})
-    sold_marker_open = any(
-        int(sold_marker_summary.get(field, 0) or 0) > 0
-        for field in (
-            "repair_required_missed_path_rows",
-            "percentage_not_set_open_rows",
-            "open_material_rows",
-            "remaining_open_quantity_across_material_rows",
-        )
+    sold_marker_reconciliation_rows = sold_marker_validation.get("rows", [])
+    sold_marker_gap_rows = (
+        sold_marker_governance_gap_rows(sold_marker_reconciliation_rows)
+        if isinstance(sold_marker_reconciliation_rows, list)
+        else []
     )
-    if sold_marker_validation.get("status") != "PASSED" or sold_marker_open:
+    repair_gap_rows = [
+        row for row in sold_marker_gap_rows
+        if str(row.get("recovery_state") or "").startswith("REPAIR_REQUIRED")
+    ]
+    partial_gap_rows = [
+        row for row in sold_marker_gap_rows
+        if str(row.get("recovery_state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")
+    ]
+    unsupported_gap_rows = [
+        row for row in sold_marker_gap_rows
+        if row.get("recovery_state") == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"
+    ]
+    governed_dormant_rows = [
+        row for row in sold_marker_reconciliation_rows
+        if row.get("recovery_state") == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+        and not any(
+            (
+                gap.get("tenant_session_id"),
+                gap.get("account_id"),
+                gap.get("orderbook_id"),
+            )
+            == (
+                row.get("tenant_session_id"),
+                row.get("account_id"),
+                row.get("orderbook_id"),
+            )
+            for gap in sold_marker_gap_rows
+        )
+    ]
+    percentage_not_set_repair_rows = [
+        row for row in repair_gap_rows
+        if row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
+    ]
+    if percentage_not_set_repair_rows or unsupported_gap_rows:
+        unresolved_percentage_rows = percentage_not_set_repair_rows + unsupported_gap_rows
+        unresolved_labels = ", ".join(
+            f"{row.get('tenant_session_id')}:{row.get('orderbook_id')}"
+            for row in unresolved_percentage_rows
+        )
+        enriched["completion_blockers"].append(
+            {
+                "id": "B9",
+                "type": "BUYBACK_EVIDENCE_GAPS",
+                "item": (
+                    f"{len(unresolved_percentage_rows)} material sold-marker row(s) remain PERCENTAGE_NOT_SET "
+                    f"({unresolved_labels}); terminal hold/no-reentry/named-exception rows are excluded"
+                ),
+                "condition_to_close": (
+                    "For each listed material row, either record an individually supported stock-specific vector with exact "
+                    "quantity and promotion evidence, or close it through an explicit current-thesis no-reentry decision."
+                ),
+            }
+        )
+    if sold_marker_validation.get("status") != "PASSED" or sold_marker_gap_rows:
         enriched["completion_blockers"].append(
             {
                 "id": "B11",
                 "type": "SOLD_MARKER_PATH_RECOVERY_GAP",
                 "item": (
-                    f"Complete-path sold-marker audit retains "
-                    f"{int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
-                    f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
-                    f"and {int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial recovery rows"
+                    f"Complete-path sold-marker audit retains {len(repair_gap_rows)} repair row(s), "
+                    f"{len(partial_gap_rows)} partial uncovered remainder(s), and {len(unsupported_gap_rows)} unsupported "
+                    f"material gap(s); {len(governed_dormant_rows)} fully quantified dormant ladder(s) are governed and excluded"
                 ),
                 "condition_to_close": (
                     "Reconcile the complete authenticated post-sale path to the latest dynamic buyback ledger and live position audit. "
@@ -743,7 +903,7 @@ def enrich(
         )
     for row in enriched.get("requirements", []):
         if row.get("id") == "R1":
-            if transaction_live:
+            if transaction_live or transaction_raw_verified:
                 row["evidence"] = _remove_legacy_clauses(
                     row.get("evidence"),
                     (
@@ -754,6 +914,9 @@ def enrich(
             row["evidence"] = _append_once(
                 row.get("evidence"),
                 (
+                    "Exact-account raw BUY/SELL history is recaptured with verified row shape, complete Personal and DarkCell windows, and all five manual exits matched to uncancelled SELL rows with zero same-day BUY quantity."
+                    if transaction_raw_verified
+                    else
                     "Historical summary transaction coverage is reconciled to 107 exact account-position rows, and a current "
                     "scoped live transaction window proves all five manual-exit dates have one SELL and zero related same-day BUY rows; "
                     "the historical raw source remains unavailable."
@@ -762,33 +925,56 @@ def enrich(
                     "the five exact manual-exit identities are linked, but raw/recent scoped rows remain open."
                 ),
             )
-            row["remaining_proof"] = _append_once(
-                _remove_legacy_clauses(
-                    row.get("remaining_proof"),
-                    (
-                        "Complete raw-source recovery, scoped recent transaction refresh, and same-day BUY attribution."
-                    )
-                    if transaction_live
-                    else (),
-                ),
-                (
-                    "Complete raw-source recovery and row-shape verification; do not infer raw evidence from normalized history."
-                    if transaction_live
-                    else "Complete raw-source recovery, scoped recent transaction refresh, and same-day BUY attribution."
-                ),
-            )
-        if row.get("id") == "R5":
-            row["evidence"] = _append_once(
-                row.get("evidence"),
-                "The scheduler contract is validated separately; five terminal rows remain in its active section and are explicitly blocked from silent completion.",
-            )
-            row["remaining_proof"] = _append_once(
+            raw_remaining = _remove_legacy_clauses(
                 row.get("remaining_proof"),
-                "Resolve the active/archive ledger gap and complete the next scoped publication/reversal scan.",
+                (
+                    "Complete raw-source recovery, scoped recent transaction refresh, and same-day BUY attribution.",
+                    "Complete raw-source recovery and row-shape verification; do not infer raw evidence from normalized history.",
+                ),
             )
-            row["evidence"] = _append_once(
+            if transaction_raw_verified:
+                row["remaining_proof"] = raw_remaining
+            else:
+                row["remaining_proof"] = _append_once(
+                    raw_remaining,
+                    (
+                        "Complete raw-source recovery and row-shape verification; do not infer raw evidence from normalized history."
+                        if transaction_live
+                        else "Complete raw-source recovery, scoped recent transaction refresh, and same-day BUY attribution."
+                    ),
+                )
+        if row.get("id") == "R5":
+            row["evidence"] = _remove_legacy_clauses(
                 row.get("evidence"),
-                "Catalyst coverage separately keeps 21 sourced upcoming rows and one SoundHound WAITING_OFFICIAL_DATE row under fail-closed status rules.",
+                (
+                    "The legacy catalyst-coverage snapshot still contains a stale SoundHound WAITING_OFFICIAL_DATE row even though the official August 5 release is now verified elsewhere, so R5 remains fail-closed pending a regenerated current catalyst audit.",
+                    "The scheduler contract is validated separately; five terminal rows remain in its active section and are explicitly blocked from silent completion.",
+                ),
+            )
+            row["remaining_proof"] = _remove_legacy_clauses(
+                row.get("remaining_proof"),
+                (
+                    "Regenerate current catalyst coverage so verified publications supersede stale date labels, then continue issuer-first call and regular-session reversal review for every due non-terminal row; refresh quote, spread, technical, factor, capacity, and friction evidence before any proposal.",
+                    "Resolve the active/archive ledger gap and complete the next scoped publication/reversal scan.",
+                ),
+            )
+            if int(enriched["scheduler_coverage"].get("terminal_rows_in_active_section", 0) or 0) > 0:
+                row["evidence"] = _append_once(
+                    row.get("evidence"),
+                    "The scheduler contract is validated separately; terminal rows remain in its active section and are explicitly blocked from silent completion.",
+                )
+                row["remaining_proof"] = _append_once(
+                    row.get("remaining_proof"),
+                    "Resolve the active/archive ledger gap and complete the next scoped publication/reversal scan.",
+                )
+            verified_rows = int(enriched["catalyst_coverage"].get("verified_upcoming_rows", 0) or 0)
+            unverified_rows = int(enriched["catalyst_coverage"].get("unverified_upcoming_rows", 0) or 0)
+            row["evidence"] = _append_once(
+                _remove_legacy_clauses(
+                    row.get("evidence"),
+                    ("Catalyst coverage separately keeps 21 sourced upcoming rows and one SoundHound WAITING_OFFICIAL_DATE row under fail-closed status rules.",),
+                ),
+                f"Catalyst coverage separately records {verified_rows} verified-upcoming and {unverified_rows} unverified-upcoming rows under publication-aware fail-closed status rules.",
             )
             row["remaining_proof"] = _append_once(
                 row.get("remaining_proof"),
@@ -908,6 +1094,12 @@ def main() -> int:
     sold_marker_recovery_path = latest_sold_marker_remediation_path()
     sold_marker_recovery = json.loads(sold_marker_recovery_path.read_text(encoding="utf-8"))
     manual_exit_live_reconciliation = json.loads(MANUAL_EXIT_LIVE.read_text(encoding="utf-8")) if MANUAL_EXIT_LIVE.exists() else {}
+    raw_transaction_recovery_path = latest_raw_transaction_recovery_path()
+    raw_transaction_recovery = (
+        json.loads(raw_transaction_recovery_path.read_text(encoding="utf-8"))
+        if raw_transaction_recovery_path is not None
+        else {}
+    )
     live_strategy_audit_path = latest_live_strategy_audit_path()
     live_strategy_audit = (
         json.loads(live_strategy_audit_path.read_text(encoding="utf-8"))
@@ -934,11 +1126,17 @@ def main() -> int:
                 live_strategy_audit,
                 buyback_repair,
                 manual_exit_live_reconciliation,
+                raw_transaction_recovery,
                 position_registry=position_registry,
                 current_buyback=current_buyback,
                 current_buyback_source=f"output/{current_buyback_path.name}",
                 sold_marker_recovery=sold_marker_recovery,
                 sold_marker_recovery_source=f"output/{sold_marker_recovery_path.name}",
+                raw_transaction_recovery_source=(
+                    f"output/{raw_transaction_recovery_path.name}"
+                    if raw_transaction_recovery_path is not None
+                    else None
+                ),
             ),
             indent=2,
         )
