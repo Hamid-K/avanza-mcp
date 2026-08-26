@@ -200,6 +200,7 @@ def _current_buyback_link(payload: dict[str, Any], source: str) -> dict[str, Any
     rows = payload.get("rows", [])
     return {
         "artifact": payload.get("artifact"),
+        "schema_version": payload.get("schema_version"),
         "source": source,
         "generated_at": payload.get("generated_at"),
         "live_state_as_of": payload.get("live_state_as_of"),
@@ -249,6 +250,7 @@ def _current_sold_marker_recovery_link(
     ]
     return {
         "artifact": payload.get("artifact"),
+        "schema_version": payload.get("schema_version"),
         "source": source,
         "generated_at": payload.get("generated_at"),
         "verified_at": payload.get("verified_at"),
@@ -1042,7 +1044,7 @@ def enrich(
                     (
                         "The latest complete-path sold-marker remediation is linked to the current dynamic buyback ledger; "
                         f"it retains {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
-                        f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
+                        f"{int(sold_marker_summary.get('material_path_open_rows', sold_marker_summary.get('percentage_not_set_open_rows', 0)) or 0)} unsupported material gaps, "
                         f"{int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows, and "
                         f"{len(invalid_no_reentry_rows)} invalid or expired no-reentry closures without allowing a "
                         "rebound to erase them."
@@ -1087,7 +1089,7 @@ def enrich(
                 (
                     "The latest complete-path sold-marker remediation is linked to the current dynamic buyback ledger; "
                     f"it retains {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
-                    f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
+                    f"{int(sold_marker_summary.get('material_path_open_rows', sold_marker_summary.get('percentage_not_set_open_rows', 0)) or 0)} unsupported material gaps, "
                     f"{int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows, and "
                     f"{len(invalid_no_reentry_rows)} invalid or expired no-reentry closures without allowing a "
                     "rebound to erase them."

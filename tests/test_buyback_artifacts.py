@@ -3,13 +3,15 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from scripts.build_buyback_daily_coverage_json import (
     candidate_metrics,
     extract_latest_refresh_attempt,
     extract_source_as_of,
     freshness_metadata,
 )
-from scripts.enrich_r17_economic_classification import enrich_payload
+from scripts.enrich_r17_economic_classification import enrich_payload, enrich_remediation_payload
 from scripts.verify_buyback_ladder_artifact import (
     DYNAMIC_LIVE_GLOB,
     SOLD_MARKER_REMEDIATION_GLOB,
@@ -22,6 +24,8 @@ from scripts.verify_buyback_ladder_artifact import (
     validate_candidate_rows,
     validate_dynamic_against_sold_marker_recovery,
     validate_dynamic_live_coverage,
+    validate_r17_open_path_evidence,
+    validate_r17_path_links,
     validate_sold_marker_remediation,
     validate_sold_marker_remediation_against_worklist,
     validate_sold_marker_universe_against_full_path,
@@ -187,6 +191,154 @@ def dynamic_buyback_payload():
         },
         "rows": rows,
     }
+
+
+def r17_path_row(
+    *,
+    tenant_session_id,
+    account_id,
+    orderbook_id,
+    instrument,
+    quantity,
+    crossed,
+    named=False,
+):
+    maximum = 12.5 if crossed else 5.0
+    transaction_id = f"sale-{tenant_session_id}-{account_id}-{orderbook_id}"
+    return {
+        "tenant_session_id": tenant_session_id,
+        "account_id": account_id,
+        "orderbook_id": orderbook_id,
+        "instrument": instrument,
+        "remaining_open_quantity": quantity,
+        "remaining_open_lot_count": 1,
+        "chart_from": "2026-01-01",
+        "chart_to": "2026-08-26",
+        "chart_point_count": 100,
+        "current_close": 100.0,
+        "weighted_open_sale_marker": 105.0,
+        "current_drop_below_weighted_marker_percent": 4.7619,
+        "maximum_open_lot_drop_percent": maximum,
+        "open_lots_crossing_8pct_alarm": 1 if crossed else 0,
+        "crossed_8pct_review_alarm": crossed,
+        "active_buy_quantity": 0,
+        "sale_attributed_active_buy_quantity": 0,
+        "technical": "Neutral",
+        "rsi": 50.0,
+        "atr20_percent_of_current_close": 4.0,
+        "named_exception": named,
+        "path_state": (
+            "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
+            if crossed and named
+            else "MISSED_PATH_REPAIR_REQUIRED"
+            if crossed
+            else "LADDER_GAP_PERCENTAGE_NOT_SET"
+        ),
+        "exact_lots": [
+            {
+                "sale_lot_id": transaction_id,
+                "sale_transaction_id": transaction_id,
+                "sale_date": "2026-08-01",
+                "remaining_open_quantity": quantity,
+                "maximum_drop_below_marker_percent": maximum,
+                "crossed_8pct_review_alarm": crossed,
+            }
+        ],
+    }
+
+
+def r17_path_payload(rows):
+    return {
+        "artifact": "PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE",
+        "schema_version": 1,
+        "generated_at": "2026-08-26T17:54:00+02:00",
+        "authority": "ANALYSIS_ONLY",
+        "broker_mutation": False,
+        "scope": [
+            {"tenant_session_id": "personal", "account_id": "5227886"},
+            {"tenant_session_id": "darkcell", "account_id": "7616265"},
+        ],
+        "summary": {
+            "exact_account_rows": len(rows),
+            "unique_orderbooks": len({row["orderbook_id"] for row in rows}),
+            "exact_open_sale_lots": sum(row["remaining_open_lot_count"] for row in rows),
+            "remaining_open_quantity": sum(row["remaining_open_quantity"] for row in rows),
+            "rows_crossing_8pct_review_alarm": sum(row["crossed_8pct_review_alarm"] for row in rows),
+            "lots_crossing_8pct_review_alarm": sum(row["open_lots_crossing_8pct_alarm"] for row in rows),
+            "named_exception_rows_with_crossing": sum(
+                row["crossed_8pct_review_alarm"] and row["named_exception"] for row in rows
+            ),
+            "path_or_marker_errors": 0,
+        },
+        "rows": rows,
+    }
+
+
+def schema5_inputs(*, named_crossing=False):
+    payload = dynamic_buyback_payload()
+    alpha = payload["rows"][0]
+    alpha.update({
+        "active_buy_volume": 0,
+        "buyback_coverage_state": "LADDER_GAP",
+        "low_exposure_decision": "REPAIR_REQUIRED",
+        "target_rebuild_quantity": 3,
+        "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+        "stage_quantities": None,
+    })
+    gamma = payload["rows"][2]
+    if named_crossing:
+        gamma["current_protection_classification"] = "NAMED_EXCEPTION"
+        gamma["low_exposure_decision"] = "NAMED_EXCEPTION"
+    payload["summary"].update({
+        "buyback_coverage_state_counts": {"LADDER_GAP": 2, "LEDGER_ONLY": 1},
+        "low_exposure_decision_counts": {
+            "REPAIR_REQUIRED": 1,
+            "INTENTIONAL_MARKER_OR_CORE_HOLD": 1,
+            "NAMED_EXCEPTION" if named_crossing else "EXIT_OR_NO_REENTRY_REVIEW": 1,
+        },
+        "percentage_ladders_with_supported_stages": 0,
+        "percentage_not_set_rows": 3,
+    })
+    registry = {
+        "updated_at": "2026-08-26T17:20:00+02:00",
+        "accounts": {
+            "5227886": {
+                "positions": {
+                    "1002": {
+                        "instrument": "Example Beta",
+                        "strategy_class": "CORE_COMPOUNDER",
+                        "thesis": "Current exposure is intentional.",
+                        "audit_status": "VALID_CURRENT_PLAN",
+                        "bucket": "CORE_HOLD",
+                        "stance": "Hold the current core.",
+                        "protection_classification": "CORE_HOLD_EXCEPTION",
+                        "protection_reason": "The reviewed core intentionally has no active SELL.",
+                        "next_gate": "Review at earnings or a thesis-changing event.",
+                    }
+                }
+            }
+        },
+    }
+    path_rows = [
+        r17_path_row(
+            tenant_session_id="personal",
+            account_id="5227886",
+            orderbook_id="1001",
+            instrument="Example Alpha",
+            quantity=3,
+            crossed=True,
+        ),
+        r17_path_row(
+            tenant_session_id="darkcell",
+            account_id="7616265",
+            orderbook_id="1003",
+            instrument="Example Gamma",
+            quantity=4,
+            crossed=named_crossing,
+            named=named_crossing,
+        ),
+    ]
+    return payload, registry, r17_path_payload(path_rows)
 
 
 def sold_marker_reconciled_payloads():
@@ -666,6 +818,140 @@ def test_r17_economic_enrichment_resolves_only_completed_reviewed_holds():
     assert rows["1003"]["low_exposure_decision"] == "REPAIR_REQUIRED"
     assert result["summary"]["economically_resolved_rows"] == 1
     assert result["summary"]["economically_unresolved_rows"] == 2
+
+
+def test_schema5_enrichment_binds_complete_path_and_preserves_missed_crossing():
+    payload, registry, path = schema5_inputs()
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-26T18:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_20260826_1754.json",
+    )
+
+    rows = {row["orderbook_id"]: row for row in result["rows"]}
+    assert result["schema_version"] == 5
+    assert rows["1001"]["buyback_coverage_state"] == "REPAIR_REQUIRED"
+    assert rows["1001"]["low_exposure_decision"] == "REPAIR_REQUIRED"
+    assert rows["1001"]["current_protection_classification"] == "MARKER_EXCEPTION"
+    assert rows["1001"]["full_path_evidence"]["path_state"] == "MISSED_PATH_REPAIR_REQUIRED"
+    assert rows["1003"]["buyback_coverage_state"] == "LADDER_GAP"
+    assert result["summary"]["repair_required_missed_path_rows"] == 1
+    assert result["summary"]["rows_crossing_8pct_review_alarm"] == 1
+    assert validate_dynamic_live_coverage(result) == []
+    assert validate_r17_open_path_evidence(path) == []
+
+    remediation = {
+        "artifact": "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE",
+        "schema_version": 3,
+        "rows": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": "5227886",
+                "orderbook_id": "1001",
+                "remaining_open_quantity": 3,
+            },
+            {
+                "tenant_session_id": "darkcell",
+                "account_id": "7616265",
+                "orderbook_id": "1003",
+                "remaining_open_quantity": 4,
+            },
+        ],
+        "summary": {},
+        "verification": {},
+    }
+    enriched_remediation = enrich_remediation_payload(
+        remediation,
+        path,
+        generated_at="2026-08-26T18:00:00+02:00",
+        source_path="output/remediation-input.json",
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_20260826_1754.json",
+    )
+    assert enriched_remediation["schema_version"] == 4
+    assert validate_r17_path_links(result, enriched_remediation, path) == []
+
+
+def test_schema5_enrichment_rejects_missing_or_quantity_mismatched_path_row():
+    payload, registry, path = schema5_inputs()
+    missing = copy.deepcopy(path)
+    missing["rows"] = missing["rows"][:1]
+    missing["summary"].update({
+        "exact_account_rows": 1,
+        "unique_orderbooks": 1,
+        "exact_open_sale_lots": 1,
+        "remaining_open_quantity": 3,
+        "rows_crossing_8pct_review_alarm": 1,
+        "lots_crossing_8pct_review_alarm": 1,
+    })
+    with pytest.raises(ValueError, match="do not match dynamic open rows"):
+        enrich_payload(
+            payload,
+            registry,
+            generated_at="2026-08-26T18:00:00+02:00",
+            source_path="output/input.json",
+            path_evidence=missing,
+            path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_test.json",
+        )
+
+    mismatched = copy.deepcopy(path)
+    mismatched["rows"][0]["remaining_open_quantity"] = 4
+    mismatched["rows"][0]["exact_lots"][0]["remaining_open_quantity"] = 4
+    mismatched["summary"]["remaining_open_quantity"] += 1
+    with pytest.raises(ValueError, match="target quantity mismatch"):
+        enrich_payload(
+            payload,
+            registry,
+            generated_at="2026-08-26T18:00:00+02:00",
+            source_path="output/input.json",
+            path_evidence=mismatched,
+            path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_test.json",
+        )
+
+
+def test_schema5_named_crossing_stays_named_and_requires_named_review():
+    payload, registry, path = schema5_inputs(named_crossing=True)
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-26T18:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_20260826_1754.json",
+    )
+
+    gamma = next(row for row in result["rows"] if row["orderbook_id"] == "1003")
+    assert gamma["buyback_coverage_state"] == "LADDER_GAP"
+    assert gamma["low_exposure_decision"] == "NAMED_EXCEPTION"
+    assert gamma["full_path_evidence"]["path_state"] == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
+    assert result["summary"]["named_exception_path_review_rows"] == 1
+    assert validate_dynamic_live_coverage(result) == []
+
+
+def test_schema5_validator_rejects_erased_crossing_and_summary_drift():
+    payload, registry, path = schema5_inputs()
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-26T18:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_20260826_1754.json",
+    )
+    alpha = next(row for row in result["rows"] if row["orderbook_id"] == "1001")
+    alpha["buyback_coverage_state"] = "LADDER_GAP"
+    result["summary"]["buyback_coverage_state_counts"].update({
+        "REPAIR_REQUIRED": 0,
+        "LADDER_GAP": 2,
+    })
+    result["summary"]["repair_required_missed_path_rows"] = 0
+
+    errors = validate_dynamic_live_coverage(result)
+
+    assert any("crossed ordinary complete path is not REPAIR_REQUIRED" in error for error in errors)
+    assert "dynamic missed-path repair count mismatch" in errors
 
 
 def test_dynamic_buyback_validator_rejects_count_drift():

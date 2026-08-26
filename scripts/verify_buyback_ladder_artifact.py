@@ -25,6 +25,7 @@ DYNAMIC_LIVE_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
 SOLD_MARKER_REMEDIATION_GLOB = "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.json"
 SOLD_MARKER_FULL_PATH_GLOB = "PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_[0-9]*.json"
 R17_MIGRATION_WORKLIST_GLOB = "PORTFOLIO_R17_MULTI_SALE_MIGRATION_WORKLIST_[0-9]*.json"
+R17_OPEN_PATH_EVIDENCE_GLOB = "PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_[0-9]*.json"
 
 DYNAMIC_BUYBACK_STATES = {
     "LADDER_ACTIVE",
@@ -79,6 +80,13 @@ def latest_r17_migration_worklist_path() -> Path | None:
     """Return the newest raw-chronology R17 migration worklist."""
 
     paths = sorted((ROOT / "output").glob(R17_MIGRATION_WORKLIST_GLOB))
+    return paths[-1] if paths else None
+
+
+def latest_r17_open_path_evidence_path() -> Path | None:
+    """Return the newest exact open-sale complete-path evidence artifact."""
+
+    paths = sorted((ROOT / "output").glob(R17_OPEN_PATH_EVIDENCE_GLOB))
     return paths[-1] if paths else None
 
 
@@ -235,6 +243,253 @@ def _remediation_key(row: dict[str, Any]) -> tuple[str, str, str]:
         str(row.get("account_id") or ""),
         str(row.get("orderbook_id") or ""),
     )
+
+
+def _path_evidence_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return _remediation_key(row)
+
+
+def _expected_path_state(*, crossed: bool, named: bool) -> str:
+    if crossed and named:
+        return "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
+    if crossed:
+        return "MISSED_PATH_REPAIR_REQUIRED"
+    return "LADDER_GAP_PERCENTAGE_NOT_SET"
+
+
+def _validate_embedded_path_evidence(
+    evidence: Any,
+    *,
+    key: tuple[str, str, str],
+    expected_quantity: Any,
+) -> list[str]:
+    """Validate the percentage-only path link embedded in a governed row."""
+
+    errors: list[str] = []
+    if not isinstance(evidence, dict):
+        return [f"complete-path evidence is missing for {key}"]
+    required = {
+        "source",
+        "source_generated_at",
+        "chart_from",
+        "chart_to",
+        "chart_point_count",
+        "remaining_open_quantity",
+        "remaining_open_lot_count",
+        "open_sale_transaction_ids",
+        "active_buy_quantity",
+        "sale_attributed_active_buy_quantity",
+        "maximum_open_lot_drop_percent",
+        "current_drop_below_weighted_marker_percent",
+        "open_lots_crossing_8pct_alarm",
+        "crossed_8pct_review_alarm",
+        "technical",
+        "rsi",
+        "atr20_percent_of_current_close",
+        "named_exception",
+        "path_state",
+    }
+    _require(required.issubset(evidence), f"complete-path evidence fields are missing for {key}", errors)
+    _require(
+        "PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_" in str(evidence.get("source") or ""),
+        f"complete-path source is invalid for {key}",
+        errors,
+    )
+    _require(
+        _artifact_time(evidence.get("source_generated_at")) is not None,
+        f"complete-path source timestamp is invalid for {key}",
+        errors,
+    )
+    _require(
+        evidence.get("remaining_open_quantity") == expected_quantity
+        and _is_positive_integer(evidence.get("remaining_open_quantity")),
+        f"complete-path quantity does not match the governed open quantity for {key}",
+        errors,
+    )
+    lot_count = evidence.get("remaining_open_lot_count")
+    transaction_ids = evidence.get("open_sale_transaction_ids")
+    _require(_is_positive_integer(lot_count), f"complete-path open-lot count is invalid for {key}", errors)
+    _require(
+        isinstance(transaction_ids, list)
+        and len(transaction_ids) == lot_count
+        and all(bool(str(value or "")) for value in transaction_ids)
+        and len(transaction_ids) == len(set(transaction_ids)),
+        f"complete-path sale transaction ids are invalid for {key}",
+        errors,
+    )
+    active_buy = evidence.get("active_buy_quantity")
+    attributed_buy = evidence.get("sale_attributed_active_buy_quantity")
+    _require(_is_nonnegative_integer(active_buy), f"complete-path active BUY quantity is invalid for {key}", errors)
+    _require(
+        _is_nonnegative_integer(attributed_buy)
+        and (not _is_nonnegative_integer(active_buy) or attributed_buy <= active_buy),
+        f"complete-path sale-attributed BUY quantity is invalid for {key}",
+        errors,
+    )
+    _require(
+        _is_positive_integer(evidence.get("chart_point_count")),
+        f"complete-path chart point count is invalid for {key}",
+        errors,
+    )
+    maximum = evidence.get("maximum_open_lot_drop_percent")
+    current = evidence.get("current_drop_below_weighted_marker_percent")
+    _require(
+        isinstance(maximum, (int, float)) and not isinstance(maximum, bool),
+        f"complete-path maximum drop is invalid for {key}",
+        errors,
+    )
+    _require(
+        isinstance(current, (int, float)) and not isinstance(current, bool),
+        f"complete-path current marker drop is invalid for {key}",
+        errors,
+    )
+    crossing_count = evidence.get("open_lots_crossing_8pct_alarm")
+    _require(
+        _is_nonnegative_integer(crossing_count) and (not _is_positive_integer(lot_count) or crossing_count <= lot_count),
+        f"complete-path crossing count is invalid for {key}",
+        errors,
+    )
+    crossed = evidence.get("crossed_8pct_review_alarm")
+    named = evidence.get("named_exception")
+    _require(isinstance(crossed, bool), f"complete-path crossing flag is invalid for {key}", errors)
+    _require(isinstance(named, bool), f"complete-path named flag is invalid for {key}", errors)
+    if isinstance(crossed, bool) and _is_nonnegative_integer(crossing_count):
+        _require(
+            crossed == (crossing_count > 0),
+            f"complete-path crossing flag does not match its lot count for {key}",
+            errors,
+        )
+    if isinstance(crossed, bool) and isinstance(maximum, (int, float)) and not isinstance(maximum, bool):
+        _require(
+            crossed == (float(maximum) >= 8.0),
+            f"complete-path 8 percent alarm does not match maximum drawdown for {key}",
+            errors,
+        )
+    if isinstance(crossed, bool) and isinstance(named, bool):
+        _require(
+            evidence.get("path_state") == _expected_path_state(crossed=crossed, named=named),
+            f"complete-path state is inconsistent for {key}",
+            errors,
+        )
+    return errors
+
+
+def validate_r17_open_path_evidence(payload: dict[str, Any]) -> list[str]:
+    """Validate the authenticated open-lot price-path source itself."""
+
+    errors: list[str] = []
+    rows = payload.get("rows", [])
+    summary = payload.get("summary", {})
+    _require(
+        payload.get("artifact") == "PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE",
+        "R17 open-sale path artifact id missing",
+        errors,
+    )
+    _require(payload.get("schema_version") == 1, "R17 open-sale path schema version must be 1", errors)
+    _require(payload.get("authority") == "ANALYSIS_ONLY", "R17 open-sale path must remain analysis-only", errors)
+    _require(payload.get("broker_mutation") is False, "R17 open-sale path broker mutation must be false", errors)
+    _require(_artifact_time(payload.get("generated_at")) is not None, "R17 open-sale path generated_at invalid", errors)
+    _require(isinstance(rows, list) and bool(rows), "R17 open-sale path rows must be non-empty", errors)
+    if not isinstance(rows, list):
+        return errors
+
+    keys: list[tuple[str, str, str]] = []
+    total_lots = 0
+    total_quantity = 0
+    crossed_rows = 0
+    crossed_lots = 0
+    named_crossed_rows = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            errors.append("R17 open-sale path contains a non-object row")
+            continue
+        key = _path_evidence_key(row)
+        keys.append(key)
+        _require(key[:2] in EXPECTED_DYNAMIC_SCOPES and bool(key[2]), f"R17 open-sale path scope invalid for {key}", errors)
+        remaining = row.get("remaining_open_quantity")
+        lot_count = row.get("remaining_open_lot_count")
+        lots = row.get("exact_lots")
+        _require(_is_positive_integer(remaining), f"R17 open-sale path quantity invalid for {key}", errors)
+        _require(_is_positive_integer(lot_count), f"R17 open-sale path lot count invalid for {key}", errors)
+        _require(isinstance(lots, list) and len(lots) == lot_count, f"R17 open-sale path lots mismatch for {key}", errors)
+        if not isinstance(lots, list):
+            continue
+        lot_quantity = 0
+        lot_crossings = 0
+        transaction_ids: list[str] = []
+        maximums: list[float] = []
+        for lot in lots:
+            if not isinstance(lot, dict):
+                errors.append(f"R17 open-sale path contains a non-object lot for {key}")
+                continue
+            quantity = lot.get("remaining_open_quantity")
+            maximum = lot.get("maximum_drop_below_marker_percent")
+            transaction_ids.append(str(lot.get("sale_transaction_id") or ""))
+            if _is_positive_integer(quantity):
+                lot_quantity += quantity
+            else:
+                errors.append(f"R17 open-sale path lot quantity invalid for {key}")
+            if isinstance(maximum, (int, float)) and not isinstance(maximum, bool):
+                maximums.append(float(maximum))
+            else:
+                errors.append(f"R17 open-sale path lot maximum drop invalid for {key}")
+            lot_crossings += lot.get("crossed_8pct_review_alarm") is True
+        _require(
+            bool(transaction_ids)
+            and all(transaction_ids)
+            and len(transaction_ids) == len(set(transaction_ids)),
+            f"R17 open-sale path transaction ids invalid for {key}",
+            errors,
+        )
+        _require(lot_quantity == remaining, f"R17 open-sale path lot quantity mismatch for {key}", errors)
+        _require(
+            row.get("open_lots_crossing_8pct_alarm") == lot_crossings,
+            f"R17 open-sale path crossing count mismatch for {key}",
+            errors,
+        )
+        active_buy = row.get("active_buy_quantity")
+        attributed_buy = row.get("sale_attributed_active_buy_quantity")
+        _require(_is_nonnegative_integer(active_buy), f"R17 open-sale path active BUY invalid for {key}", errors)
+        _require(
+            _is_nonnegative_integer(attributed_buy)
+            and (not _is_nonnegative_integer(active_buy) or attributed_buy <= active_buy),
+            f"R17 open-sale path sale-attributed BUY invalid for {key}",
+            errors,
+        )
+        crossed = row.get("crossed_8pct_review_alarm") is True
+        named = row.get("named_exception") is True
+        _require(crossed == (lot_crossings > 0), f"R17 open-sale path crossing state mismatch for {key}", errors)
+        maximum = row.get("maximum_open_lot_drop_percent")
+        if maximums and isinstance(maximum, (int, float)) and not isinstance(maximum, bool):
+            _require(abs(float(maximum) - max(maximums)) <= 0.0001, f"R17 open-sale path maximum mismatch for {key}", errors)
+            _require(crossed == (float(maximum) >= 8.0), f"R17 open-sale path alarm mismatch for {key}", errors)
+        else:
+            errors.append(f"R17 open-sale path row maximum drop invalid for {key}")
+        _require(
+            row.get("path_state") == _expected_path_state(crossed=crossed, named=named),
+            f"R17 open-sale path state mismatch for {key}",
+            errors,
+        )
+        total_lots += int(lot_count or 0)
+        total_quantity += int(remaining or 0)
+        crossed_rows += crossed
+        crossed_lots += lot_crossings
+        named_crossed_rows += crossed and named
+
+    _require(len(keys) == len(set(keys)), "R17 open-sale path contains duplicate exact rows", errors)
+    expected_summary = {
+        "exact_account_rows": len(rows),
+        "unique_orderbooks": len({key[2] for key in keys}),
+        "exact_open_sale_lots": total_lots,
+        "remaining_open_quantity": total_quantity,
+        "rows_crossing_8pct_review_alarm": crossed_rows,
+        "lots_crossing_8pct_review_alarm": crossed_lots,
+        "named_exception_rows_with_crossing": named_crossed_rows,
+        "path_or_marker_errors": 0,
+    }
+    for field, expected in expected_summary.items():
+        _require(summary.get(field) == expected, f"R17 open-sale path summary {field} mismatch", errors)
+    return errors
 
 
 def _allocation_source_totals(
@@ -626,7 +881,7 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     schema_version = payload.get("schema_version")
-    _require(schema_version in {2, 3}, "sold-marker remediation schema version must be 2 or 3", errors)
+    _require(schema_version in {2, 3, 4}, "sold-marker remediation schema version must be 2, 3 or 4", errors)
     _require(bool(str(payload.get("generated_at") or "").strip()), "sold-marker remediation generated_at missing", errors)
     remediation_reference_time = _latest_time(
         payload.get("generated_at"),
@@ -668,6 +923,14 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         if not isinstance(row, dict):
             continue
         errors.extend(_validate_recovery_cycle(row, remediation_reference_time, int(schema_version or 2)))
+        if int(schema_version or 2) >= 4 and _is_positive_integer(row.get("remaining_open_quantity")):
+            errors.extend(
+                _validate_embedded_path_evidence(
+                    row.get("full_path_evidence"),
+                    key=_remediation_key(row),
+                    expected_quantity=row.get("remaining_open_quantity"),
+                )
+            )
         cycle_ids.append(str(row.get("recovery_cycle_id") or ""))
         lots = row.get("sale_lots") if isinstance(row.get("sale_lots"), list) else []
         total_sale_lots += len(lots)
@@ -691,7 +954,14 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")
     ]
     no_reentry_rows = [row for row in rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"]
+    named_path_rows = [row for row in rows if row.get("state") == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"]
     open_rows = [row for row in rows if int(row.get("remaining_open_quantity", 0) or 0) > 0]
+    open_percentage_not_set_rows = [
+        row
+        for row in open_rows
+        if row.get("recorded_stage_percentages_below_marker") is None
+        or row.get("recorded_stage_percentages_below_marker") == "PERCENTAGE_NOT_SET"
+    ]
     remaining_quantity = sum(int(row.get("remaining_open_quantity", 0) or 0) for row in rows)
 
     _require(
@@ -699,8 +969,13 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         "sold-marker remediation repair count mismatch",
         errors,
     )
+    expected_percentage_not_set_rows = (
+        len(open_percentage_not_set_rows)
+        if int(schema_version or 2) >= 4
+        else len(percentage_gap_rows)
+    )
     _require(
-        summary.get("percentage_not_set_open_rows") == len(percentage_gap_rows),
+        summary.get("percentage_not_set_open_rows") == expected_percentage_not_set_rows,
         "sold-marker remediation PERCENTAGE_NOT_SET count mismatch",
         errors,
     )
@@ -714,6 +989,62 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         "sold-marker remediation no-reentry count mismatch",
         errors,
     )
+    if int(schema_version or 2) >= 4:
+        crossed_path_rows = [
+            row
+            for row in open_rows
+            if isinstance(row.get("full_path_evidence"), dict)
+            and row["full_path_evidence"].get("crossed_8pct_review_alarm") is True
+        ]
+        _require(
+            summary.get("full_path_evidence_rows") == len(open_rows),
+            "sold-marker remediation full-path evidence count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("rows_crossing_8pct_review_alarm") == len(crossed_path_rows),
+            "sold-marker remediation crossed-path count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("sold_cycle_repair_required_rows") == len(repair_rows),
+            "sold-marker remediation sold-cycle repair count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("named_exception_path_review_rows") == len(named_path_rows),
+            "sold-marker remediation named path-review count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("material_path_open_rows") == len(percentage_gap_rows),
+            "sold-marker remediation material open-path count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("path_evidence_missing_rows") == 0,
+            "sold-marker remediation retains missing path evidence",
+            errors,
+        )
+        for row in open_rows:
+            evidence = row.get("full_path_evidence")
+            if not isinstance(evidence, dict):
+                continue
+            key = _remediation_key(row)
+            crossed = evidence.get("crossed_8pct_review_alarm") is True
+            named = evidence.get("named_exception") is True
+            expected_state = (
+                "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
+                if crossed and named
+                else "REPAIR_REQUIRED_MISSED_PATH"
+                if crossed
+                else "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"
+            )
+            _require(
+                row.get("state") == expected_state,
+                f"sold-marker remediation path state is inconsistent for {key}",
+                errors,
+            )
     _require(summary.get("open_material_rows") == len(open_rows), "sold-marker remediation open-row count mismatch", errors)
     _require(
         summary.get("remaining_open_quantity_across_material_rows") == remaining_quantity,
@@ -809,6 +1140,20 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
             f"sold-marker {tenant} sold-cycle repair identities are incomplete",
             errors,
         )
+        if int(schema_version or 2) >= 4:
+            named_path_ids = {
+                str(value) for value in proof.get("named_path_review_orderbook_ids", [])
+            }
+            expected_named_path_ids = {
+                str(row.get("orderbook_id"))
+                for row in named_path_rows
+                if row.get("tenant_session_id") == tenant
+            }
+            _require(
+                named_path_ids == expected_named_path_ids,
+                f"sold-marker {tenant} named path-review identities are incomplete",
+                errors,
+            )
         _require(
             len(position_repair_ids) == len(proof.get("position_repair_required_orderbook_ids", [])),
             f"sold-marker {tenant} position repair identities contain duplicates",
@@ -1251,6 +1596,8 @@ def sold_marker_governance_gap_rows(
             reasons.append("sold-marker path remains REPAIR_REQUIRED")
         elif state == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET":
             reasons.append("material sold-marker path remains PERCENTAGE_NOT_SET")
+        elif state == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED":
+            reasons.append("named sold-marker path remains blocked for fresh named review")
         elif state.startswith("PARTIAL_SOLD_SLICE_RECOVERY") and remaining > 0:
             reasons.append("partial recovery retains an uncovered sold-slice remainder")
         elif state == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED":
@@ -1301,6 +1648,10 @@ def validate_dynamic_against_sold_marker_recovery(
     errors = validate_sold_marker_remediation(remediation_payload)
     dynamic_errors = validate_dynamic_live_coverage(dynamic_payload)
     errors.extend(dynamic_errors)
+    try:
+        dynamic_schema = int(dynamic_payload.get("schema_version", 1) or 1)
+    except (TypeError, ValueError):
+        dynamic_schema = 1
     dynamic_generated = _artifact_time(dynamic_payload.get("generated_at"))
     remediation_generated = _artifact_time(remediation_payload.get("generated_at"))
     _require(dynamic_generated is not None, "dynamic buyback generated_at is invalid", errors)
@@ -1362,7 +1713,10 @@ def validate_dynamic_against_sold_marker_recovery(
             _require(
                 row.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED"
                 and row.get("dynamic_low_exposure_decision") == "REPAIR_REQUIRED"
-                and row.get("dynamic_protection_classification") == "REPAIR_REQUIRED",
+                and (
+                    dynamic_schema >= 5
+                    or row.get("dynamic_protection_classification") == "REPAIR_REQUIRED"
+                ),
                 f"missed sold-marker path is not REPAIR_REQUIRED in dynamic coverage for {key}",
                 errors,
             )
@@ -1385,6 +1739,20 @@ def validate_dynamic_against_sold_marker_recovery(
             _require(
                 row.get("dynamic_target_rebuild_quantity") == row.get("remaining_open_quantity"),
                 f"material gap target does not preserve exact open sold quantity for {key}",
+                errors,
+            )
+        elif state == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED":
+            _require(
+                row.get("dynamic_buyback_coverage_state") == "LADDER_GAP"
+                and row.get("dynamic_low_exposure_decision") == "NAMED_EXCEPTION"
+                and row.get("dynamic_protection_classification") == "NAMED_EXCEPTION"
+                and row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
+                f"named sold-marker path is not separately review-blocked for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_target_rebuild_quantity") == row.get("remaining_open_quantity"),
+                f"named path target does not preserve exact open sold quantity for {key}",
                 errors,
             )
         elif state.startswith("PARTIAL_SOLD_SLICE_RECOVERY"):
@@ -1432,6 +1800,100 @@ def validate_dynamic_against_sold_marker_recovery(
             _require(
                 "no-reentry" in reason or "no re-entry" in reason,
                 f"explicit no-reentry reason is missing from dynamic coverage for {key}",
+                errors,
+            )
+    return errors
+
+
+def validate_r17_path_links(
+    dynamic_payload: dict[str, Any],
+    remediation_payload: dict[str, Any],
+    path_payload: dict[str, Any],
+) -> list[str]:
+    """Prove both current ledgers link the exact latest open-lot path source."""
+
+    errors = validate_r17_open_path_evidence(path_payload)
+    try:
+        dynamic_schema = int(dynamic_payload.get("schema_version", 1) or 1)
+        remediation_schema = int(remediation_payload.get("schema_version", 1) or 1)
+    except (TypeError, ValueError):
+        dynamic_schema = remediation_schema = 1
+    _require(dynamic_schema >= 5, "dynamic buyback schema does not require complete-path evidence", errors)
+    _require(remediation_schema >= 4, "sold-marker remediation schema does not require complete-path evidence", errors)
+
+    path_rows = {
+        _path_evidence_key(row): row
+        for row in path_payload.get("rows", [])
+        if isinstance(row, dict)
+    }
+    dynamic_rows = {
+        _remediation_key(row): row
+        for row in dynamic_payload.get("rows", [])
+        if isinstance(row, dict) and _is_positive_number(row.get("target_rebuild_quantity"))
+    }
+    remediation_rows = {
+        _remediation_key(row): row
+        for row in remediation_payload.get("rows", [])
+        if isinstance(row, dict) and _is_positive_integer(row.get("remaining_open_quantity"))
+    }
+    _require(set(dynamic_rows) == set(path_rows), "dynamic open-row set does not match R17 path evidence", errors)
+    _require(set(remediation_rows) == set(path_rows), "remediation open-row set does not match R17 path evidence", errors)
+
+    path_generated = _artifact_time(path_payload.get("generated_at"))
+    dynamic_generated = _artifact_time(dynamic_payload.get("generated_at"))
+    remediation_generated = _artifact_time(remediation_payload.get("generated_at"))
+    if path_generated is not None and dynamic_generated is not None:
+        _require(dynamic_generated >= path_generated, "dynamic coverage predates R17 path evidence", errors)
+    if path_generated is not None and remediation_generated is not None:
+        _require(remediation_generated >= path_generated, "remediation coverage predates R17 path evidence", errors)
+
+    for key, source in path_rows.items():
+        dynamic = dynamic_rows.get(key)
+        remediation = remediation_rows.get(key)
+        if dynamic is None or remediation is None:
+            continue
+        dynamic_evidence = dynamic.get("full_path_evidence")
+        remediation_evidence = remediation.get("full_path_evidence")
+        _require(
+            dynamic_evidence == remediation_evidence,
+            f"dynamic and remediation path evidence differ for {key}",
+            errors,
+        )
+        if not isinstance(dynamic_evidence, dict):
+            continue
+        exact_lots = source.get("exact_lots") if isinstance(source.get("exact_lots"), list) else []
+        expected_fields = {
+            "source_generated_at": path_payload.get("generated_at"),
+            "chart_from": source.get("chart_from"),
+            "chart_to": source.get("chart_to"),
+            "chart_point_count": source.get("chart_point_count"),
+            "remaining_open_quantity": source.get("remaining_open_quantity"),
+            "remaining_open_lot_count": source.get("remaining_open_lot_count"),
+            "open_sale_transaction_ids": [
+                str(lot.get("sale_transaction_id") or "")
+                for lot in exact_lots
+                if isinstance(lot, dict)
+            ],
+            "active_buy_quantity": source.get("active_buy_quantity"),
+            "sale_attributed_active_buy_quantity": source.get(
+                "sale_attributed_active_buy_quantity"
+            ),
+            "maximum_open_lot_drop_percent": source.get("maximum_open_lot_drop_percent"),
+            "current_drop_below_weighted_marker_percent": source.get(
+                "current_drop_below_weighted_marker_percent"
+            ),
+            "open_lots_crossing_8pct_alarm": source.get("open_lots_crossing_8pct_alarm"),
+            "crossed_8pct_review_alarm": source.get("crossed_8pct_review_alarm"),
+            "technical": source.get("technical"),
+            "rsi": source.get("rsi"),
+            "atr20_percent_of_current_close": source.get("atr20_percent_of_current_close"),
+            "named_exception": source.get("named_exception"),
+            "path_state": source.get("path_state"),
+        }
+        for field, expected in expected_fields.items():
+            _require(
+                dynamic_evidence.get(field) == expected,
+                f"embedded R17 path field {field} differs from source for {key}",
                 errors,
             )
     return errors
@@ -1515,6 +1977,10 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     keys: list[tuple[str, str, str]] = []
     supported_count = 0
     percentage_not_set_count = 0
+    full_path_evidence_count = 0
+    crossed_path_count = 0
+    missed_path_repair_count = 0
+    named_path_review_count = 0
     vectors_by_instrument: dict[tuple[float, ...], set[str]] = defaultdict(set)
     required_fields = {
         "tenant_session_id",
@@ -1649,6 +2115,59 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
                     f"dynamic BUILD_REVIEW lacks a quantified stock-specific ladder for {key}",
                     errors,
                 )
+
+        if schema_version >= 5 and _is_positive_number(row.get("target_rebuild_quantity")):
+            evidence = row.get("full_path_evidence")
+            path_errors = _validate_embedded_path_evidence(
+                evidence,
+                key=key,
+                expected_quantity=row.get("target_rebuild_quantity"),
+            )
+            errors.extend(path_errors)
+            if isinstance(evidence, dict):
+                full_path_evidence_count += 1
+                crossed = evidence.get("crossed_8pct_review_alarm") is True
+                named = evidence.get("named_exception") is True
+                crossed_path_count += crossed
+                missed_path_repair_count += crossed and not named
+                named_path_review_count += crossed and named
+                _require(
+                    named == (row.get("current_protection_classification") == "NAMED_EXCEPTION"),
+                    f"dynamic named-exception path flag mismatch for {key}",
+                    errors,
+                )
+                _require(
+                    evidence.get("active_buy_quantity") == row.get("active_buy_volume"),
+                    f"dynamic active BUY quantity differs from complete-path evidence for {key}",
+                    errors,
+                )
+                _require(
+                    evidence.get("sale_attributed_active_buy_quantity")
+                    == row.get("sale_attributed_active_buy_quantity", 0),
+                    f"dynamic sale-attributed BUY quantity differs from complete-path evidence for {key}",
+                    errors,
+                )
+                if crossed and not named:
+                    _require(
+                        row.get("buyback_coverage_state") == "REPAIR_REQUIRED"
+                        and row.get("low_exposure_decision") == "REPAIR_REQUIRED",
+                        f"crossed ordinary complete path is not REPAIR_REQUIRED for {key}",
+                        errors,
+                    )
+                elif crossed:
+                    _require(
+                        row.get("buyback_coverage_state") == "LADDER_GAP"
+                        and row.get("low_exposure_decision") == "NAMED_EXCEPTION"
+                        and row.get("current_protection_classification") == "NAMED_EXCEPTION",
+                        f"crossed named complete path is not separately review-blocked for {key}",
+                        errors,
+                    )
+        elif schema_version >= 5:
+            _require(
+                row.get("full_path_evidence") is None,
+                f"closed sold-cycle row carries unexpected open-lot path evidence for {key}",
+                errors,
+            )
 
         if (
             row.get("low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
@@ -1795,6 +2314,48 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     )
     _require(supported_count + percentage_not_set_count == len(rows), "dynamic percentage coverage is incomplete", errors)
     _require(summary.get("pending_r6a_cleanup_rows") == pending_rows, "dynamic pending-cleanup count mismatch", errors)
+    if schema_version >= 5:
+        open_target_rows = sum(
+            _is_positive_number(row.get("target_rebuild_quantity"))
+            for row in rows
+            if isinstance(row, dict)
+        )
+        _require(
+            summary.get("full_path_evidence_rows") == full_path_evidence_count == open_target_rows,
+            "dynamic full-path evidence count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("rows_crossing_8pct_review_alarm") == crossed_path_count,
+            "dynamic crossed-path count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("repair_required_missed_path_rows") == missed_path_repair_count,
+            "dynamic missed-path repair count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("sold_cycle_repair_required_rows") == missed_path_repair_count,
+            "dynamic sold-cycle repair count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("named_exception_path_review_rows") == named_path_review_count,
+            "dynamic named path-review count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("rows_without_crossing_8pct_review_alarm")
+            == full_path_evidence_count - crossed_path_count,
+            "dynamic noncrossed path count mismatch",
+            errors,
+        )
+        _require(
+            summary.get("path_evidence_missing_rows") == 0,
+            "dynamic path-evidence missing count must be zero",
+            errors,
+        )
     return errors
 
 
@@ -2176,6 +2737,20 @@ def main() -> int:
                         remediation_payload,
                     )
                 )
+                open_path_path = latest_r17_open_path_evidence_path()
+                if open_path_path is None:
+                    errors.append(
+                        f"R17 open-sale path evidence missing for glob: {R17_OPEN_PATH_EVIDENCE_GLOB}"
+                    )
+                else:
+                    open_path_payload = json.loads(open_path_path.read_text(encoding="utf-8"))
+                    errors.extend(
+                        validate_r17_path_links(
+                            dynamic_payload,
+                            remediation_payload,
+                            open_path_payload,
+                        )
+                    )
                 full_path_path = latest_sold_marker_full_path_path()
                 if full_path_path is None:
                     errors.append(

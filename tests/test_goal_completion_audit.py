@@ -314,6 +314,21 @@ def test_completion_audit_passes_only_when_open_work_is_explicit():
     assert validate(complete_payload()) == []
 
 
+def test_schema4_sold_cycle_repair_does_not_rewrite_position_protection_class():
+    payload = complete_payload()
+    recovery = payload["current_sold_marker_recovery"]
+    recovery["schema_version"] = 4
+    recovery["summary"].update({
+        "percentage_not_set_open_rows": 4,
+        "material_path_open_rows": 1,
+    })
+    for row in recovery["dynamic_reconciliation"]["rows"]:
+        if str(row.get("recovery_state") or "").startswith("REPAIR_REQUIRED"):
+            row["dynamic_protection_classification"] = "CORE_HOLD_EXCEPTION"
+
+    assert validate(payload) == []
+
+
 def test_incomplete_audit_rejects_promoting_the_historical_buyback_snapshot():
     payload = complete_payload()
     payload["portfolio_control_coverage"]["buyback"]["freshness"] = {

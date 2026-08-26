@@ -282,9 +282,34 @@ def _validate_sold_marker_recovery_link(
     partial_rows = [row for row in rows if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")]
     no_reentry_rows = [row for row in rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"]
     open_rows = [row for row in rows if int(row.get("remaining_open_quantity", 0) or 0) > 0]
+    open_percentage_not_set_rows = [
+        row
+        for row in open_rows
+        if row.get("recorded_stage_percentages_below_marker") is None
+        or row.get("recorded_stage_percentages_below_marker") == "PERCENTAGE_NOT_SET"
+    ]
     remaining = sum(int(row.get("remaining_open_quantity", 0) or 0) for row in rows)
     _require(summary.get("repair_required_missed_path_rows") == len(repair_rows), "current sold-marker repair count mismatch", errors)
-    _require(summary.get("percentage_not_set_open_rows") == len(percentage_gap_rows), "current sold-marker unsupported count mismatch", errors)
+    try:
+        schema_version = int(current.get("schema_version", 1) or 1)
+    except (TypeError, ValueError):
+        schema_version = 1
+    expected_percentage_not_set_rows = (
+        len(open_percentage_not_set_rows)
+        if schema_version >= 4
+        else len(percentage_gap_rows)
+    )
+    _require(
+        summary.get("percentage_not_set_open_rows") == expected_percentage_not_set_rows,
+        "current sold-marker unsupported count mismatch",
+        errors,
+    )
+    if schema_version >= 4:
+        _require(
+            summary.get("material_path_open_rows") == len(percentage_gap_rows),
+            "current sold-marker material path count mismatch",
+            errors,
+        )
     _require(summary.get("partial_sale_attributed_active_rows") == len(partial_rows), "current sold-marker partial count mismatch", errors)
     _require(summary.get("explicit_no_reentry_rows") == len(no_reentry_rows), "current sold-marker no-reentry count mismatch", errors)
     _require(summary.get("open_material_rows") == len(open_rows), "current sold-marker open-row count mismatch", errors)
@@ -382,7 +407,10 @@ def _validate_sold_marker_recovery_link(
             _require(
                 dynamic.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED"
                 and dynamic.get("dynamic_low_exposure_decision") == "REPAIR_REQUIRED"
-                and dynamic.get("dynamic_protection_classification") == "REPAIR_REQUIRED",
+                and (
+                    schema_version >= 4
+                    or dynamic.get("dynamic_protection_classification") == "REPAIR_REQUIRED"
+                ),
                 f"sold-marker missed path is not retained as REPAIR_REQUIRED for {key}",
                 errors,
             )
@@ -391,6 +419,14 @@ def _validate_sold_marker_recovery_link(
                 dynamic.get("dynamic_buyback_coverage_state") == "LADDER_GAP"
                 and dynamic.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
                 f"sold-marker unsupported material path is not retained as LADDER_GAP for {key}",
+                errors,
+            )
+        elif state == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED":
+            _require(
+                dynamic.get("dynamic_buyback_coverage_state") == "LADDER_GAP"
+                and dynamic.get("dynamic_low_exposure_decision") == "NAMED_EXCEPTION"
+                and dynamic.get("dynamic_protection_classification") == "NAMED_EXCEPTION",
+                f"sold-marker named path is not separately review-blocked for {key}",
                 errors,
             )
 

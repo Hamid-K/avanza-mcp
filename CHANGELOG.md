@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.39 - 2026-08-26
+
+- Bound every open R17 sold-cycle row to exact authenticated price-path
+  evidence. Dynamic schema 5 and remediation schema 4 now reconcile the same
+  tenant/account/orderbook, remaining quantity, open lot count, immutable sale
+  transactions, active BUY classification, and path source.
+- Preserved `66` ordinary missed-crossing repairs and two named SpaceX path
+  reviews across later rebounds. A fresh structural FIFO replay can no longer
+  reset crossed-alarm state to zero or treat unattributed same-ticker BUY
+  inventory as sale-lot recovery.
+- Added fail-closed validation and regression coverage for missing or stale
+  path rows, quantity mismatch, source drift, summary drift, named-exception
+  handling, and ordinary crossed rows downgraded to `LADDER_GAP`. The controls
+  remain local review-only and grant no broker or paper mutation authority.
+
 ## 0.2.38 - 2026-08-26
 
 - Added exact full-account multi-sale governance for all `105` prior-sale
