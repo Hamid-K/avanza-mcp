@@ -11,7 +11,13 @@ from scripts.build_buyback_daily_coverage_json import (
     extract_source_as_of,
     freshness_metadata,
 )
-from scripts.enrich_r17_economic_classification import enrich_payload, enrich_remediation_payload
+from scripts.enrich_r17_economic_classification import (
+    apply_terminal_decisions_to_dynamic_rows,
+    apply_terminal_decisions_to_remediation,
+    enrich_payload,
+    enrich_remediation_payload,
+    filter_path_evidence_to_open_remediation,
+)
 from scripts.verify_buyback_ladder_artifact import (
     DYNAMIC_LIVE_GLOB,
     SOLD_MARKER_REMEDIATION_GLOB,
@@ -48,6 +54,8 @@ def no_reentry_decision():
         "sale_lot_id": "darkcell-7616265-1211627-2026-07-13-lot-1",
         "sale_transaction_id": "raw-sell-darkcell-7616265-1211627-2026-07-13-1",
         "sale_timestamp": "2026-07-13T00:00:00+02:00",
+        "original_sold_quantity": 16,
+        "recovered_before_decision_quantity": 0,
         "sold_quantity": 16,
         "closed_quantity": 16,
         "decision_at": "2026-08-18T18:00:00+02:00",
@@ -928,6 +936,164 @@ def test_schema5_named_crossing_stays_named_and_requires_named_review():
     assert gamma["full_path_evidence"]["path_state"] == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
     assert result["summary"]["named_exception_path_review_rows"] == 1
     assert validate_dynamic_live_coverage(result) == []
+
+
+def test_terminal_decision_closes_only_multi_sale_residuals_after_prior_fills():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1393460")
+    dynamic_row = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
+    first_lot = recovery["sale_lots"][0]
+    second_lot = {
+        "sale_lot_id": "personal-5227886-1393460-2026-08-15-lot-2",
+        "sale_transaction_id": "raw-sell-personal-5227886-1393460-2026-08-15-2",
+        "sale_timestamp": "2026-08-15T00:00:00+02:00",
+        "sold_quantity": 20,
+        "qualifying_filled_quantity": 0,
+        "active_recovery_quantity": 0,
+        "closed_no_reentry_quantity": 0,
+        "remaining_open_quantity": 20,
+        "state": "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET",
+    }
+    recovery["sale_lots"].append(second_lot)
+    recovery.update({
+        "sale_date": "2026-08-15",
+        "sold_quantity": 336,
+        "raw_sale_transaction_count": 2,
+        "raw_sale_quantity_total": 336,
+        "remaining_open_quantity": 178,
+    })
+    remediation["summary"].update({
+        "modeled_sale_lots": 6,
+        "multi_sale_recovery_cycle_rows": 1,
+        "remaining_open_quantity_across_material_rows": 291,
+    })
+    remediation["schema_version"] = 3
+    for row in remediation["rows"]:
+        row["non_recovery_buy_inventory"] = []
+        row["non_recovery_buy_quantity"] = 0
+        row["normalized_sale_quantity_total"] = row["sold_quantity"]
+        row["raw_sale_quantity_total"] = row["sold_quantity"]
+        for allocation in row["qualifying_fill_allocations"]:
+            allocation["raw_source_quantity"] = allocation["source_quantity"]
+            allocation["quantity_normalization_factor"] = 1
+        for lot in row["sale_lots"]:
+            lot["raw_sold_quantity"] = lot["sold_quantity"]
+            lot["quantity_normalization_factor"] = 1
+    existing_terminal = next(
+        row for row in remediation["rows"] if row["orderbook_id"] == "1211627"
+    )["no_reentry_decision"]
+    existing_terminal["last_revalidated_at"] = "2026-08-26T18:34:00+02:00"
+    existing_terminal["expires_at"] = "2026-09-08T18:34:00+02:00"
+    dynamic_row.update({
+        "target_rebuild_quantity": 178,
+        "latest_recent_sale_date": "2026-08-15",
+        "sale_lot_ids": [first_lot["sale_lot_id"], second_lot["sale_lot_id"]],
+    })
+
+    decisions = {
+        "artifact": "PORTFOLIO_R17_TERMINAL_DECISIONS",
+        "schema_version": 1,
+        "generated_at": "2026-08-26T18:34:00+02:00",
+        "authority": "LOCAL_REVIEW_ONLY",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "rows": [{
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "1393460",
+            "instrument": "SoundHound AI",
+            "recovery_cycle_id": recovery["recovery_cycle_id"],
+            "decision_id": "personal-5227886-1393460-20260826-no-reentry",
+            "decision_at": "2026-08-26T18:30:00+02:00",
+            "last_revalidated_at": "2026-08-26T18:34:00+02:00",
+            "expires_at": "2026-09-08T18:34:00+02:00",
+            "decision_basis": "Current reviewed evidence rejects rebuilding the exact residual slices.",
+            "thesis_evidence": "The current thesis supports retaining only the live holding.",
+            "event_evidence": "Current issuer evidence was reviewed and does not promote re-entry.",
+            "technical_evidence": "Current structure has not passed the required reversal gate.",
+            "path_evidence": "Every immutable sale lot, prior fill and complete path was reviewed.",
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "current_holding": dynamic_row["live_holding"],
+            "sale_lot_closures": [
+                {
+                    "sale_lot_id": first_lot["sale_lot_id"],
+                    "sale_transaction_id": first_lot["sale_transaction_id"],
+                    "sale_timestamp": first_lot["sale_timestamp"],
+                    "remaining_open_quantity_to_close": 158,
+                },
+                {
+                    "sale_lot_id": second_lot["sale_lot_id"],
+                    "sale_transaction_id": second_lot["sale_transaction_id"],
+                    "sale_timestamp": second_lot["sale_timestamp"],
+                    "remaining_open_quantity_to_close": 20,
+                },
+            ],
+        }],
+    }
+
+    decided = apply_terminal_decisions_to_remediation(
+        remediation,
+        decisions,
+        generated_at="2026-08-26T18:35:00+02:00",
+        decision_source_path="output/PORTFOLIO_R17_TERMINAL_DECISIONS_test.json",
+    )
+    decided_row = next(row for row in decided["rows"] if row["orderbook_id"] == "1393460")
+    decided_lots = {lot["sale_lot_id"]: lot for lot in decided_row["sale_lots"]}
+
+    assert decided_row["remaining_open_quantity"] == 0
+    assert decided_row["closed_no_reentry_quantity"] == 178
+    assert decided_row["no_reentry_decision"]["sold_quantity"] == 178
+    assert decided_lots[first_lot["sale_lot_id"]]["qualifying_filled_quantity"] == 158
+    first_decision = decided_lots[first_lot["sale_lot_id"]]["no_reentry_decision"]
+    assert first_decision["original_sold_quantity"] == 316
+    assert first_decision["recovered_before_decision_quantity"] == 158
+    assert first_decision["sold_quantity"] == 158
+    assert first_decision["closed_quantity"] == 158
+    assert decided_lots[second_lot["sale_lot_id"]]["no_reentry_decision"]["sold_quantity"] == 20
+
+    apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
+    assert dynamic_row["target_rebuild_quantity"] is None
+    assert dynamic_row["low_exposure_decision"] == "EXIT_OR_NO_REENTRY_REVIEW"
+    assert dynamic_row["no_reentry_decision"] == decided_row["no_reentry_decision"]
+
+    path_rows = []
+    for row in remediation["rows"]:
+        quantity = int(row.get("remaining_open_quantity", 0) or 0)
+        if quantity <= 0:
+            continue
+        crossed = row["orderbook_id"] in {"3340", "956885"}
+        path_row = r17_path_row(
+            tenant_session_id=row["tenant_session_id"],
+            account_id=row["account_id"],
+            orderbook_id=row["orderbook_id"],
+            instrument=row["instrument"],
+            quantity=quantity,
+            crossed=crossed,
+        )
+        path_row["active_buy_quantity"] = row["sale_attributed_active_buy_quantity"]
+        path_row["sale_attributed_active_buy_quantity"] = row[
+            "sale_attributed_active_buy_quantity"
+        ]
+        path_rows.append(path_row)
+    original_path = r17_path_payload(path_rows)
+    filtered_path = filter_path_evidence_to_open_remediation(
+        original_path,
+        decided,
+        generated_at="2026-08-26T18:35:00+02:00",
+        source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_input.json",
+        decision_source_path="output/PORTFOLIO_R17_TERMINAL_DECISIONS_test.json",
+    )
+    assert "1393460" not in {row["orderbook_id"] for row in filtered_path["rows"]}
+
+    enriched = enrich_remediation_payload(
+        decided,
+        filtered_path,
+        generated_at="2026-08-26T18:35:00+02:00",
+        source_path="output/PORTFOLIO_SOLD_MARKER_REMEDIATION_input.json",
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_output.json",
+    )
+    assert validate_sold_marker_remediation(enriched) == []
 
 
 def test_schema5_validator_rejects_erased_crossing_and_summary_drift():

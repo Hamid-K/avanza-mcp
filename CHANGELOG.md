@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.2.40 - 2026-08-26
+
+- Added review-only R17 terminal-decision overlays that close only the exact
+  unrecovered remainder of immutable sale lots. Prior qualifying fills,
+  original sold quantities, transaction identities, and multi-sale cycle
+  boundaries remain intact instead of being double-counted or erased.
+- Reconciled cycle-level and per-lot no-reentry quantities across the dynamic
+  buyback ledger, sold-marker remediation, complete-path source, governance
+  gap audit, and completion validator. Full-exit holdings and older valid
+  decisions remain supported without weakening current evidence checks.
+- Added regression coverage for a partially recovered multi-sale cycle and
+  corrected post-enrichment summary drift. The controls remain local
+  review-only and grant no broker, paper, order, or stop mutation authority.
+
 ## 0.2.39 - 2026-08-26
 
 - Bound every open R17 sold-cycle row to exact authenticated price-path

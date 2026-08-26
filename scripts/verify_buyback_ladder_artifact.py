@@ -174,6 +174,21 @@ def _no_reentry_decision_gaps(
     if identity_row.get("remaining_open_quantity") != 0:
         gaps.append("remaining open quantity is not zero")
 
+    original_sold_quantity = identity_row.get("original_sold_quantity")
+    recovered_before_decision = identity_row.get("recovered_before_decision_quantity")
+    if original_sold_quantity is not None:
+        if decision.get("original_sold_quantity") != original_sold_quantity:
+            gaps.append("original sold quantity does not match the immutable sale lot")
+        if decision.get("recovered_before_decision_quantity") != recovered_before_decision:
+            gaps.append("recovered-before-decision quantity does not match prior allocations")
+        if (
+            _is_positive_integer(original_sold_quantity)
+            and _is_nonnegative_integer(recovered_before_decision)
+            and _is_positive_integer(sold_quantity)
+            and original_sold_quantity != recovered_before_decision + sold_quantity
+        ):
+            gaps.append("terminal decision slice does not reconcile to the original sale lot")
+
     sale_date = _artifact_date(identity_row.get("sale_date"))
     if sale_date is None:
         gaps.append("sale date is invalid")
@@ -802,6 +817,7 @@ def _validate_recovery_cycle(
         if all(_is_nonnegative_integer(value) for value in (filled, active, closed, remaining)) and _is_positive_integer(sold):
             _require(sold == filled + active + closed + remaining, f"sale lot quantity parity failed for {key}", errors)
         if isinstance(decision, dict):
+            recovered_before_decision = filled + active
             identity = {
                 "tenant_session_id": key[0],
                 "account_id": key[1],
@@ -810,8 +826,10 @@ def _validate_recovery_cycle(
                 "sale_transaction_id": lot.get("sale_transaction_id"),
                 "sale_timestamp": lot.get("sale_timestamp"),
                 "sale_date": str(lot.get("sale_timestamp") or "")[:10],
-                "sold_quantity": sold,
+                "sold_quantity": closed,
                 "remaining_open_quantity": remaining,
+                "original_sold_quantity": sold,
+                "recovered_before_decision_quantity": recovered_before_decision,
             }
             for gap in _no_reentry_decision_gaps(identity, decision, reference_time):
                 errors.append(f"sale-lot no-reentry decision is invalid for {key}/{lot_id}: {gap}")
@@ -1088,7 +1106,10 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
     for row in no_reentry_rows:
         key = _remediation_key(row)
         for gap in _no_reentry_decision_gaps(
-            row,
+            {
+                **row,
+                "sold_quantity": row.get("closed_no_reentry_quantity"),
+            },
             row.get("no_reentry_decision"),
             remediation_reference_time,
         ):
@@ -1463,6 +1484,7 @@ def sold_marker_dynamic_reconciliation_rows(
             "instrument": recovery.get("instrument"),
             "sale_date": recovery.get("sale_date"),
             "sold_quantity": recovery.get("sold_quantity"),
+            "closed_no_reentry_quantity": recovery.get("closed_no_reentry_quantity"),
             "remaining_open_quantity": recovery.get("remaining_open_quantity"),
             "sale_attributed_active_buy_quantity": recovery.get("sale_attributed_active_buy_quantity"),
             "pre_sale_active_buy_quantity": recovery.get("pre_sale_active_buy_quantity"),
@@ -1611,7 +1633,10 @@ def sold_marker_governance_gap_rows(
             )
             reasons.extend(
                 _no_reentry_decision_gaps(
-                    row,
+                    {
+                        **row,
+                        "sold_quantity": row.get("closed_no_reentry_quantity"),
+                    },
                     row.get("recovery_no_reentry_decision"),
                     reference_time,
                 )

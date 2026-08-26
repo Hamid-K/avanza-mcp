@@ -10,9 +10,10 @@ strictly local and never accesses or mutates broker state.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -24,6 +25,8 @@ HOLD_PROTECTION_CLASSES = {"CORE_HOLD_EXCEPTION", "MARKER_EXCEPTION"}
 NAMED_PATH_STATE = "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
 MISSED_PATH_STATE = "MISSED_PATH_REPAIR_REQUIRED"
 OPEN_PATH_STATE = "LADDER_GAP_PERCENTAGE_NOT_SET"
+TERMINAL_DECISION_ARTIFACT = "PORTFOLIO_R17_TERMINAL_DECISIONS"
+TERMINAL_DECISION_MAX_VALIDITY = timedelta(days=14)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -56,6 +59,294 @@ def _row_key(row: dict[str, Any]) -> tuple[str, str, str]:
 
 def _is_positive_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _artifact_time(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _terminal_decision_rows(
+    payload: dict[str, Any],
+    *,
+    reference_time: str,
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Validate a review-only overlay that closes exact residual sale-lot slices."""
+
+    if payload.get("artifact") != TERMINAL_DECISION_ARTIFACT:
+        raise ValueError("terminal decision input is not an R17 terminal-decision artifact")
+    if payload.get("schema_version") != 1:
+        raise ValueError("R17 terminal-decision schema version must be 1")
+    if payload.get("authority") != "LOCAL_REVIEW_ONLY":
+        raise ValueError("R17 terminal decisions must remain LOCAL_REVIEW_ONLY")
+    if payload.get("broker_mutation") is not False or payload.get("trade_authority") is not False:
+        raise ValueError("R17 terminal decisions must record zero broker/trade authority")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("R17 terminal decisions must contain rows")
+
+    reference = _artifact_time(reference_time)
+    if reference is None:
+        raise ValueError("R17 terminal-decision reference time is invalid")
+    result: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("R17 terminal decisions contain a non-object row")
+        key = _row_key(row)
+        if not all(key) or key in result:
+            raise ValueError(f"R17 terminal-decision key is invalid or duplicated: {key}")
+        for field in (
+            "instrument",
+            "recovery_cycle_id",
+            "decision_id",
+            "decision_basis",
+            "thesis_evidence",
+            "event_evidence",
+            "technical_evidence",
+            "path_evidence",
+        ):
+            if not str(row.get(field) or "").strip():
+                raise ValueError(f"R17 terminal-decision {field} is missing for {key}")
+        decision_at = _artifact_time(row.get("decision_at"))
+        revalidated_at = _artifact_time(row.get("last_revalidated_at"))
+        expires_at = _artifact_time(row.get("expires_at"))
+        if None in (decision_at, revalidated_at, expires_at):
+            raise ValueError(f"R17 terminal-decision timestamps are invalid for {key}")
+        assert decision_at is not None and revalidated_at is not None and expires_at is not None
+        try:
+            if revalidated_at < decision_at or revalidated_at > reference:
+                raise ValueError(f"R17 terminal-decision revalidation ordering is invalid for {key}")
+            if expires_at <= revalidated_at or expires_at - revalidated_at > TERMINAL_DECISION_MAX_VALIDITY:
+                raise ValueError(f"R17 terminal-decision expiry is invalid for {key}")
+        except TypeError as exc:
+            raise ValueError(f"R17 terminal-decision timezone forms are incompatible for {key}") from exc
+        if row.get("newer_evidence_reviewed") is not True or row.get("contradiction_status") != "NONE":
+            raise ValueError(f"R17 terminal-decision evidence is not current and contradiction-free for {key}")
+        if not _is_nonnegative_integer(row.get("current_holding")):
+            raise ValueError(f"R17 terminal-decision current holding is invalid for {key}")
+        closures = row.get("sale_lot_closures")
+        if not isinstance(closures, list) or not closures:
+            raise ValueError(f"R17 terminal-decision sale-lot closures are missing for {key}")
+        lot_ids: list[str] = []
+        for closure in closures:
+            if not isinstance(closure, dict):
+                raise ValueError(f"R17 terminal-decision contains a non-object lot for {key}")
+            lot_id = str(closure.get("sale_lot_id") or "")
+            if not lot_id or not str(closure.get("sale_transaction_id") or ""):
+                raise ValueError(f"R17 terminal-decision lot identity is missing for {key}")
+            if not str(closure.get("sale_timestamp") or "") or not _is_positive_integer(
+                closure.get("remaining_open_quantity_to_close")
+            ):
+                raise ValueError(f"R17 terminal-decision lot quantity is invalid for {key}")
+            lot_ids.append(lot_id)
+        if len(lot_ids) != len(set(lot_ids)):
+            raise ValueError(f"R17 terminal-decision reuses a sale lot for {key}")
+        result[key] = row
+    return result
+
+
+def apply_terminal_decisions_to_remediation(
+    payload: dict[str, Any],
+    decisions: dict[str, Any],
+    *,
+    generated_at: str,
+    decision_source_path: str,
+) -> dict[str, Any]:
+    """Close only the exact unresolved remainder of each selected immutable sale lot."""
+
+    if payload.get("artifact") != "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE":
+        raise ValueError("terminal decisions require a sold-marker remediation input")
+    decision_rows = _terminal_decision_rows(decisions, reference_time=generated_at)
+    result = copy.deepcopy(payload)
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("terminal-decision remediation rows must be a list")
+    remediation_rows = {_row_key(row): row for row in rows if isinstance(row, dict)}
+
+    for key, decision in decision_rows.items():
+        row = remediation_rows.get(key)
+        if row is None:
+            raise ValueError(f"R17 terminal-decision remediation row is missing for {key}")
+        if row.get("recovery_cycle_id") != decision.get("recovery_cycle_id"):
+            raise ValueError(f"R17 terminal-decision recovery cycle mismatch for {key}")
+        if row.get("instrument") != decision.get("instrument"):
+            raise ValueError(f"R17 terminal-decision instrument mismatch for {key}")
+        for field in (
+            "sale_attributed_active_buy_quantity",
+            "pre_sale_active_buy_quantity",
+            "unattributed_active_buy_quantity",
+        ):
+            if int(row.get(field, 0) or 0) != 0:
+                raise ValueError(f"R17 terminal decision is contradicted by {field} for {key}")
+
+        lots = row.get("sale_lots")
+        if not isinstance(lots, list):
+            raise ValueError(f"R17 terminal-decision sale lots are missing for {key}")
+        open_lots = {
+            str(lot.get("sale_lot_id") or ""): lot
+            for lot in lots
+            if isinstance(lot, dict) and _is_positive_integer(lot.get("remaining_open_quantity"))
+        }
+        closures = {
+            str(item.get("sale_lot_id") or ""): item
+            for item in decision.get("sale_lot_closures", [])
+            if isinstance(item, dict)
+        }
+        if set(closures) != set(open_lots):
+            raise ValueError(f"R17 terminal decision must close every exact open lot for {key}")
+
+        lot_decision_ids: list[str] = []
+        closed_total = 0
+        for lot_id, lot in open_lots.items():
+            closure = closures[lot_id]
+            for field in ("sale_transaction_id", "sale_timestamp"):
+                if str(closure.get(field) or "") != str(lot.get(field) or ""):
+                    raise ValueError(f"R17 terminal-decision {field} mismatch for {key}/{lot_id}")
+            residual = int(lot.get("remaining_open_quantity") or 0)
+            if closure.get("remaining_open_quantity_to_close") != residual:
+                raise ValueError(f"R17 terminal-decision residual quantity mismatch for {key}/{lot_id}")
+            sold = int(lot.get("sold_quantity") or 0)
+            recovered_before = sold - residual
+            if sold <= 0 or recovered_before < 0:
+                raise ValueError(f"R17 terminal-decision lot parity is invalid for {key}/{lot_id}")
+            lot_decision_id = f"{decision['decision_id']}::{lot_id}"
+            lot_decision_ids.append(lot_decision_id)
+            lot["no_reentry_decision"] = {
+                "decision_id": lot_decision_id,
+                "tenant_session_id": key[0],
+                "account_id": key[1],
+                "orderbook_id": key[2],
+                "sale_date": str(lot.get("sale_timestamp") or "")[:10],
+                "sale_lot_id": lot_id,
+                "sale_transaction_id": lot.get("sale_transaction_id"),
+                "sale_timestamp": lot.get("sale_timestamp"),
+                "original_sold_quantity": sold,
+                "recovered_before_decision_quantity": recovered_before,
+                "sold_quantity": residual,
+                "closed_quantity": residual,
+                "decision_at": decision.get("decision_at"),
+                "last_revalidated_at": decision.get("last_revalidated_at"),
+                "expires_at": decision.get("expires_at"),
+                "decision_basis": decision.get("decision_basis"),
+                "thesis_evidence": decision.get("thesis_evidence"),
+                "event_evidence": decision.get("event_evidence"),
+                "technical_evidence": decision.get("technical_evidence"),
+                "path_evidence": decision.get("path_evidence"),
+                "newer_evidence_reviewed": True,
+                "contradiction_status": "NONE",
+            }
+            lot["closed_no_reentry_quantity"] = int(lot.get("closed_no_reentry_quantity", 0) or 0) + residual
+            lot["remaining_open_quantity"] = 0
+            lot["state"] = "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+            closed_total += residual
+
+        row["closed_no_reentry_quantity"] = sum(
+            int(lot.get("closed_no_reentry_quantity", 0) or 0)
+            for lot in lots
+            if isinstance(lot, dict)
+        )
+        row["remaining_open_quantity"] = sum(
+            int(lot.get("remaining_open_quantity", 0) or 0)
+            for lot in lots
+            if isinstance(lot, dict)
+        )
+        if row["remaining_open_quantity"] != 0:
+            raise ValueError(f"R17 terminal decision did not close the exact cycle remainder for {key}")
+        row["state"] = "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+        row["recorded_stage_percentages_below_marker"] = "PERCENTAGE_NOT_SET"
+        row["recorded_stage_quantities"] = None
+        row["no_reentry_decision"] = {
+            "decision_id": decision.get("decision_id"),
+            "tenant_session_id": key[0],
+            "account_id": key[1],
+            "orderbook_id": key[2],
+            "sale_date": row.get("sale_date"),
+            "sold_quantity": closed_total,
+            "closed_quantity": closed_total,
+            "decision_at": decision.get("decision_at"),
+            "last_revalidated_at": decision.get("last_revalidated_at"),
+            "expires_at": decision.get("expires_at"),
+            "decision_basis": decision.get("decision_basis"),
+            "thesis_evidence": decision.get("thesis_evidence"),
+            "event_evidence": decision.get("event_evidence"),
+            "technical_evidence": decision.get("technical_evidence"),
+            "path_evidence": decision.get("path_evidence"),
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "recovery_cycle_id": row.get("recovery_cycle_id"),
+            "sale_lot_decision_ids": lot_decision_ids,
+            "current_holding": decision.get("current_holding"),
+        }
+        row.pop("full_path_evidence", None)
+
+    sources = list(result.get("sources", []))
+    if decision_source_path not in sources:
+        sources.append(decision_source_path)
+    result["sources"] = sources
+    result["terminal_decision_overlay"] = {
+        "source": decision_source_path,
+        "row_count": len(decision_rows),
+        "broker_mutation": False,
+    }
+    return result
+
+
+def filter_path_evidence_to_open_remediation(
+    path_payload: dict[str, Any],
+    remediation_payload: dict[str, Any],
+    *,
+    generated_at: str,
+    source_path: str,
+    decision_source_path: str,
+) -> dict[str, Any]:
+    """Create the current open-lot path source after dated terminal closures."""
+
+    result = copy.deepcopy(path_payload)
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("R17 path evidence rows must be a list")
+    open_keys = {
+        _row_key(row)
+        for row in remediation_payload.get("rows", [])
+        if isinstance(row, dict) and _is_positive_integer(row.get("remaining_open_quantity"))
+    }
+    filtered = [row for row in rows if isinstance(row, dict) and _row_key(row) in open_keys]
+    if {_row_key(row) for row in filtered} != open_keys:
+        raise ValueError("R17 filtered path rows do not match the post-decision open remediation rows")
+    result["generated_at"] = generated_at
+    result["path_observed_at"] = path_payload.get("generated_at")
+    result["supersedes"] = source_path
+    result["decision_source"] = decision_source_path
+    result["rows"] = filtered
+    exact_lots = [
+        lot
+        for row in filtered
+        for lot in row.get("exact_lots", [])
+        if isinstance(lot, dict)
+    ]
+    crossed_rows = [row for row in filtered if row.get("crossed_8pct_review_alarm") is True]
+    result["summary"] = {
+        "exact_account_rows": len(filtered),
+        "unique_orderbooks": len({str(row.get("orderbook_id")) for row in filtered}),
+        "exact_open_sale_lots": len(exact_lots),
+        "remaining_open_quantity": sum(int(row.get("remaining_open_quantity", 0) or 0) for row in filtered),
+        "rows_crossing_8pct_review_alarm": len(crossed_rows),
+        "lots_crossing_8pct_review_alarm": sum(
+            int(row.get("open_lots_crossing_8pct_alarm", 0) or 0) for row in filtered
+        ),
+        "named_exception_rows_with_crossing": sum(
+            row.get("crossed_8pct_review_alarm") is True and row.get("named_exception") is True
+            for row in filtered
+        ),
+        "path_or_marker_errors": 0,
+    }
+    return result
 
 
 def _path_evidence_rows(
@@ -295,6 +586,61 @@ def classify_row(
     return result
 
 
+def apply_terminal_decisions_to_dynamic_rows(
+    rows: list[dict[str, Any]],
+    remediation_payload: dict[str, Any],
+) -> None:
+    """Mirror exact cycle-level terminal decisions into current dynamic coverage."""
+
+    dynamic_rows = {_row_key(row): row for row in rows}
+    for remediation in remediation_payload.get("rows", []):
+        if not isinstance(remediation, dict) or remediation.get("state") != "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
+            continue
+        decision = remediation.get("no_reentry_decision")
+        if not isinstance(decision, dict):
+            raise ValueError(f"R17 terminal remediation decision is missing for {_row_key(remediation)}")
+        key = _row_key(remediation)
+        row = dynamic_rows.get(key)
+        if row is None:
+            raise ValueError(f"R17 terminal dynamic row is missing for {key}")
+        if int(row.get("active_buy_volume", 0) or 0) != 0:
+            raise ValueError(f"R17 terminal dynamic row has contradictory active BUY inventory for {key}")
+        if int(row.get("sale_attributed_active_buy_quantity", 0) or 0) != 0:
+            raise ValueError(f"R17 terminal dynamic row has contradictory sale-attributed BUY inventory for {key}")
+        if row.get("recovery_cycle_id") != remediation.get("recovery_cycle_id"):
+            raise ValueError(f"R17 terminal dynamic recovery cycle mismatch for {key}")
+        reviewed_holding = decision.get("current_holding")
+        if reviewed_holding is not None and int(row.get("live_holding", 0) or 0) != int(
+            reviewed_holding
+        ):
+            raise ValueError(f"R17 terminal dynamic holding differs from the reviewed decision for {key}")
+
+        expiry = str(decision.get("expires_at") or "")
+        row["buyback_coverage_state"] = "LEDGER_ONLY"
+        row["low_exposure_decision"] = "EXIT_OR_NO_REENTRY_REVIEW"
+        row["target_rebuild_quantity"] = None
+        row["stages_percent_below_sold_marker"] = "PERCENTAGE_NOT_SET"
+        row["stage_quantities"] = None
+        row["latest_recent_sale_date"] = remediation.get("sale_date")
+        row["no_reentry_decision"] = copy.deepcopy(decision)
+        row["coverage_reason"] = (
+            "A current structured no-reentry decision closes only the exact unresolved "
+            "sale-lot remainder while preserving all prior fills and immutable sale history."
+        )
+        row["exact_next_gate"] = (
+            f"Revalidate the exact no-reentry decision no later than {expiry}; reopen the "
+            "remaining sold slice if newer thesis, event, technical or complete-path evidence contradicts it."
+        )
+        row["economic_resolution"] = {
+            **dict(row.get("economic_resolution") or {}),
+            "state": "EXIT_OR_NO_REENTRY_REVIEW",
+            "source": "R17_STRUCTURED_TERMINAL_DECISION",
+            "reason": row["coverage_reason"],
+            "next_review": row["exact_next_gate"],
+        }
+        row.pop("full_path_evidence", None)
+
+
 def enrich_payload(
     payload: dict[str, Any],
     registry: dict[str, Any],
@@ -303,6 +649,7 @@ def enrich_payload(
     source_path: str,
     path_evidence: dict[str, Any] | None = None,
     path_source_path: str | None = None,
+    remediation_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if payload.get("artifact") != "PORTFOLIO_BUYBACK_LIVE_COVERAGE":
         raise ValueError("input is not a live buyback coverage artifact")
@@ -319,6 +666,8 @@ def enrich_payload(
     ]
     if len(enriched_rows) != len(rows):
         raise ValueError("input buyback coverage contains a non-object row")
+    if remediation_payload is not None:
+        apply_terminal_decisions_to_dynamic_rows(enriched_rows, remediation_payload)
 
     path_rows: dict[tuple[str, str, str], dict[str, Any]] | None = None
     if path_evidence is not None:
@@ -414,6 +763,14 @@ def enrich_payload(
             continue
         if source not in sources:
             sources.append(source)
+    if remediation_payload is not None:
+        terminal_source = (
+            remediation_payload.get("terminal_decision_overlay", {}).get("source")
+            if isinstance(remediation_payload.get("terminal_decision_overlay"), dict)
+            else None
+        )
+        if terminal_source and terminal_source not in sources:
+            sources.append(terminal_source)
     result["source_artifacts"] = sources
     result["economic_classification"] = {
         "authority": "LOCAL_REVIEW_ONLY",
@@ -464,6 +821,13 @@ def enrich_payload(
     }
     summary["economically_unresolved_rows"] = low_counts.get("REPAIR_REQUIRED", 0)
     summary["economically_resolved_rows"] = len(enriched_rows) - summary["economically_unresolved_rows"]
+    open_target_rows = [
+        row for row in enriched_rows if _is_positive_integer(row.get("target_rebuild_quantity"))
+    ]
+    summary["full_history_open_rows"] = len(open_target_rows)
+    summary["full_history_open_quantity"] = sum(
+        int(row.get("target_rebuild_quantity", 0) or 0) for row in open_target_rows
+    )
     if path_rows is not None:
         crossed_rows = [evidence for evidence in path_rows.values() if evidence["crossed_8pct_review_alarm"]]
         named_crossed_rows = [evidence for evidence in crossed_rows if evidence["named_exception"]]
@@ -591,12 +955,29 @@ def enrich_remediation_payload(
     named_path_rows = [
         row for row in enriched_rows if row.get("state") == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
     ]
+    no_reentry_rows = [
+        row for row in enriched_rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+    ]
+    partial_rows = [
+        row
+        for row in enriched_rows
+        if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")
+    ]
+    open_material_rows = [
+        row for row in enriched_rows if _is_positive_integer(row.get("remaining_open_quantity"))
+    ]
     summary = dict(payload.get("summary", {}))
     summary["repair_required_missed_path_rows"] = len(repair_rows)
     summary["sold_cycle_repair_required_rows"] = len(repair_rows)
     summary["percentage_not_set_open_rows"] = len(path_rows)
     summary["material_path_open_rows"] = len(percentage_gap_rows)
     summary["named_exception_path_review_rows"] = len(named_path_rows)
+    summary["explicit_no_reentry_rows"] = len(no_reentry_rows)
+    summary["partial_sale_attributed_active_rows"] = len(partial_rows)
+    summary["open_material_rows"] = len(open_material_rows)
+    summary["remaining_open_quantity_across_material_rows"] = sum(
+        int(row.get("remaining_open_quantity", 0) or 0) for row in open_material_rows
+    )
     summary["full_path_evidence_rows"] = len(path_rows)
     summary["rows_crossing_8pct_review_alarm"] = len(repair_rows) + len(named_path_rows)
     summary["path_evidence_missing_rows"] = 0
@@ -626,6 +1007,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     parser.add_argument("--path-evidence", type=Path)
+    parser.add_argument("--path-output", type=Path)
+    parser.add_argument("--terminal-decisions", type=Path)
     parser.add_argument("--remediation-input", type=Path)
     parser.add_argument("--remediation-output", type=Path)
     parser.add_argument("--generated-at")
@@ -635,10 +1018,17 @@ def main() -> int:
     payload = _load_json(args.input)
     registry = _load_json(args.registry)
     path_payload = _load_json(args.path_evidence) if args.path_evidence else None
+    terminal_payload = _load_json(args.terminal_decisions) if args.terminal_decisions else None
     if bool(args.remediation_input) != bool(args.remediation_output):
         parser.error("--remediation-input and --remediation-output must be provided together")
     if args.remediation_input and path_payload is None:
         parser.error("--path-evidence is required when writing remediation output")
+    if args.terminal_decisions and not (
+        args.remediation_input and args.remediation_output and args.path_evidence and args.path_output
+    ):
+        parser.error(
+            "--terminal-decisions requires remediation input/output plus path evidence/output"
+        )
     try:
         source_path = str(args.input.resolve().relative_to(ROOT))
     except ValueError:
@@ -649,6 +1039,45 @@ def main() -> int:
             path_source_path = str(args.path_evidence.resolve().relative_to(ROOT))
         except ValueError:
             path_source_path = str(args.path_evidence)
+    remediation_payload = _load_json(args.remediation_input) if args.remediation_input else None
+    remediation_source_path = None
+    if args.remediation_input:
+        try:
+            remediation_source_path = str(args.remediation_input.resolve().relative_to(ROOT))
+        except ValueError:
+            remediation_source_path = str(args.remediation_input)
+
+    if terminal_payload is not None:
+        assert remediation_payload is not None
+        assert path_payload is not None
+        assert path_source_path is not None
+        assert args.path_output is not None
+        try:
+            decision_source_path = str(args.terminal_decisions.resolve().relative_to(ROOT))
+        except ValueError:
+            decision_source_path = str(args.terminal_decisions)
+        remediation_payload = apply_terminal_decisions_to_remediation(
+            remediation_payload,
+            terminal_payload,
+            generated_at=generated_at,
+            decision_source_path=decision_source_path,
+        )
+        filtered_path = filter_path_evidence_to_open_remediation(
+            path_payload,
+            remediation_payload,
+            generated_at=generated_at,
+            source_path=path_source_path,
+            decision_source_path=decision_source_path,
+        )
+        path_payload = filtered_path
+        args.path_output.parent.mkdir(parents=True, exist_ok=True)
+        with args.path_output.open("w", encoding="utf-8") as handle:
+            json.dump(filtered_path, handle, indent=2, ensure_ascii=True)
+            handle.write("\n")
+        try:
+            path_source_path = str(args.path_output.resolve().relative_to(ROOT))
+        except ValueError:
+            path_source_path = str(args.path_output)
     result = enrich_payload(
         payload,
         registry,
@@ -656,18 +1085,21 @@ def main() -> int:
         source_path=source_path,
         path_evidence=path_payload,
         path_source_path=path_source_path,
+        remediation_payload=remediation_payload,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2, ensure_ascii=True)
         handle.write("\n")
     remediation_result = None
-    if args.remediation_input and args.remediation_output and path_payload and path_source_path:
-        remediation_payload = _load_json(args.remediation_input)
-        try:
-            remediation_source_path = str(args.remediation_input.resolve().relative_to(ROOT))
-        except ValueError:
-            remediation_source_path = str(args.remediation_input)
+    if (
+        args.remediation_input
+        and args.remediation_output
+        and remediation_payload
+        and remediation_source_path
+        and path_payload
+        and path_source_path
+    ):
         remediation_result = enrich_remediation_payload(
             remediation_payload,
             path_payload,
