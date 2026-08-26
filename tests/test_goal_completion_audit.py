@@ -1,5 +1,27 @@
-from scripts.verify_goal_completion_audit import validate
+from scripts.verify_goal_completion_audit import _validate_sold_marker_strategy_reconciliation, validate
 from scripts.enrich_goal_completion_transaction_gate import enrich
+
+
+def no_reentry_decision(*, expires_at="2026-08-26T00:08:00+02:00", contradiction_status="NONE"):
+    return {
+        "decision_id": "darkcell-7616265-1211627-2026-07-13-no-reentry",
+        "tenant_session_id": "darkcell",
+        "account_id": "7616265",
+        "orderbook_id": "1211627",
+        "sale_date": "2026-07-13",
+        "sold_quantity": 16,
+        "closed_quantity": 16,
+        "decision_at": "2026-08-18T18:00:00+02:00",
+        "last_revalidated_at": "2026-08-19T00:08:00+02:00",
+        "expires_at": expires_at,
+        "decision_basis": "Current risk-off evidence rejects rebuilding this exact sold slice.",
+        "thesis_evidence": "The current crypto-risk thesis remains intentionally risk-off.",
+        "event_evidence": "No newer issuer or regulatory event reverses the risk-off decision.",
+        "technical_evidence": "Regular-session structure has not passed the required reclaim gate.",
+        "path_evidence": "The full authenticated post-sale path and maximum drawdown were reviewed.",
+        "newer_evidence_reviewed": True,
+        "contradiction_status": contradiction_status,
+    }
 
 
 def current_buyback_coverage():
@@ -163,6 +185,7 @@ def current_sold_marker_recovery():
             "PERCENTAGE_NOT_SET is fail-closed.",
             "An 8 percent sold-marker drawdown is a mandatory review alarm.",
             "Do not chase a rebound.",
+            "No-reentry decisions expire and require exact-sale revalidation against newer evidence.",
         ],
         "row_count": 4,
         "summary": {
@@ -340,8 +363,8 @@ def test_incomplete_audit_accepts_current_scoped_refresh_with_open_gates():
             "tenant_session_id": "personal",
             "account_id": "5227886",
             "unresolved_mismatch_count": 0,
-            "protection_repair_required_count": 1,
-            "protection_repair_required_orderbook_ids": ["3340"],
+            "protection_repair_required_count": 0,
+            "protection_repair_required_orderbook_ids": [],
         },
         {
             "tool": "avanza_stoploss_strategy_audit",
@@ -354,8 +377,8 @@ def test_incomplete_audit_accepts_current_scoped_refresh_with_open_gates():
             "tenant_session_id": "darkcell",
             "account_id": "7616265",
             "unresolved_mismatch_count": 0,
-            "protection_repair_required_count": 1,
-            "protection_repair_required_orderbook_ids": ["956885"],
+            "protection_repair_required_count": 0,
+            "protection_repair_required_orderbook_ids": [],
         },
         {
             "tool": "avanza_stoploss_strategy_audit",
@@ -383,6 +406,37 @@ def test_incomplete_audit_accepts_current_scoped_refresh_with_open_gates():
     }
 
     assert validate(payload) == []
+
+
+def test_position_protection_repairs_are_independent_from_sold_cycle_repairs():
+    payload = {
+        "strategy_audit_coverage": {
+            "live_refresh_verified": True,
+            "audits": [
+                {
+                    "tool": "avanza_position_strategy_audit",
+                    "tenant_session_id": "personal",
+                    "protection_repair_required_count": 1,
+                    "protection_repair_required_orderbook_ids": ["3674"],
+                },
+                {
+                    "tool": "avanza_position_strategy_audit",
+                    "tenant_session_id": "darkcell",
+                    "protection_repair_required_count": 1,
+                    "protection_repair_required_orderbook_ids": ["1211627"],
+                },
+            ],
+        },
+        "current_sold_marker_recovery": {
+            "summary": {"unmodeled_prior_sale_identity_count": 0},
+            "rows": [],
+        },
+    }
+    errors: list[str] = []
+
+    _validate_sold_marker_strategy_reconciliation(payload, errors, require_clean=False)
+
+    assert errors == []
 
 
 def test_incomplete_audit_accepts_exact_raw_transaction_recovery_with_other_gates_open():
@@ -711,8 +765,105 @@ def add_governed_dormant_sold_marker_ladder(payload):
     return recovery, reconciliation
 
 
+def add_valid_no_reentry_sold_marker_decision(payload, *, decision=None):
+    decision = decision or no_reentry_decision()
+    recovery = {
+        "tenant_session_id": "darkcell",
+        "account_id": "7616265",
+        "instrument": "Coinbase",
+        "orderbook_id": "1211627",
+        "sale_date": "2026-07-13",
+        "sold_quantity": 16,
+        "sale_attributed_active_buy_quantity": 0,
+        "remaining_open_quantity": 0,
+        "state": "EXPLICIT_NO_REENTRY_CURRENT_THESIS",
+        "no_reentry_decision": decision,
+    }
+    reconciliation = {
+        "tenant_session_id": "darkcell",
+        "account_id": "7616265",
+        "orderbook_id": "1211627",
+        "sale_date": "2026-07-13",
+        "sold_quantity": 16,
+        "remaining_open_quantity": 0,
+        "sale_attributed_active_buy_quantity": 0,
+        "recovery_state": "EXPLICIT_NO_REENTRY_CURRENT_THESIS",
+        "recovery_artifact_generated_at": "2026-08-19T00:10:00+02:00",
+        "recovery_artifact_verified_at": "2026-08-19T00:15:00+02:00",
+        "recovery_no_reentry_decision": decision,
+        "dynamic_row_found": True,
+        "dynamic_buyback_coverage_state": "LEDGER_ONLY",
+        "dynamic_low_exposure_decision": "EXIT_OR_NO_REENTRY_REVIEW",
+        "dynamic_protection_classification": "MARKER_EXCEPTION",
+        "dynamic_active_buy_volume": 0,
+        "dynamic_target_rebuild_quantity": None,
+        "dynamic_latest_recent_sale_date": "2026-07-13",
+        "dynamic_stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+        "dynamic_stage_quantities": None,
+        "dynamic_coverage_reason": "Explicit no-reentry decision closes the exact sold slice under current evidence.",
+        "dynamic_artifact_generated_at": "2026-08-19T00:20:00+02:00",
+        "dynamic_no_reentry_decision": decision,
+    }
+    current = payload["current_sold_marker_recovery"]
+    current.update({"rows": [recovery], "row_count": 1})
+    current["summary"].update({
+        "repair_required_missed_path_rows": 0,
+        "percentage_not_set_open_rows": 0,
+        "partial_sale_attributed_active_rows": 0,
+        "explicit_no_reentry_rows": 1,
+        "open_material_rows": 0,
+        "remaining_open_quantity_across_material_rows": 0,
+    })
+    current["dynamic_reconciliation"].update({"rows": [reconciliation], "row_count": 1})
+    return recovery, reconciliation
+
+
 def test_completion_audit_accepts_a_proven_current_live_contract():
     assert validate(completed_contract_payload()) == []
+
+
+def test_completion_audit_accepts_valid_time_bounded_no_reentry_decision():
+    payload = completed_contract_payload()
+    add_valid_no_reentry_sold_marker_decision(payload)
+
+    assert validate(payload) == []
+
+
+def test_completion_audit_rejects_expired_no_reentry_decision():
+    payload = completed_contract_payload()
+    add_valid_no_reentry_sold_marker_decision(
+        payload,
+        decision=no_reentry_decision(expires_at="2026-08-19T00:19:00+02:00"),
+    )
+
+    errors = validate(payload)
+
+    assert "current sold-marker no-reentry evidence is missing, expired, or contradicted" in errors
+    assert "completed goal retains sold-marker governance gaps" in errors
+
+
+def test_completion_audit_rejects_newer_no_reentry_contradiction():
+    payload = completed_contract_payload()
+    add_valid_no_reentry_sold_marker_decision(
+        payload,
+        decision=no_reentry_decision(contradiction_status="NEWER_EVIDENCE_CONTRADICTS"),
+    )
+
+    errors = validate(payload)
+
+    assert "current sold-marker no-reentry evidence is missing, expired, or contradicted" in errors
+
+
+def test_completion_audit_rejects_exit_no_reentry_with_active_recovery():
+    payload = completed_contract_payload()
+    recovery, reconciliation = add_valid_no_reentry_sold_marker_decision(payload)
+    recovery["sale_attributed_active_buy_quantity"] = 3
+    reconciliation["sale_attributed_active_buy_quantity"] = 3
+    reconciliation["dynamic_active_buy_volume"] = 3
+
+    errors = validate(payload)
+
+    assert "current sold-marker exit/no-reentry classification conflicts with active recovery inventory" in errors
 
 
 def test_completion_audit_accepts_open_fully_governed_dormant_ladder():
@@ -746,7 +897,23 @@ def test_enrichment_replaces_stale_global_percentage_not_set_blocker():
 
     assert len(b9) == 1
     assert "Sixty-one" not in b9[0]["item"]
-    assert "terminal hold/no-reentry/named-exception rows are excluded" in b9[0]["item"]
+    assert "valid dated terminal no-reentry and named-exception rows are excluded" in b9[0]["item"]
+
+
+def test_enrichment_blocks_expired_no_reentry_in_b9_and_b11():
+    payload = completed_contract_payload()
+    add_valid_no_reentry_sold_marker_decision(
+        payload,
+        decision=no_reentry_decision(expires_at="2026-08-19T00:19:00+02:00"),
+    )
+
+    enriched = enrich(payload, {})
+    blockers = {row.get("id"): row for row in enriched["completion_blockers"]}
+
+    assert "B9" in blockers
+    assert "no-reentry closure(s) lack current exact-sale evidence" in blockers["B9"]["item"]
+    assert "B11" in blockers
+    assert "invalid or expired no-reentry closure(s)" in blockers["B11"]["item"]
 
 
 def test_completion_audit_rejects_completed_contract_with_unresolved_audit():

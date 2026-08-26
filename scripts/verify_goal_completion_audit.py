@@ -191,25 +191,15 @@ def _sold_marker_has_open_work(payload: dict[str, Any]) -> bool:
     )
 
 
-def _sold_marker_repair_ids(payload: dict[str, Any]) -> dict[str, list[str]]:
-    rows = payload.get("current_sold_marker_recovery", {}).get("rows", [])
-    return {
-        tenant: sorted(
-            str(row.get("orderbook_id"))
-            for row in rows
-            if isinstance(row, dict)
-            and row.get("tenant_session_id") == tenant
-            and str(row.get("state") or "").startswith("REPAIR_REQUIRED")
-        )
-        for tenant in ("personal", "darkcell")
-    }
-
-
-def _validate_sold_marker_strategy_reconciliation(payload: dict[str, Any], errors: list[str]) -> None:
+def _validate_sold_marker_strategy_reconciliation(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    require_clean: bool,
+) -> None:
     audit = payload.get("strategy_audit_coverage", {})
     if audit.get("live_refresh_verified") is not True:
         return
-    expected = _sold_marker_repair_ids(payload)
     position_rows = {
         str(row.get("tenant_session_id") or ""): row
         for row in audit.get("audits", [])
@@ -219,11 +209,21 @@ def _validate_sold_marker_strategy_reconciliation(payload: dict[str, Any], error
         row = position_rows.get(tenant, {})
         actual = sorted(str(value) for value in row.get("protection_repair_required_orderbook_ids", []))
         _require(
-            actual == expected[tenant]
-            and row.get("protection_repair_required_count") == len(expected[tenant]),
-            f"{tenant} position repair identities contradict complete-path sold-marker evidence",
+            row.get("protection_repair_required_count") == len(actual),
+            f"{tenant} position repair count is internally inconsistent",
             errors,
         )
+        _require(
+            len(actual) == len(set(actual)) and all(value for value in actual),
+            f"{tenant} position repair identities must be unique and non-empty",
+            errors,
+        )
+        if require_clean:
+            _require(
+                not actual,
+                f"{tenant} position protection repairs must be zero before completion",
+                errors,
+            )
 
 
 def _validate_sold_marker_recovery_link(
@@ -309,6 +309,7 @@ def _validate_sold_marker_recovery_link(
         "percentage_not_set is fail-closed",
         "8 percent sold-marker drawdown is a mandatory review alarm",
         "do not chase a rebound",
+        "no-reentry decisions expire",
     ):
         _require(phrase in control_text, f"current sold-marker control missing: {phrase}", errors)
 
@@ -339,6 +340,28 @@ def _validate_sold_marker_recovery_link(
         if isinstance(row, dict)
     }
     _require(set(reconciliation_by_key) == set(keys), "sold-marker reconciliation identities mismatch", errors)
+    governance_gaps = sold_marker_governance_gap_rows(reconciliation_rows)
+    invalid_no_reentry_rows = [
+        row for row in governance_gaps
+        if row.get("recovery_state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+    ]
+    _require(
+        not invalid_no_reentry_rows,
+        "current sold-marker no-reentry evidence is missing, expired, or contradicted",
+        errors,
+    )
+    _require(
+        not any(
+            row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
+            and isinstance(row.get("dynamic_active_buy_volume"), (int, float))
+            and not isinstance(row.get("dynamic_active_buy_volume"), bool)
+            and row.get("dynamic_active_buy_volume") > 0
+            for row in reconciliation_rows
+            if isinstance(row, dict)
+        ),
+        "current sold-marker exit/no-reentry classification conflicts with active recovery inventory",
+        errors,
+    )
     for recovery in rows:
         if not isinstance(recovery, dict):
             continue
@@ -379,7 +402,6 @@ def _validate_sold_marker_recovery_link(
         _require(dynamic_generated >= current_generated, "dynamic buyback coverage predates sold-marker remediation", errors)
 
     if require_clean:
-        governance_gaps = sold_marker_governance_gap_rows(reconciliation_rows)
         _require(
             not governance_gaps,
             "completed goal retains sold-marker governance gaps",
@@ -442,7 +464,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
         "every exact position and stop audit must be recorded with zero relevant drift or error",
         errors,
     )
-    _validate_sold_marker_strategy_reconciliation(payload, errors)
+    _validate_sold_marker_strategy_reconciliation(payload, errors, require_clean=True)
 
     strategy = payload.get("strategy_coverage", {})
     _require(strategy.get("unique_instruments") == 65, "strategy coverage must report 65 instruments", errors)
@@ -638,7 +660,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
                 f"holding-only exception metadata is incomplete for {entry.get('orderbook_id')}",
                 errors,
             )
-    _validate_sold_marker_strategy_reconciliation(payload, errors)
+    _validate_sold_marker_strategy_reconciliation(payload, errors, require_clean=False)
 
     control = payload.get("current_control_state", {})
     _require(control.get("broker_mutation") is False, "current broker mutation flag must be false", errors)

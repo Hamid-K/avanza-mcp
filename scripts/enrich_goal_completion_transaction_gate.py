@@ -843,6 +843,10 @@ def enrich(
         row for row in sold_marker_gap_rows
         if row.get("recovery_state") == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"
     ]
+    invalid_no_reentry_rows = [
+        row for row in sold_marker_gap_rows
+        if row.get("recovery_state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+    ]
     governed_dormant_rows = [
         row for row in sold_marker_reconciliation_rows
         if row.get("recovery_state") == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
@@ -864,23 +868,39 @@ def enrich(
         row for row in repair_gap_rows
         if row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
     ]
-    if percentage_not_set_repair_rows or unsupported_gap_rows:
+    if percentage_not_set_repair_rows or unsupported_gap_rows or invalid_no_reentry_rows:
         unresolved_percentage_rows = percentage_not_set_repair_rows + unsupported_gap_rows
         unresolved_labels = ", ".join(
             f"{row.get('tenant_session_id')}:{row.get('orderbook_id')}"
             for row in unresolved_percentage_rows
         )
+        invalid_no_reentry_labels = ", ".join(
+            f"{row.get('tenant_session_id')}:{row.get('orderbook_id')}"
+            for row in invalid_no_reentry_rows
+        )
+        item_parts: list[str] = []
+        if unresolved_percentage_rows:
+            item_parts.append(
+                f"{len(unresolved_percentage_rows)} material sold-marker row(s) remain PERCENTAGE_NOT_SET "
+                f"({unresolved_labels})"
+            )
+        if invalid_no_reentry_rows:
+            item_parts.append(
+                f"{len(invalid_no_reentry_rows)} no-reentry closure(s) lack current exact-sale evidence "
+                f"({invalid_no_reentry_labels})"
+            )
         enriched["completion_blockers"].append(
             {
                 "id": "B9",
                 "type": "BUYBACK_EVIDENCE_GAPS",
                 "item": (
-                    f"{len(unresolved_percentage_rows)} material sold-marker row(s) remain PERCENTAGE_NOT_SET "
-                    f"({unresolved_labels}); terminal hold/no-reentry/named-exception rows are excluded"
+                    "; ".join(item_parts)
+                    + "; valid dated terminal no-reentry and named-exception rows are excluded"
                 ),
                 "condition_to_close": (
                     "For each listed material row, either record an individually supported stock-specific vector with exact "
-                    "quantity and promotion evidence, or close it through an explicit current-thesis no-reentry decision."
+                    "quantity and promotion evidence, or close it through an exact-sale no-reentry decision with matching closed "
+                    "quantity, current thesis/event/technical/path evidence, revalidation, expiry, and no newer contradiction."
                 ),
             }
         )
@@ -892,12 +912,14 @@ def enrich(
                 "item": (
                     f"Complete-path sold-marker audit retains {len(repair_gap_rows)} repair row(s), "
                     f"{len(partial_gap_rows)} partial uncovered remainder(s), and {len(unsupported_gap_rows)} unsupported "
-                    f"material gap(s); {len(governed_dormant_rows)} fully quantified dormant ladder(s) are governed and excluded"
+                    f"material gap(s), plus {len(invalid_no_reentry_rows)} invalid or expired no-reentry closure(s); "
+                    f"{len(governed_dormant_rows)} fully quantified dormant ladder(s) are governed and excluded"
                 ),
                 "condition_to_close": (
                     "Reconcile the complete authenticated post-sale path to the latest dynamic buyback ledger and live position audit. "
-                    "Close every exact open quantity through a qualifying same-sale recovery, an explicit partial/no-reentry decision, "
-                    "or a supported stock-specific ladder; a rebound or latest quote cannot erase a crossed unserved stage."
+                    "Close every exact open quantity through a qualifying same-sale recovery, an explicit partial decision, a valid "
+                    "dated and unexpired exact-sale no-reentry decision, or a supported stock-specific ladder; a rebound or latest "
+                    "quote cannot erase a crossed unserved stage."
                 ),
             }
         )
@@ -1021,12 +1043,15 @@ def enrich(
                         "The latest complete-path sold-marker remediation is linked to the current dynamic buyback ledger; "
                         f"it retains {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
                         f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
-                        f"and {int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows without allowing a rebound to erase them."
+                        f"{int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows, and "
+                        f"{len(invalid_no_reentry_rows)} invalid or expired no-reentry closures without allowing a "
+                        "rebound to erase them."
                     ),
                 )
                 row["remaining_proof"] = _append_once(
                     row.get("remaining_proof"),
-                    "Close blocker B11 with exact full-path recovery or explicit partial/no-reentry evidence; latest-quote status alone is insufficient.",
+                    "Close blocker B11 with exact full-path recovery, explicit partial evidence, or a valid dated and "
+                    "unexpired exact-sale no-reentry decision; latest-quote status alone is insufficient.",
                 )
     if transaction_live or live_scopes:
         for row in enriched.get("requirements", []):
@@ -1063,12 +1088,15 @@ def enrich(
                     "The latest complete-path sold-marker remediation is linked to the current dynamic buyback ledger; "
                     f"it retains {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
                     f"{int(sold_marker_summary.get('percentage_not_set_open_rows', 0) or 0)} unsupported material gaps, "
-                    f"and {int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows without allowing a rebound to erase them."
+                    f"{int(sold_marker_summary.get('partial_sale_attributed_active_rows', 0) or 0)} partial rows, and "
+                    f"{len(invalid_no_reentry_rows)} invalid or expired no-reentry closures without allowing a "
+                    "rebound to erase them."
                 ),
             )
             row["remaining_proof"] = _append_once(
                 row.get("remaining_proof"),
-                "Close blocker B11 with exact full-path recovery or explicit partial/no-reentry evidence; latest-quote status alone is insufficient.",
+                "Close blocker B11 with exact full-path recovery, explicit partial evidence, or a valid dated and "
+                "unexpired exact-sale no-reentry decision; latest-quote status alone is insufficient.",
             )
     return enriched
 

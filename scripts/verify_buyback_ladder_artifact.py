@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import argparse
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,8 @@ DAILY_COVERAGE_JSON_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_2
 CANDIDATE_OVERLAY_PATH = ROOT / "output" / "PORTFOLIO_BUYBACK_CANDIDATE_LIVE_OVERLAY_20260806_0311.json"
 DYNAMIC_LIVE_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
 SOLD_MARKER_REMEDIATION_GLOB = "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.json"
+SOLD_MARKER_FULL_PATH_GLOB = "PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_[0-9]*.json"
+R17_MIGRATION_WORKLIST_GLOB = "PORTFOLIO_R17_MULTI_SALE_MIGRATION_WORKLIST_[0-9]*.json"
 
 DYNAMIC_BUYBACK_STATES = {
     "LADDER_ACTIVE",
@@ -44,6 +46,7 @@ EXPECTED_DYNAMIC_SCOPES = {
     ("personal", "5227886"),
     ("darkcell", "7616265"),
 }
+NO_REENTRY_MAX_VALIDITY = timedelta(days=14)
 
 
 def _require(condition: bool, message: str, errors: list[str]) -> None:
@@ -65,11 +68,165 @@ def latest_sold_marker_remediation_path() -> Path | None:
     return paths[-1] if paths else None
 
 
+def latest_sold_marker_full_path_path() -> Path | None:
+    """Return the newest account-scoped sold-marker full-path universe."""
+
+    paths = sorted((ROOT / "output").glob(SOLD_MARKER_FULL_PATH_GLOB))
+    return paths[-1] if paths else None
+
+
+def latest_r17_migration_worklist_path() -> Path | None:
+    """Return the newest raw-chronology R17 migration worklist."""
+
+    paths = sorted((ROOT / "output").glob(R17_MIGRATION_WORKLIST_GLOB))
+    return paths[-1] if paths else None
+
+
 def _artifact_time(value: Any) -> datetime | None:
     try:
         return datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _artifact_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_time(*values: Any) -> datetime | None:
+    parsed = [_artifact_time(value) for value in values]
+    timestamps = [value for value in parsed if value is not None]
+    if not timestamps:
+        return None
+    try:
+        return max(timestamps)
+    except TypeError:
+        return None
+
+
+def _is_positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_positive_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _no_reentry_decision_gaps(
+    identity_row: dict[str, Any],
+    decision: Any,
+    reference_time: datetime | None,
+) -> list[str]:
+    """Validate a time-bounded exact-sale decision that closes recovery."""
+
+    if not isinstance(decision, dict):
+        return ["structured no-reentry decision is missing"]
+
+    gaps: list[str] = []
+    required_text = (
+        "decision_id",
+        "decision_basis",
+        "thesis_evidence",
+        "event_evidence",
+        "technical_evidence",
+        "path_evidence",
+    )
+    for field in required_text:
+        if not str(decision.get(field) or "").strip():
+            gaps.append(f"{field} is missing")
+
+    for field in ("tenant_session_id", "account_id", "orderbook_id", "sale_date"):
+        expected = str(identity_row.get(field) or "")
+        actual = str(decision.get(field) or "")
+        if not expected or actual != expected:
+            gaps.append(f"{field} does not match the exact sold slice")
+
+    for field in ("sale_lot_id", "sale_transaction_id", "sale_timestamp"):
+        expected = str(identity_row.get(field) or "")
+        actual = str(decision.get(field) or "")
+        if expected and actual != expected:
+            gaps.append(f"{field} does not match the exact sale lot")
+
+    sold_quantity = identity_row.get("sold_quantity")
+    decision_sold_quantity = decision.get("sold_quantity")
+    closed_quantity = decision.get("closed_quantity")
+    if not _is_positive_integer(sold_quantity):
+        gaps.append("sold quantity is not a positive exact integer")
+    if decision_sold_quantity != sold_quantity:
+        gaps.append("decision sold quantity does not match the exact sold slice")
+    if closed_quantity != sold_quantity:
+        gaps.append("closed quantity does not equal the exact sold quantity")
+    if identity_row.get("remaining_open_quantity") != 0:
+        gaps.append("remaining open quantity is not zero")
+
+    sale_date = _artifact_date(identity_row.get("sale_date"))
+    if sale_date is None:
+        gaps.append("sale date is invalid")
+
+    decision_at = _artifact_time(decision.get("decision_at"))
+    revalidated_at = _artifact_time(decision.get("last_revalidated_at"))
+    expires_at = _artifact_time(decision.get("expires_at"))
+    if decision_at is None:
+        gaps.append("decision_at is invalid")
+    if revalidated_at is None:
+        gaps.append("last_revalidated_at is invalid")
+    if expires_at is None:
+        gaps.append("expires_at is invalid")
+    if reference_time is None:
+        gaps.append("artifact reference time is invalid")
+
+    timestamps = [
+        value
+        for value in (decision_at, revalidated_at, expires_at, reference_time)
+        if value is not None
+    ]
+    timezone_shapes = {
+        value.utcoffset() is not None
+        for value in timestamps
+    }
+    if len(timezone_shapes) > 1:
+        gaps.append("decision timestamps and artifact reference time use incompatible timezone forms")
+    elif decision_at is not None and revalidated_at is not None and expires_at is not None:
+        if sale_date is not None and decision_at.date() < sale_date:
+            gaps.append("decision predates the exact sale")
+        if revalidated_at < decision_at:
+            gaps.append("last revalidation predates the decision")
+        if expires_at <= revalidated_at:
+            gaps.append("expiry does not follow the last revalidation")
+        elif expires_at - revalidated_at > NO_REENTRY_MAX_VALIDITY:
+            gaps.append("expiry exceeds the 14-day no-reentry validity ceiling")
+        if reference_time is not None:
+            if revalidated_at > reference_time:
+                gaps.append("last revalidation is later than the artifact review")
+            if expires_at <= reference_time:
+                gaps.append("no-reentry decision is expired")
+
+    if decision.get("newer_evidence_reviewed") is not True:
+        gaps.append("newer evidence was not explicitly reviewed")
+    if decision.get("contradiction_status") != "NONE":
+        gaps.append("newer evidence contradicts or has not cleared the no-reentry decision")
+    return list(dict.fromkeys(gaps))
+
+
+def _is_terminal_no_reentry_dynamic_row(row: dict[str, Any]) -> bool:
+    reason = str(row.get("coverage_reason") or "").lower()
+    return (
+        isinstance(row.get("no_reentry_decision"), dict)
+        or "no-reentry" in reason
+        or "no re-entry" in reason
+        or (
+            row.get("low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
+            and row.get("buyback_coverage_state") == "LEDGER_ONLY"
+            and row.get("stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
+        )
+    )
 
 
 def _remediation_key(row: dict[str, Any]) -> tuple[str, str, str]:
@@ -78,6 +235,379 @@ def _remediation_key(row: dict[str, Any]) -> tuple[str, str, str]:
         str(row.get("account_id") or ""),
         str(row.get("orderbook_id") or ""),
     )
+
+
+def _allocation_source_totals(
+    allocations: Any,
+    *,
+    lot_ids: set[str],
+    source_id_field: str,
+    label: str,
+    key: tuple[str, str, str],
+    errors: list[str],
+    require_normalization: bool = False,
+) -> dict[str, int]:
+    """Validate exact source-to-lot allocations and return per-lot totals."""
+
+    if not isinstance(allocations, list):
+        errors.append(f"{label} must be a list for {key}")
+        return {}
+
+    allocation_ids: set[str] = set()
+    source_quantities: dict[str, int] = {}
+    allocated_by_source: dict[str, int] = defaultdict(int)
+    allocated_by_lot: dict[str, int] = defaultdict(int)
+    source_lot_pairs: set[tuple[str, str]] = set()
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            errors.append(f"{label} contains a non-object row for {key}")
+            continue
+        allocation_id = str(allocation.get("allocation_id") or "")
+        source_id = str(allocation.get(source_id_field) or "")
+        lot_id = str(allocation.get("sale_lot_id") or "")
+        quantity = allocation.get("quantity")
+        source_quantity = allocation.get("source_quantity")
+        _require(bool(allocation_id), f"{label} allocation id missing for {key}", errors)
+        _require(bool(source_id), f"{label} source id missing for {key}", errors)
+        _require(lot_id in lot_ids, f"{label} references an unknown sale lot for {key}", errors)
+        _require(_is_positive_integer(quantity), f"{label} quantity must be a positive integer for {key}", errors)
+        _require(
+            _is_positive_integer(source_quantity),
+            f"{label} source quantity must be a positive integer for {key}",
+            errors,
+        )
+        if require_normalization:
+            raw_source_quantity = allocation.get("raw_source_quantity")
+            normalization_factor = allocation.get("quantity_normalization_factor")
+            _require(
+                _is_positive_integer(raw_source_quantity),
+                f"{label} raw source quantity must be a positive integer for {key}",
+                errors,
+            )
+            _require(
+                _is_positive_number(normalization_factor),
+                f"{label} normalization factor must be positive for {key}",
+                errors,
+            )
+            if _is_positive_integer(raw_source_quantity) and _is_positive_number(normalization_factor):
+                _require(
+                    raw_source_quantity * normalization_factor == source_quantity,
+                    f"{label} normalized source quantity is inconsistent for {key}",
+                    errors,
+                )
+        _require(allocation_id not in allocation_ids, f"{label} allocation id is duplicated for {key}", errors)
+        pair = (source_id, lot_id)
+        _require(pair not in source_lot_pairs, f"{label} source-to-lot allocation is duplicated for {key}", errors)
+        allocation_ids.add(allocation_id)
+        source_lot_pairs.add(pair)
+        if source_id in source_quantities:
+            _require(
+                source_quantities[source_id] == source_quantity,
+                f"{label} source quantity changes between allocations for {key}",
+                errors,
+            )
+        elif _is_positive_integer(source_quantity):
+            source_quantities[source_id] = source_quantity
+        if _is_positive_integer(quantity):
+            allocated_by_source[source_id] += quantity
+            allocated_by_lot[lot_id] += quantity
+
+    for source_id, quantity in allocated_by_source.items():
+        _require(
+            quantity <= source_quantities.get(source_id, 0),
+            f"{label} source {source_id} is overallocated for {key}",
+            errors,
+        )
+    return dict(allocated_by_lot)
+
+
+def _inventory_totals(
+    inventory: Any,
+    *,
+    source_id_field: str,
+    label: str,
+    key: tuple[str, str, str],
+    errors: list[str],
+) -> tuple[int, set[str]]:
+    """Validate explicitly unattributed inventory without treating it as recovery."""
+
+    if not isinstance(inventory, list):
+        errors.append(f"{label} must be a list for {key}")
+        return 0, set()
+    total = 0
+    source_ids: set[str] = set()
+    for item in inventory:
+        if not isinstance(item, dict):
+            errors.append(f"{label} contains a non-object row for {key}")
+            continue
+        source_id = str(item.get(source_id_field) or "")
+        quantity = item.get("quantity")
+        _require(bool(source_id), f"{label} source id missing for {key}", errors)
+        _require(_is_positive_integer(quantity), f"{label} quantity must be a positive integer for {key}", errors)
+        _require(source_id not in source_ids, f"{label} source id is duplicated for {key}", errors)
+        source_ids.add(source_id)
+        if _is_positive_integer(quantity):
+            total += quantity
+    return total, source_ids
+
+
+def _validate_recovery_cycle(
+    row: dict[str, Any],
+    reference_time: datetime | None,
+    schema_version: int = 2,
+) -> list[str]:
+    """Validate a complete multi-sale recovery cycle for one account/instrument."""
+
+    errors: list[str] = []
+    key = _remediation_key(row)
+    cycle_id = str(row.get("recovery_cycle_id") or "")
+    boundary = row.get("cycle_boundary_evidence")
+    state = str(row.get("state") or "")
+    unproven_envelope = False
+    _require(bool(cycle_id), f"recovery cycle id missing for {key}", errors)
+    _require(isinstance(boundary, dict), f"cycle boundary evidence missing for {key}", errors)
+    if isinstance(boundary, dict):
+        boundary_status = str(boundary.get("boundary_status") or "")
+        unproven_envelope = boundary_status == "UNPROVEN_CONSERVATIVE_ENVELOPE"
+        _require(boundary.get("exact_account_scope") is True, f"cycle account scope is not exact for {key}", errors)
+        if unproven_envelope:
+            _require(
+                state.startswith("REPAIR_REQUIRED"),
+                f"an unproven recovery envelope must remain REPAIR_REQUIRED for {key}",
+                errors,
+            )
+            _require(
+                boundary.get("truncation_risk") is True,
+                f"an unproven recovery envelope must preserve truncation risk for {key}",
+                errors,
+            )
+            _require(
+                boundary.get("all_sale_transactions_in_cycle_included") is False,
+                f"an unproven recovery envelope must not claim a complete cycle for {key}",
+                errors,
+            )
+            _require(
+                boundary.get("all_selected_sale_transactions_in_envelope_included") is True,
+                f"an unproven recovery envelope does not include every selected sale for {key}",
+                errors,
+            )
+        else:
+            _require(boundary.get("truncation_risk") is False, f"cycle transaction history is truncated for {key}", errors)
+            _require(
+                boundary.get("all_sale_transactions_in_cycle_included") is True,
+                f"cycle does not prove that every sale transaction is included for {key}",
+                errors,
+            )
+        for field in ("source", "cycle_start", "cycle_end", "boundary_basis"):
+            _require(bool(str(boundary.get(field) or "").strip()), f"cycle boundary {field} missing for {key}", errors)
+
+    lots = row.get("sale_lots")
+    _require(isinstance(lots, list) and bool(lots), f"sale lots must be a non-empty list for {key}", errors)
+    if not isinstance(lots, list) or not lots:
+        return errors
+
+    lot_ids: set[str] = set()
+    transaction_ids: set[str] = set()
+    lot_by_id: dict[str, dict[str, Any]] = {}
+    raw_sold_total = 0
+    for lot in lots:
+        if not isinstance(lot, dict):
+            errors.append(f"sale lots contain a non-object row for {key}")
+            continue
+        lot_id = str(lot.get("sale_lot_id") or "")
+        transaction_id = str(lot.get("sale_transaction_id") or "")
+        timestamp = str(lot.get("sale_timestamp") or "")
+        _require(bool(lot_id), f"sale lot id missing for {key}", errors)
+        _require(bool(transaction_id), f"sale transaction id missing for {key}", errors)
+        _require(_artifact_time(timestamp) is not None, f"sale timestamp invalid for {key}", errors)
+        _require(_is_positive_integer(lot.get("sold_quantity")), f"sale lot quantity invalid for {key}", errors)
+        if schema_version >= 3:
+            raw_sold_quantity = lot.get("raw_sold_quantity")
+            normalization_factor = lot.get("quantity_normalization_factor")
+            _require(
+                _is_positive_integer(raw_sold_quantity),
+                f"sale lot raw quantity invalid for {key}",
+                errors,
+            )
+            _require(
+                _is_positive_number(normalization_factor),
+                f"sale lot normalization factor invalid for {key}",
+                errors,
+            )
+            if _is_positive_integer(raw_sold_quantity) and _is_positive_number(normalization_factor):
+                _require(
+                    raw_sold_quantity * normalization_factor == lot.get("sold_quantity"),
+                    f"sale lot normalized quantity is inconsistent for {key}",
+                    errors,
+                )
+                raw_sold_total += raw_sold_quantity
+        _require(lot_id not in lot_ids, f"sale lot id is duplicated for {key}", errors)
+        _require(transaction_id not in transaction_ids, f"sale transaction id is duplicated for {key}", errors)
+        lot_ids.add(lot_id)
+        transaction_ids.add(transaction_id)
+        lot_by_id[lot_id] = lot
+
+    fill_allocations = row.get("qualifying_fill_allocations")
+    active_allocations = row.get("active_recovery_allocations")
+    fill_by_lot = _allocation_source_totals(
+        fill_allocations,
+        lot_ids=lot_ids,
+        source_id_field="buy_transaction_id",
+        label="qualifying fill allocations",
+        key=key,
+        errors=errors,
+        require_normalization=schema_version >= 3,
+    )
+    active_by_lot = _allocation_source_totals(
+        active_allocations,
+        lot_ids=lot_ids,
+        source_id_field="stop_loss_id",
+        label="active recovery allocations",
+        key=key,
+        errors=errors,
+    )
+    pre_sale_total, pre_sale_ids = _inventory_totals(
+        row.get("pre_sale_active_buy_inventory"),
+        source_id_field="stop_loss_id",
+        label="pre-sale active BUY inventory",
+        key=key,
+        errors=errors,
+    )
+    unattributed_active_total, unattributed_active_ids = _inventory_totals(
+        row.get("unattributed_active_buy_inventory"),
+        source_id_field="stop_loss_id",
+        label="unattributed active BUY inventory",
+        key=key,
+        errors=errors,
+    )
+    unattributed_fill_total, unattributed_fill_ids = _inventory_totals(
+        row.get("unattributed_later_buy_inventory"),
+        source_id_field="buy_transaction_id",
+        label="unattributed later BUY inventory",
+        key=key,
+        errors=errors,
+    )
+    non_recovery_buy_total = 0
+    if schema_version >= 3:
+        non_recovery_buy_total, _ = _inventory_totals(
+            row.get("non_recovery_buy_inventory"),
+            source_id_field="buy_transaction_id",
+            label="non-recovery BUY inventory",
+            key=key,
+            errors=errors,
+        )
+    allocated_stop_ids = {
+        str(item.get("stop_loss_id") or "")
+        for item in active_allocations or []
+        if isinstance(item, dict)
+    }
+    allocated_buy_ids = {
+        str(item.get("buy_transaction_id") or "")
+        for item in fill_allocations or []
+        if isinstance(item, dict)
+    }
+    _require(
+        not (allocated_stop_ids & (pre_sale_ids | unattributed_active_ids)),
+        f"active BUY source is both sale-attributed and unattributed for {key}",
+        errors,
+    )
+    _require(
+        not (pre_sale_ids & unattributed_active_ids),
+        f"active BUY source is classified in two non-recovery inventories for {key}",
+        errors,
+    )
+    _require(
+        not (allocated_buy_ids & unattributed_fill_ids),
+        f"BUY fill is both sale-attributed and unattributed for {key}",
+        errors,
+    )
+
+    sold_total = 0
+    fill_total = 0
+    active_total = 0
+    closed_total = 0
+    remaining_total = 0
+    for lot_id, lot in lot_by_id.items():
+        sold = lot.get("sold_quantity")
+        filled = fill_by_lot.get(lot_id, 0)
+        active = active_by_lot.get(lot_id, 0)
+        decision = lot.get("no_reentry_decision")
+        closed = decision.get("closed_quantity", 0) if isinstance(decision, dict) else 0
+        remaining = lot.get("remaining_open_quantity")
+        for field in (
+            "qualifying_filled_quantity",
+            "active_recovery_quantity",
+            "closed_no_reentry_quantity",
+            "remaining_open_quantity",
+        ):
+            _require(_is_nonnegative_integer(lot.get(field)), f"sale lot {field} is invalid for {key}", errors)
+        _require(lot.get("qualifying_filled_quantity") == filled, f"sale lot fill allocation mismatch for {key}", errors)
+        _require(lot.get("active_recovery_quantity") == active, f"sale lot active allocation mismatch for {key}", errors)
+        _require(lot.get("closed_no_reentry_quantity") == closed, f"sale lot no-reentry quantity mismatch for {key}", errors)
+        if all(_is_nonnegative_integer(value) for value in (filled, active, closed, remaining)) and _is_positive_integer(sold):
+            _require(sold == filled + active + closed + remaining, f"sale lot quantity parity failed for {key}", errors)
+        if isinstance(decision, dict):
+            identity = {
+                "tenant_session_id": key[0],
+                "account_id": key[1],
+                "orderbook_id": key[2],
+                "sale_lot_id": lot_id,
+                "sale_transaction_id": lot.get("sale_transaction_id"),
+                "sale_timestamp": lot.get("sale_timestamp"),
+                "sale_date": str(lot.get("sale_timestamp") or "")[:10],
+                "sold_quantity": sold,
+                "remaining_open_quantity": remaining,
+            }
+            for gap in _no_reentry_decision_gaps(identity, decision, reference_time):
+                errors.append(f"sale-lot no-reentry decision is invalid for {key}/{lot_id}: {gap}")
+        sold_total += int(sold or 0)
+        fill_total += filled
+        active_total += active
+        closed_total += int(closed or 0)
+        remaining_total += int(remaining or 0)
+
+    aggregate_fields = {
+        "sold_quantity": sold_total,
+        "later_filled_quantity": fill_total,
+        "sale_attributed_active_buy_quantity": active_total,
+        "closed_no_reentry_quantity": closed_total,
+        "remaining_open_quantity": remaining_total,
+        "pre_sale_active_buy_quantity": pre_sale_total,
+        "unattributed_active_buy_quantity": unattributed_active_total,
+        "unattributed_later_buy_quantity": unattributed_fill_total,
+    }
+    if schema_version >= 3:
+        aggregate_fields["non_recovery_buy_quantity"] = non_recovery_buy_total
+    for field, expected in aggregate_fields.items():
+        _require(row.get(field) == expected, f"recovery cycle aggregate {field} mismatch for {key}", errors)
+    if unproven_envelope:
+        _require(
+            fill_total == 0 and active_total == 0 and closed_total == 0,
+            f"an unproven recovery envelope cannot receive recovery or terminal credit for {key}",
+            errors,
+        )
+        _require(
+            remaining_total == sold_total,
+            f"an unproven recovery envelope must preserve every selected sold share as open for {key}",
+            errors,
+        )
+    _require(row.get("raw_sale_transaction_count") == len(lot_by_id), f"raw sale transaction count mismatch for {key}", errors)
+    if schema_version >= 3:
+        _require(
+            row.get("raw_sale_quantity_total") == raw_sold_total,
+            f"raw sale quantity total mismatch for {key}",
+            errors,
+        )
+        _require(
+            row.get("normalized_sale_quantity_total") == sold_total,
+            f"normalized sale quantity total mismatch for {key}",
+            errors,
+        )
+    else:
+        _require(row.get("raw_sale_quantity_total") == sold_total, f"raw sale quantity total mismatch for {key}", errors)
+    latest_timestamp = max((str(lot.get("sale_timestamp")) for lot in lot_by_id.values()), default="")
+    _require(row.get("sale_date") == latest_timestamp[:10], f"latest sale date does not match the cycle for {key}", errors)
+    return errors
 
 
 def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
@@ -95,7 +625,15 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         "sold-marker remediation artifact id missing",
         errors,
     )
+    schema_version = payload.get("schema_version")
+    _require(schema_version in {2, 3}, "sold-marker remediation schema version must be 2 or 3", errors)
     _require(bool(str(payload.get("generated_at") or "").strip()), "sold-marker remediation generated_at missing", errors)
+    remediation_reference_time = _latest_time(
+        payload.get("generated_at"),
+        payload.get("verified_at"),
+        payload.get("path_snapshot_at"),
+    )
+    _require(remediation_reference_time is not None, "sold-marker remediation reference time is invalid", errors)
     _require(bool(str(payload.get("path_snapshot_at") or "").strip()), "sold-marker remediation path snapshot missing", errors)
     _require(authority.get("broker_mutation") is False, "sold-marker remediation broker mutation must be false", errors)
     _require(authority.get("paper_mutation") is False, "sold-marker remediation paper mutation must be false", errors)
@@ -113,8 +651,36 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     _require(
-        any("PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_" in str(source) for source in payload.get("sources", [])),
-        "sold-marker remediation must cite the complete-path source",
+        any(
+            "PORTFOLIO_RAW_TRANSACTION_RECOVERY_" in str(source)
+            or "PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_" in str(source)
+            for source in payload.get("sources", [])
+        ),
+        "sold-marker remediation must cite authenticated transaction chronology",
+        errors,
+    )
+
+    cycle_ids: list[str] = []
+    total_sale_lots = 0
+    multi_sale_cycles = 0
+    raw_transaction_ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        errors.extend(_validate_recovery_cycle(row, remediation_reference_time, int(schema_version or 2)))
+        cycle_ids.append(str(row.get("recovery_cycle_id") or ""))
+        lots = row.get("sale_lots") if isinstance(row.get("sale_lots"), list) else []
+        total_sale_lots += len(lots)
+        multi_sale_cycles += len(lots) > 1
+        raw_transaction_ids.extend(
+            str(lot.get("sale_transaction_id") or "")
+            for lot in lots
+            if isinstance(lot, dict)
+        )
+    _require(len(cycle_ids) == len(set(cycle_ids)), "sold-marker remediation contains duplicate recovery cycle ids", errors)
+    _require(
+        len(raw_transaction_ids) == len(set(raw_transaction_ids)),
+        "sold-marker remediation reuses a raw sale transaction across recovery cycles",
         errors,
     )
 
@@ -160,6 +726,22 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         "sold-marker remediation full-universe count is invalid",
         errors,
     )
+    unmodeled = summary.get("unmodeled_prior_sale_identity_count")
+    _require(_is_nonnegative_integer(unmodeled), "unmodeled prior-sale identity count is invalid", errors)
+    if _is_nonnegative_integer(unmodeled):
+        _require(
+            summary.get("exact_account_rows_with_prior_same_account_sales") == len(rows) + unmodeled,
+            "modeled and unmodeled prior-sale identities do not reconcile",
+            errors,
+        )
+        _require(
+            summary.get("multi_sale_governance_complete") == (unmodeled == 0),
+            "multi-sale governance completeness flag is inconsistent",
+            errors,
+        )
+    _require(summary.get("modeled_recovery_cycle_rows") == len(rows), "modeled recovery-cycle count mismatch", errors)
+    _require(summary.get("modeled_sale_lots") == total_sale_lots, "modeled sale-lot count mismatch", errors)
+    _require(summary.get("multi_sale_recovery_cycle_rows") == multi_sale_cycles, "multi-sale cycle count mismatch", errors)
     _require(
         summary.get("all_path_active_buy_attribution_gaps_after_registry_correction") == 0,
         "sold-marker remediation retains active-BUY attribution gaps",
@@ -172,6 +754,15 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
     )
     _require(summary.get("broker_mutations") == 0, "sold-marker remediation must record zero broker mutations", errors)
 
+    for row in no_reentry_rows:
+        key = _remediation_key(row)
+        for gap in _no_reentry_decision_gaps(
+            row,
+            row.get("no_reentry_decision"),
+            remediation_reference_time,
+        ):
+            errors.append(f"sold-marker no-reentry decision is invalid for {key}: {gap}")
+
     control_text = " ".join(str(control).lower() for control in controls if isinstance(control, str))
     required_control_phrases = {
         "complete authenticated price path": "complete-path control missing",
@@ -180,6 +771,10 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         "percentage_not_set is fail-closed": "PERCENTAGE_NOT_SET fail-closed control missing",
         "8 percent sold-marker drawdown is a mandatory review alarm": "8 percent review-alarm control missing",
         "do not chase a rebound": "no-rebound-chasing control missing",
+        "no-reentry decisions expire": "no-reentry expiry control missing",
+        "every unresolved sale lot": "multi-sale lot persistence control missing",
+        "pre-sale and unattributed buy inventory": "unattributed inventory separation control missing",
+        "duplicate or overallocated": "allocation uniqueness control missing",
     }
     for phrase, message in required_control_phrases.items():
         _require(phrase in control_text, message, errors)
@@ -203,10 +798,292 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
             f"sold-marker {tenant} recovery reachability is unresolved",
             errors,
         )
+        sold_cycle_repair_ids = set(
+            str(value) for value in proof.get("sold_cycle_repair_orderbook_ids", [])
+        )
+        position_repair_ids = set(
+            str(value) for value in proof.get("position_repair_required_orderbook_ids", [])
+        )
         _require(
-            sorted(str(value) for value in proof.get("position_repair_required_orderbook_ids", []))
-            == repair_ids_by_tenant[tenant],
-            f"sold-marker {tenant} repair identities do not reconcile",
+            sold_cycle_repair_ids == set(repair_ids_by_tenant[tenant]),
+            f"sold-marker {tenant} sold-cycle repair identities are incomplete",
+            errors,
+        )
+        _require(
+            len(position_repair_ids) == len(proof.get("position_repair_required_orderbook_ids", [])),
+            f"sold-marker {tenant} position repair identities contain duplicates",
+            errors,
+        )
+    return errors
+
+
+def validate_sold_marker_universe_against_full_path(
+    remediation_payload: dict[str, Any],
+    full_path_payload: dict[str, Any],
+) -> list[str]:
+    """Prove that modeled extras do not replace full-path source identities."""
+
+    errors: list[str] = []
+    remediation_rows = remediation_payload.get("rows", [])
+    full_path_rows = full_path_payload.get("rows", [])
+    remediation_summary = remediation_payload.get("summary", {})
+    full_path_summary = full_path_payload.get("summary", {})
+    _require(isinstance(remediation_rows, list), "sold-marker remediation rows must be a list", errors)
+    _require(isinstance(full_path_rows, list), "sold-marker full-path rows must be a list", errors)
+    if not isinstance(remediation_rows, list) or not isinstance(full_path_rows, list):
+        return errors
+
+    remediation_keys = {
+        _remediation_key(row)
+        for row in remediation_rows
+        if isinstance(row, dict)
+    }
+    full_path_keys = {
+        _remediation_key(row)
+        for row in full_path_rows
+        if isinstance(row, dict)
+    }
+    _require(
+        len(full_path_keys) == len(full_path_rows),
+        "sold-marker full-path source contains duplicate or invalid identities",
+        errors,
+    )
+    _require(
+        full_path_summary.get("exact_account_rows") == len(full_path_keys),
+        "sold-marker full-path source summary count mismatch",
+        errors,
+    )
+
+    combined_keys = full_path_keys | remediation_keys
+    modeled_outside_full_path = remediation_keys - full_path_keys
+    unmodeled_full_path = full_path_keys - remediation_keys
+    source_universe = remediation_payload.get("source_universe", {})
+    _require(
+        remediation_summary.get("exact_account_rows_with_prior_same_account_sales") == len(combined_keys),
+        "sold-marker remediation omits full-path or modeled-outside-source identities from its universe count",
+        errors,
+    )
+    _require(
+        remediation_summary.get("unmodeled_prior_sale_identity_count") == len(unmodeled_full_path),
+        "sold-marker remediation unmodeled count does not match the full-path identity set",
+        errors,
+    )
+    _require(
+        source_universe.get("full_path_identity_count") == len(full_path_keys),
+        "sold-marker source-universe full-path count mismatch",
+        errors,
+    )
+    _require(
+        source_universe.get("modeled_outside_full_path_identity_count") == len(modeled_outside_full_path),
+        "sold-marker source-universe modeled-outside-full-path count mismatch",
+        errors,
+    )
+    _require(
+        source_universe.get("combined_prior_sale_identity_count") == len(combined_keys),
+        "sold-marker source-universe combined count mismatch",
+        errors,
+    )
+    return errors
+
+
+def validate_sold_marker_remediation_against_worklist(
+    remediation_payload: dict[str, Any],
+    worklist_payload: dict[str, Any],
+) -> list[str]:
+    """Require exact raw sale and later-BUY parity with the rebuilt R17 universe."""
+
+    errors: list[str] = []
+    remediation_rows = remediation_payload.get("rows", [])
+    worklist_rows = worklist_payload.get("rows", [])
+    worklist_summary = worklist_payload.get("summary", {})
+    worklist_schema = int(worklist_payload.get("schema_version", 2) or 2)
+    _require(
+        worklist_payload.get("artifact") == "PORTFOLIO_R17_MULTI_SALE_MIGRATION_WORKLIST",
+        "R17 migration worklist artifact id missing",
+        errors,
+    )
+    _require(isinstance(remediation_rows, list), "sold-marker remediation rows must be a list", errors)
+    _require(isinstance(worklist_rows, list), "R17 migration worklist rows must be a list", errors)
+    if not isinstance(remediation_rows, list) or not isinstance(worklist_rows, list):
+        return errors
+
+    remediation_by_key = {
+        _remediation_key(row): row
+        for row in remediation_rows
+        if isinstance(row, dict)
+    }
+    worklist_by_key = {
+        _remediation_key(row): row
+        for row in worklist_rows
+        if isinstance(row, dict)
+    }
+    _require(
+        len(worklist_by_key) == len(worklist_rows),
+        "R17 migration worklist contains duplicate or invalid identities",
+        errors,
+    )
+    _require(
+        set(remediation_by_key) == set(worklist_by_key),
+        "sold-marker remediation identity set differs from the rebuilt R17 worklist",
+        errors,
+    )
+
+    selected_sale_ids: list[str] = []
+    selected_buy_ids: list[str] = []
+    for key, worklist_row in worklist_by_key.items():
+        remediation = remediation_by_key.get(key)
+        if remediation is None:
+            continue
+        worklist_lots = worklist_row.get("sale_lots", [])
+        remediation_lots = remediation.get("sale_lots", [])
+        sale_fields = (
+            "sale_transaction_id",
+            "sale_timestamp",
+            "raw_sold_quantity",
+            "sold_quantity",
+            "quantity_normalization_factor",
+        ) if worklist_schema >= 3 else (
+            "sale_transaction_id",
+            "sale_timestamp",
+            "sold_quantity",
+        )
+        expected_sales = [
+            tuple(
+                str(lot.get(field) or "")
+                if field in {"sale_transaction_id", "sale_timestamp"}
+                else lot.get(field)
+                for field in sale_fields
+            )
+            for lot in worklist_lots
+            if isinstance(lot, dict)
+        ]
+        actual_sales = [
+            tuple(
+                str(lot.get(field) or "")
+                if field in {"sale_transaction_id", "sale_timestamp"}
+                else lot.get(field)
+                for field in sale_fields
+            )
+            for lot in remediation_lots
+            if isinstance(lot, dict)
+        ]
+        _require(
+            actual_sales == expected_sales,
+            f"sold-marker remediation changes or reorders raw sale lots for {key}",
+            errors,
+        )
+        selected_sale_ids.extend(item[0] for item in expected_sales)
+
+        candidate_buys = worklist_row.get(
+            "buy_sources" if worklist_schema >= 3 else "candidate_later_buy_sources",
+            [],
+        )
+        expected_buy_quantities = {
+            str(item.get("buy_transaction_id") or ""): item
+            for item in candidate_buys
+            if isinstance(item, dict)
+        }
+        allocated_quantities: dict[str, int] = defaultdict(int)
+        allocation_source_quantities: dict[str, int] = {}
+        for allocation in remediation.get("qualifying_fill_allocations", []):
+            if not isinstance(allocation, dict):
+                continue
+            source_id = str(allocation.get("buy_transaction_id") or "")
+            allocated_quantities[source_id] += int(allocation.get("quantity", 0) or 0)
+            allocation_source_quantities[source_id] = int(allocation.get("source_quantity", 0) or 0)
+        unattributed_quantities = {
+            str(item.get("buy_transaction_id") or ""): item.get("quantity")
+            for item in remediation.get("unattributed_later_buy_inventory", [])
+            if isinstance(item, dict)
+        }
+        non_recovery_quantities = {
+            str(item.get("buy_transaction_id") or ""): int(item.get("quantity", 0) or 0)
+            for item in remediation.get("non_recovery_buy_inventory", [])
+            if isinstance(item, dict)
+        }
+        represented_ids = set(allocated_quantities) | set(unattributed_quantities) | set(non_recovery_quantities)
+        _require(
+            represented_ids == set(expected_buy_quantities),
+            f"sold-marker remediation drops or invents later-BUY sources for {key}",
+            errors,
+        )
+        for source_id, source in expected_buy_quantities.items():
+            source_quantity = source.get("bought_quantity")
+            if worklist_schema >= 3:
+                _require(
+                    allocated_quantities.get(source_id, 0)
+                    == int(source.get("recovery_allocated_quantity", 0) or 0),
+                    f"sold-marker remediation changes FIFO recovery allocation for {key}/{source_id}",
+                    errors,
+                )
+                _require(
+                    non_recovery_quantities.get(source_id, 0)
+                    == int(source.get("non_recovery_quantity", 0) or 0),
+                    f"sold-marker remediation changes non-recovery BUY quantity for {key}/{source_id}",
+                    errors,
+                )
+                if allocated_quantities.get(source_id, 0):
+                    _require(
+                        allocation_source_quantities.get(source_id) == source_quantity,
+                        f"sold-marker remediation changes normalized BUY source quantity for {key}/{source_id}",
+                        errors,
+                    )
+                _require(
+                    int(source.get("recovery_allocated_quantity", 0) or 0)
+                    + int(source.get("non_recovery_quantity", 0) or 0)
+                    == int(source_quantity or 0),
+                    f"R17 worklist BUY source parity fails for {key}/{source_id}",
+                    errors,
+                )
+            elif source_id in allocated_quantities:
+                _require(
+                    allocation_source_quantities.get(source_id) == source_quantity
+                    and allocated_quantities[source_id] <= int(source_quantity or 0),
+                    f"sold-marker remediation changes allocated BUY quantity for {key}/{source_id}",
+                    errors,
+                )
+            else:
+                _require(
+                    unattributed_quantities.get(source_id) == source_quantity,
+                    f"sold-marker remediation changes unattributed BUY quantity for {key}/{source_id}",
+                    errors,
+                )
+        selected_buy_ids.extend(expected_buy_quantities)
+
+    _require(
+        len(selected_sale_ids) == len(set(selected_sale_ids)),
+        "R17 migration worklist repeats a raw sale transaction",
+        errors,
+    )
+    _require(
+        len(selected_buy_ids) == len(set(selected_buy_ids)),
+        "R17 migration worklist repeats a later-BUY transaction",
+        errors,
+    )
+    _require(
+        worklist_summary.get("combined_prior_sale_identity_count") == len(worklist_rows),
+        "R17 migration worklist identity count mismatch",
+        errors,
+    )
+    _require(
+        worklist_summary.get("selected_sale_lot_count") == len(selected_sale_ids),
+        "R17 migration worklist sale-lot count mismatch",
+        errors,
+    )
+    _require(
+        worklist_summary.get("candidate_later_buy_source_count") == len(selected_buy_ids),
+        "R17 migration worklist later-BUY count mismatch",
+        errors,
+    )
+    if worklist_schema >= 3:
+        _require(
+            worklist_summary.get("replay_exact_identity_count") == len(worklist_rows),
+            "R17 full-history replay exact-identity count mismatch",
+            errors,
+        )
+        _require(
+            worklist_summary.get("unmodeled_boundary_or_allocation_identity_count") == 0,
+            "R17 full-history worklist retains boundary or allocation gaps",
             errors,
         )
     return errors
@@ -229,6 +1106,11 @@ def sold_marker_dynamic_reconciliation_rows(
             continue
         key = _remediation_key(recovery)
         dynamic = dynamic_rows.get(key, {})
+        sale_lot_ids = [
+            str(lot.get("sale_lot_id") or "")
+            for lot in recovery.get("sale_lots", [])
+            if isinstance(lot, dict)
+        ]
         result.append({
             "tenant_session_id": key[0],
             "account_id": key[1],
@@ -238,7 +1120,15 @@ def sold_marker_dynamic_reconciliation_rows(
             "sold_quantity": recovery.get("sold_quantity"),
             "remaining_open_quantity": recovery.get("remaining_open_quantity"),
             "sale_attributed_active_buy_quantity": recovery.get("sale_attributed_active_buy_quantity"),
+            "pre_sale_active_buy_quantity": recovery.get("pre_sale_active_buy_quantity"),
+            "unattributed_active_buy_quantity": recovery.get("unattributed_active_buy_quantity"),
+            "unattributed_later_buy_quantity": recovery.get("unattributed_later_buy_quantity"),
+            "recovery_cycle_id": recovery.get("recovery_cycle_id"),
+            "sale_lot_ids": sale_lot_ids,
             "recovery_state": recovery.get("state"),
+            "recovery_artifact_generated_at": remediation_payload.get("generated_at"),
+            "recovery_artifact_verified_at": remediation_payload.get("verified_at"),
+            "recovery_no_reentry_decision": recovery.get("no_reentry_decision"),
             "recovery_recorded_stage_percentages_below_marker": recovery.get(
                 "recorded_stage_percentages_below_marker"
             ),
@@ -247,11 +1137,27 @@ def sold_marker_dynamic_reconciliation_rows(
             "dynamic_buyback_coverage_state": dynamic.get("buyback_coverage_state"),
             "dynamic_low_exposure_decision": dynamic.get("low_exposure_decision"),
             "dynamic_protection_classification": dynamic.get("current_protection_classification"),
-            "dynamic_active_buy_volume": dynamic.get("active_buy_volume"),
+            "dynamic_active_buy_volume": dynamic.get("sale_attributed_active_buy_quantity"),
+            "dynamic_broker_active_buy_volume": dynamic.get("active_buy_volume"),
+            "dynamic_sale_attributed_active_buy_quantity": dynamic.get(
+                "sale_attributed_active_buy_quantity"
+            ),
+            "dynamic_pre_sale_active_buy_quantity": dynamic.get("pre_sale_active_buy_quantity"),
+            "dynamic_unattributed_active_buy_quantity": dynamic.get(
+                "unattributed_active_buy_quantity"
+            ),
+            "dynamic_unattributed_later_buy_quantity": dynamic.get(
+                "unattributed_later_buy_quantity"
+            ),
+            "dynamic_recovery_cycle_id": dynamic.get("recovery_cycle_id"),
+            "dynamic_sale_lot_ids": dynamic.get("sale_lot_ids"),
             "dynamic_target_rebuild_quantity": dynamic.get("target_rebuild_quantity"),
+            "dynamic_latest_recent_sale_date": dynamic.get("latest_recent_sale_date"),
             "dynamic_stages_percent_below_sold_marker": dynamic.get("stages_percent_below_sold_marker"),
             "dynamic_stage_quantities": dynamic.get("stage_quantities"),
             "dynamic_coverage_reason": dynamic.get("coverage_reason"),
+            "dynamic_artifact_generated_at": dynamic_payload.get("generated_at"),
+            "dynamic_no_reentry_decision": dynamic.get("no_reentry_decision"),
         })
     return result
 
@@ -308,11 +1214,38 @@ def sold_marker_governance_gap_rows(
             continue
         state = str(row.get("recovery_state") or "")
         remaining = int(row.get("remaining_open_quantity", 0) or 0)
+        dynamic_attributed = row.get(
+            "dynamic_sale_attributed_active_buy_quantity",
+            row.get("dynamic_active_buy_volume"),
+        )
         reasons: list[str] = []
         if row.get("dynamic_row_found") is not True:
             reasons.append("dynamic buyback row is missing")
-        if row.get("dynamic_active_buy_volume") != row.get("sale_attributed_active_buy_quantity"):
-            reasons.append("active BUY attribution does not match the sold-slice record")
+        if (
+            dynamic_attributed != row.get("sale_attributed_active_buy_quantity")
+        ):
+            reasons.append("sale-attributed active BUY quantity does not match the recovery cycle")
+        if (
+            row.get("dynamic_broker_active_buy_volume", row.get("dynamic_active_buy_volume"))
+            != sum(
+                int(row.get(field, 0) or 0)
+                for field in (
+                    "dynamic_sale_attributed_active_buy_quantity",
+                    "dynamic_pre_sale_active_buy_quantity",
+                    "dynamic_unattributed_active_buy_quantity",
+                )
+            )
+        ):
+            reasons.append("broker active BUY total is not separated into governed inventory classes")
+        if row.get("dynamic_recovery_cycle_id") != row.get("recovery_cycle_id"):
+            reasons.append("dynamic recovery cycle id does not match the remediation source")
+        if row.get("dynamic_sale_lot_ids") != row.get("sale_lot_ids"):
+            reasons.append("dynamic coverage drops or reorders sale lots from the recovery cycle")
+        if (
+            row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
+            and _is_positive_number(dynamic_attributed)
+        ):
+            reasons.append("exit/no-reentry classification is contradicted by active recovery inventory")
 
         if state.startswith("REPAIR_REQUIRED"):
             reasons.append("sold-marker path remains REPAIR_REQUIRED")
@@ -324,11 +1257,28 @@ def sold_marker_governance_gap_rows(
             reasons.extend(_dormant_ladder_governance_gaps(row))
         elif state == "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
             reason = str(row.get("dynamic_coverage_reason") or "").lower()
+            reference_time = _latest_time(
+                row.get("recovery_artifact_generated_at"),
+                row.get("recovery_artifact_verified_at"),
+                row.get("dynamic_artifact_generated_at"),
+            )
+            reasons.extend(
+                _no_reentry_decision_gaps(
+                    row,
+                    row.get("recovery_no_reentry_decision"),
+                    reference_time,
+                )
+            )
+            if row.get("dynamic_no_reentry_decision") != row.get("recovery_no_reentry_decision"):
+                reasons.append("dynamic no-reentry decision does not exactly match the remediation source")
             if (
                 remaining != 0
                 or row.get("dynamic_buyback_coverage_state") != "LEDGER_ONLY"
-                or row.get("dynamic_active_buy_volume") != 0
+                or row.get("dynamic_low_exposure_decision") != "EXIT_OR_NO_REENTRY_REVIEW"
+                or dynamic_attributed != 0
                 or row.get("dynamic_stages_percent_below_sold_marker") != "PERCENTAGE_NOT_SET"
+                or row.get("dynamic_target_rebuild_quantity") is not None
+                or row.get("dynamic_latest_recent_sale_date") != row.get("sale_date")
                 or ("no-reentry" not in reason and "no re-entry" not in reason)
             ):
                 reasons.append("explicit no-reentry state is incomplete or contradicted")
@@ -370,8 +1320,41 @@ def validate_dynamic_against_sold_marker_recovery(
         if not row.get("dynamic_row_found"):
             continue
         _require(
-            row.get("dynamic_active_buy_volume") == row.get("sale_attributed_active_buy_quantity"),
-            f"dynamic active BUY attribution mismatch for sold-marker recovery {key}",
+            row.get("dynamic_sale_attributed_active_buy_quantity")
+            == row.get("sale_attributed_active_buy_quantity"),
+            f"dynamic sale-attributed active BUY mismatch for sold-marker recovery {key}",
+            errors,
+        )
+        _require(
+            row.get("dynamic_pre_sale_active_buy_quantity") == row.get("pre_sale_active_buy_quantity")
+            and row.get("dynamic_unattributed_active_buy_quantity")
+            == row.get("unattributed_active_buy_quantity")
+            and row.get("dynamic_unattributed_later_buy_quantity")
+            == row.get("unattributed_later_buy_quantity"),
+            f"dynamic unattributed BUY inventories mismatch for sold-marker recovery {key}",
+            errors,
+        )
+        _require(
+            row.get("dynamic_broker_active_buy_volume", row.get("dynamic_active_buy_volume"))
+            == sum(
+                int(row.get(field, 0) or 0)
+                for field in (
+                    "dynamic_sale_attributed_active_buy_quantity",
+                    "dynamic_pre_sale_active_buy_quantity",
+                    "dynamic_unattributed_active_buy_quantity",
+                )
+            ),
+            f"dynamic broker active BUY total is not fully classified for sold-marker recovery {key}",
+            errors,
+        )
+        _require(
+            row.get("dynamic_recovery_cycle_id") == row.get("recovery_cycle_id"),
+            f"dynamic recovery cycle id mismatch for sold-marker recovery {key}",
+            errors,
+        )
+        _require(
+            row.get("dynamic_sale_lot_ids") == row.get("sale_lot_ids"),
+            f"dynamic sale-lot set mismatch for sold-marker recovery {key}",
             errors,
         )
         reason = str(row.get("dynamic_coverage_reason") or "").lower()
@@ -417,7 +1400,9 @@ def validate_dynamic_against_sold_marker_recovery(
                 errors,
             )
             _require(
-                "sale-attributed" in reason and str(row.get("sale_date") or "") in reason,
+                "sale-attributed" in reason
+                and bool(row.get("dynamic_recovery_cycle_id"))
+                and bool(row.get("dynamic_sale_lot_ids")),
                 f"partial sold-slice provenance is missing from dynamic coverage for {key}",
                 errors,
             )
@@ -427,9 +1412,21 @@ def validate_dynamic_against_sold_marker_recovery(
         elif state == "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
             _require(
                 row.get("dynamic_buyback_coverage_state") == "LEDGER_ONLY"
-                and row.get("dynamic_active_buy_volume") == 0
+                and row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
+                and row.get("dynamic_sale_attributed_active_buy_quantity") == 0
+                and row.get("dynamic_target_rebuild_quantity") is None
                 and row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
                 f"explicit no-reentry row is contradicted by dynamic coverage for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_latest_recent_sale_date") == row.get("sale_date"),
+                f"explicit no-reentry sale date is missing or mismatched in dynamic coverage for {key}",
+                errors,
+            )
+            _require(
+                row.get("dynamic_no_reentry_decision") == row.get("recovery_no_reentry_decision"),
+                f"explicit no-reentry decision differs between remediation and dynamic coverage for {key}",
                 errors,
             )
             _require(
@@ -454,6 +1451,10 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     """Validate current dynamic buyback governance without granting order authority."""
 
     errors: list[str] = []
+    try:
+        schema_version = int(payload.get("schema_version", 1) or 1)
+    except (TypeError, ValueError):
+        schema_version = 1
     rows = payload.get("rows", [])
     summary = payload.get("summary", {})
     governance = payload.get("live_governance", {})
@@ -467,6 +1468,8 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     _require(payload.get("authority") == "REVIEW_ONLY", "dynamic buyback authority must be REVIEW_ONLY", errors)
     _require(payload.get("broker_mutation_authorized") is False, "dynamic buyback broker mutation must be false", errors)
     _require(bool(str(payload.get("generated_at") or "").strip()), "dynamic buyback generated_at missing", errors)
+    dynamic_reference_time = _latest_time(payload.get("generated_at"), payload.get("live_state_as_of"))
+    _require(dynamic_reference_time is not None, "dynamic buyback reference time is invalid", errors)
     _require(bool(str(payload.get("live_state_as_of") or "").strip()), "dynamic buyback live_state_as_of missing", errors)
     _require(
         "No fixed historical candidate count" in str(payload.get("universe_contract") or ""),
@@ -519,6 +1522,7 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
         "instrument",
         "orderbook_id",
         "live_holding",
+        "market_value_band",
         "selection_reasons",
         "active_buy_volume",
         "active_sell_volume",
@@ -529,6 +1533,10 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
         "coverage_reason",
         "exact_next_gate",
     }
+    if schema_version >= 3:
+        required_fields.add("live_market_value_sek")
+    if schema_version >= 4:
+        required_fields.add("economic_resolution")
     for row in rows:
         if not isinstance(row, dict):
             errors.append("dynamic buyback contains a non-object row")
@@ -548,6 +1556,27 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
             f"dynamic buyback holding invalid for {key}",
             errors,
         )
+        if schema_version >= 3:
+            live_holding = row.get("live_holding")
+            market_value = row.get("live_market_value_sek")
+            _require(
+                isinstance(market_value, (int, float)) and market_value >= 0,
+                f"dynamic live market value invalid for {key}",
+                errors,
+            )
+            if isinstance(live_holding, (int, float)) and isinstance(market_value, (int, float)):
+                expected_band = (
+                    "ZERO_POSITION"
+                    if live_holding == 0
+                    else "BELOW_20000_SEK"
+                    if market_value < 20000
+                    else "AT_OR_ABOVE_20000_SEK"
+                )
+                _require(
+                    row.get("market_value_band") == expected_band,
+                    f"dynamic market-value band contradicts live SEK value for {key}",
+                    errors,
+                )
         _require(
             isinstance(row.get("active_buy_volume"), (int, float)) and row.get("active_buy_volume", -1) >= 0,
             f"dynamic buyback active BUY volume invalid for {key}",
@@ -560,6 +1589,13 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
         )
         reasons = row.get("selection_reasons")
         _require(isinstance(reasons, list) and bool(reasons), f"dynamic buyback selection reasons missing for {key}", errors)
+        if schema_version >= 3 and isinstance(reasons, list):
+            _require(
+                ("BELOW_20000_SEK" in reasons)
+                == (row.get("market_value_band") == "BELOW_20000_SEK"),
+                f"dynamic low-exposure selection reason contradicts market-value band for {key}",
+                errors,
+            )
         _require(
             row.get("buyback_coverage_state") in DYNAMIC_BUYBACK_STATES,
             f"dynamic buyback state invalid for {key}",
@@ -577,6 +1613,73 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
         )
         _require(bool(str(row.get("coverage_reason") or "").strip()), f"dynamic coverage reason missing for {key}", errors)
         _require(bool(str(row.get("exact_next_gate") or "").strip()), f"dynamic exact next gate missing for {key}", errors)
+
+        if schema_version >= 4:
+            resolution = row.get("economic_resolution")
+            _require(isinstance(resolution, dict), f"dynamic economic resolution missing for {key}", errors)
+            if isinstance(resolution, dict):
+                _require(
+                    resolution.get("state") == row.get("low_exposure_decision"),
+                    f"dynamic economic resolution state mismatch for {key}",
+                    errors,
+                )
+                for field in ("source", "reason", "next_review"):
+                    _require(
+                        bool(str(resolution.get(field) or "").strip()),
+                        f"dynamic economic resolution {field} missing for {key}",
+                        errors,
+                    )
+            if row.get("low_exposure_decision") == "INTENTIONAL_MARKER_OR_CORE_HOLD":
+                _require(
+                    row.get("buyback_coverage_state") == "LEDGER_ONLY"
+                    and row.get("current_protection_classification")
+                    in {"CORE_HOLD_EXCEPTION", "MARKER_EXCEPTION"}
+                    and row.get("target_rebuild_quantity") is None
+                    and row.get("stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
+                    and row.get("active_buy_volume", 0) == 0
+                    and row.get("sale_attributed_active_buy_quantity", 0) == 0,
+                    f"dynamic intentional hold is contradicted by open recovery work for {key}",
+                    errors,
+                )
+            if row.get("low_exposure_decision") == "BUILD_REVIEW":
+                _require(
+                    row.get("buyback_coverage_state") in {"LADDER_ACTIVE", "LADDER_DORMANT"}
+                    and isinstance(row.get("stages_percent_below_sold_marker"), list)
+                    and isinstance(row.get("stage_quantities"), list),
+                    f"dynamic BUILD_REVIEW lacks a quantified stock-specific ladder for {key}",
+                    errors,
+                )
+
+        if (
+            row.get("low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
+            and _is_positive_number(
+                row.get("sale_attributed_active_buy_quantity", row.get("active_buy_volume"))
+            )
+        ):
+            errors.append(f"dynamic exit/no-reentry row is contradicted by active same-sale BUY inventory for {key}")
+
+        if _is_terminal_no_reentry_dynamic_row(row):
+            decision = row.get("no_reentry_decision")
+            decision_sold_quantity = decision.get("sold_quantity") if isinstance(decision, dict) else None
+            identity = {
+                "tenant_session_id": tenant,
+                "account_id": account,
+                "orderbook_id": orderbook,
+                "sale_date": row.get("latest_recent_sale_date"),
+                "sold_quantity": decision_sold_quantity,
+                "remaining_open_quantity": 0,
+            }
+            for gap in _no_reentry_decision_gaps(identity, decision, dynamic_reference_time):
+                errors.append(f"dynamic no-reentry decision is invalid for {key}: {gap}")
+            _require(
+                row.get("low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
+                and row.get("buyback_coverage_state") == "LEDGER_ONLY"
+                and row.get("sale_attributed_active_buy_quantity", row.get("active_buy_volume")) == 0
+                and row.get("target_rebuild_quantity") is None
+                and row.get("stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
+                f"dynamic terminal no-reentry state is incomplete or contradicted for {key}",
+                errors,
+            )
 
         stages = row.get("stages_percent_below_sold_marker")
         quantities = row.get("stage_quantities")
@@ -656,6 +1759,17 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     _require(personal_rows + darkcell_rows == len(rows), "dynamic rows contain an unexpected account", errors)
     _require(summary.get("current_one_share_rows") == one_share_rows, "dynamic summary one-share count mismatch", errors)
     _require(summary.get("below_20000_sek_rows") == below_20000_rows, "dynamic summary low-exposure count mismatch", errors)
+    if schema_version >= 3:
+        at_or_above_rows = sum(
+            row.get("market_value_band") == "AT_OR_ABOVE_20000_SEK"
+            for row in rows
+            if isinstance(row, dict)
+        )
+        _require(
+            summary.get("at_or_above_20000_sek_rows") == at_or_above_rows,
+            "dynamic summary at-or-above-20k count mismatch",
+            errors,
+        )
     _require(summary.get("full_exit_rows") == full_exit_rows, "dynamic summary full-exit count mismatch", errors)
     _require(
         _normalized_state_summary(summary.get("buyback_coverage_state_counts"), DYNAMIC_BUYBACK_STATES)
@@ -1062,6 +2176,32 @@ def main() -> int:
                         remediation_payload,
                     )
                 )
+                full_path_path = latest_sold_marker_full_path_path()
+                if full_path_path is None:
+                    errors.append(
+                        f"sold-marker full-path source missing for glob: {SOLD_MARKER_FULL_PATH_GLOB}"
+                    )
+                else:
+                    full_path_payload = json.loads(full_path_path.read_text(encoding="utf-8"))
+                    errors.extend(
+                        validate_sold_marker_universe_against_full_path(
+                            remediation_payload,
+                            full_path_payload,
+                        )
+                    )
+                worklist_path = latest_r17_migration_worklist_path()
+                if worklist_path is None:
+                    errors.append(
+                        f"R17 migration worklist missing for glob: {R17_MIGRATION_WORKLIST_GLOB}"
+                    )
+                else:
+                    worklist_payload = json.loads(worklist_path.read_text(encoding="utf-8"))
+                    errors.extend(
+                        validate_sold_marker_remediation_against_worklist(
+                            remediation_payload,
+                            worklist_payload,
+                        )
+                    )
     if errors:
         for error in errors:
             print(f"[buyback] FAIL: {error}")

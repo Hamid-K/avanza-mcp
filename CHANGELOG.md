@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.2.38 - 2026-08-26
+
+- Added exact full-account multi-sale governance for all `105` prior-sale
+  account/instrument identities. The R17 contract preserves immutable broker
+  sale IDs, timestamps and raw quantities, records explicit corporate-action
+  normalization, and validates `1,980` sale lots plus `2,700` FIFO allocations
+  against current holdings without crediting pre-sale or unattributed BUYs.
+- Added schema-4 economic exposure classification for the dynamic buyback
+  ledger. A completed cycle can be an intentional core/marker hold only when
+  the exact current position plan is complete and no active recovery inventory
+  contradicts it; open sold cycles, unsupported percentages and protection
+  repairs remain fail-closed.
+- Expanded buyback and objective regression coverage for omitted older sales,
+  source overallocation, corporate-action parity, malformed live-value bands,
+  and economic-resolution contradictions. All changes are local read-only
+  governance controls and grant no broker or paper mutation authority.
+
+## 0.2.37 - 2026-08-21
+
+- Made terminal sold-slice no-reentry decisions exact-sale, quantity-complete,
+  evidence-bearing, and time-bounded. Decisions now expire within 14 days and
+  must be revalidated against current thesis, event, technical, and full-path
+  evidence with no newer contradiction.
+- Rejected mismatched remediation/dynamic decisions, stale scheduler or
+  risk-off labels, and exit/no-reentry classifications that coexist with
+  active recovery inventory. Invalid closures now remain explicit `B9` and
+  `B11` blockers instead of silently completing buyback coverage.
+- Added Coinbase-, Noble-, and Shopify-shaped regression coverage for missing,
+  expired, contradicted, quantity-mismatched, and mixed recovery semantics.
+  The change is read-only governance enforcement and grants no broker or paper
+  mutation authority.
+
 ## 0.2.36 - 2026-08-19
 
 - Added a fail-closed validator for the latest variable-size buy-back coverage
