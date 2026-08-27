@@ -192,8 +192,9 @@ def _terminal_decision_rows(
 
     if payload.get("artifact") != TERMINAL_DECISION_ARTIFACT:
         raise ValueError("terminal decision input is not an R17 terminal-decision artifact")
-    if payload.get("schema_version") != 1:
-        raise ValueError("R17 terminal-decision schema version must be 1")
+    schema_version = payload.get("schema_version")
+    if schema_version not in {1, 2}:
+        raise ValueError("R17 terminal-decision schema version must be 1 or 2")
     if payload.get("authority") != "LOCAL_REVIEW_ONLY":
         raise ValueError("R17 terminal decisions must remain LOCAL_REVIEW_ONLY")
     if payload.get("broker_mutation") is not False or payload.get("trade_authority") is not False:
@@ -206,6 +207,9 @@ def _terminal_decision_rows(
     if reference is None:
         raise ValueError("R17 terminal-decision reference time is invalid")
     result: dict[tuple[str, str, str], dict[str, Any]] = {}
+    reallocation_ids: set[str] = set()
+    active_allocation_ids: set[str] = set()
+    closure_ids: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("R17 terminal decisions contain a non-object row")
@@ -241,9 +245,65 @@ def _terminal_decision_rows(
             raise ValueError(f"R17 terminal-decision evidence is not current and contradiction-free for {key}")
         if not _is_nonnegative_integer(row.get("current_holding")):
             raise ValueError(f"R17 terminal-decision current holding is invalid for {key}")
-        closures = row.get("sale_lot_closures")
-        if not isinstance(closures, list) or not closures:
+        closures = row.get("sale_lot_closures", [])
+        reallocations = row.get("qualifying_fill_reallocations", [])
+        active_allocations = row.get("active_recovery_allocations", [])
+        for field, value in (
+            ("sale_lot_closures", closures),
+            ("qualifying_fill_reallocations", reallocations),
+            ("active_recovery_allocations", active_allocations),
+        ):
+            if not isinstance(value, list):
+                raise ValueError(f"R17 terminal-decision {field} must be a list for {key}")
+        if schema_version == 1 and not closures:
             raise ValueError(f"R17 terminal-decision sale-lot closures are missing for {key}")
+        if schema_version == 2 and not (closures or reallocations or active_allocations):
+            raise ValueError(f"R19 mixed-lot decision has no governed operation for {key}")
+
+        for reallocation in reallocations:
+            if not isinstance(reallocation, dict):
+                raise ValueError(f"R19 fill reallocations contain a non-object row for {key}")
+            reallocation_id = str(reallocation.get("reallocation_id") or "")
+            source_lot_id = str(reallocation.get("source_sale_lot_id") or "")
+            target_lot_id = str(reallocation.get("target_sale_lot_id") or "")
+            if not all(
+                str(reallocation.get(field) or "")
+                for field in ("buy_transaction_id", "source_allocation_id")
+            ):
+                raise ValueError(f"R19 fill reallocation source identity is missing for {key}")
+            if not reallocation_id or reallocation_id in reallocation_ids:
+                raise ValueError(f"R19 fill reallocation id is invalid or duplicated for {key}")
+            if not source_lot_id or not target_lot_id or source_lot_id == target_lot_id:
+                raise ValueError(f"R19 fill reallocation lot identity is invalid for {key}")
+            if not _is_positive_integer(reallocation.get("quantity")):
+                raise ValueError(f"R19 fill reallocation quantity is invalid for {key}")
+            reallocation_ids.add(reallocation_id)
+
+        active_source_quantities: dict[str, int] = {}
+        active_allocated_quantities: Counter[str] = Counter()
+        for allocation in active_allocations:
+            if not isinstance(allocation, dict):
+                raise ValueError(f"R19 active allocations contain a non-object row for {key}")
+            allocation_id = str(allocation.get("allocation_id") or "")
+            stop_loss_id = str(allocation.get("stop_loss_id") or "")
+            lot_id = str(allocation.get("sale_lot_id") or "")
+            source_quantity = allocation.get("source_quantity")
+            quantity = allocation.get("quantity")
+            if not allocation_id or allocation_id in active_allocation_ids:
+                raise ValueError(f"R19 active allocation id is invalid or duplicated for {key}")
+            if not stop_loss_id or not lot_id:
+                raise ValueError(f"R19 active allocation source or lot is missing for {key}")
+            if not _is_positive_integer(source_quantity) or not _is_positive_integer(quantity):
+                raise ValueError(f"R19 active allocation quantity is invalid for {key}")
+            if stop_loss_id in active_source_quantities and active_source_quantities[stop_loss_id] != source_quantity:
+                raise ValueError(f"R19 active source quantity changes between allocations for {key}")
+            active_source_quantities[stop_loss_id] = int(source_quantity)
+            active_allocated_quantities[stop_loss_id] += int(quantity)
+            active_allocation_ids.add(allocation_id)
+        for stop_loss_id, quantity in active_allocated_quantities.items():
+            if quantity != active_source_quantities[stop_loss_id]:
+                raise ValueError(f"R19 active stop source is not fully attributed for {key}/{stop_loss_id}")
+
         lot_ids: list[str] = []
         for closure in closures:
             if not isinstance(closure, dict):
@@ -255,11 +315,323 @@ def _terminal_decision_rows(
                 closure.get("remaining_open_quantity_to_close")
             ):
                 raise ValueError(f"R17 terminal-decision lot quantity is invalid for {key}")
+            if schema_version == 2:
+                closure_id = str(closure.get("closure_id") or "")
+                if not closure_id or closure_id in closure_ids:
+                    raise ValueError(f"R19 closure id is invalid or duplicated for {key}")
+                closure_ids.add(closure_id)
             lot_ids.append(lot_id)
         if len(lot_ids) != len(set(lot_ids)):
             raise ValueError(f"R17 terminal-decision reuses a sale lot for {key}")
         result[key] = row
     return result
+
+
+def _recompute_recovery_row(row: dict[str, Any]) -> None:
+    """Rebuild exact lot and cycle parity after an R19 reviewed allocation."""
+
+    lots = row.get("sale_lots")
+    fill_allocations = row.get("qualifying_fill_allocations")
+    active_allocations = row.get("active_recovery_allocations")
+    if not isinstance(lots, list) or not isinstance(fill_allocations, list) or not isinstance(
+        active_allocations, list
+    ):
+        raise ValueError(f"R19 recovery structures are missing for {_row_key(row)}")
+
+    fill_by_lot: Counter[str] = Counter()
+    active_by_lot: Counter[str] = Counter()
+    for allocation in fill_allocations:
+        if isinstance(allocation, dict):
+            fill_by_lot[str(allocation.get("sale_lot_id") or "")] += int(
+                allocation.get("quantity", 0) or 0
+            )
+    for allocation in active_allocations:
+        if isinstance(allocation, dict):
+            active_by_lot[str(allocation.get("sale_lot_id") or "")] += int(
+                allocation.get("quantity", 0) or 0
+            )
+
+    for lot in lots:
+        if not isinstance(lot, dict):
+            raise ValueError(f"R19 recovery contains a non-object lot for {_row_key(row)}")
+        lot_id = str(lot.get("sale_lot_id") or "")
+        sold = int(lot.get("sold_quantity", 0) or 0)
+        filled = fill_by_lot.get(lot_id, 0)
+        active = active_by_lot.get(lot_id, 0)
+        closed = int(lot.get("closed_no_reentry_quantity", 0) or 0)
+        remaining = sold - filled - active - closed
+        if sold <= 0 or min(filled, active, closed, remaining) < 0:
+            raise ValueError(f"R19 sale-lot parity is invalid for {_row_key(row)}/{lot_id}")
+        lot["qualifying_filled_quantity"] = filled
+        lot["active_recovery_quantity"] = active
+        lot["remaining_open_quantity"] = remaining
+        if remaining == 0 and closed > 0:
+            lot["state"] = "TERMINAL_DECISION_CLOSED"
+        elif remaining == 0:
+            lot["state"] = "RECOVERY_ALLOCATED"
+        elif filled or active or closed:
+            lot["state"] = "PARTIALLY_RECOVERED_OPEN"
+        else:
+            lot["state"] = "OPEN_UNRECOVERED"
+
+    row["later_filled_quantity"] = sum(
+        int(lot.get("qualifying_filled_quantity", 0) or 0)
+        for lot in lots
+        if isinstance(lot, dict)
+    )
+    row["sale_attributed_active_buy_quantity"] = sum(
+        int(lot.get("active_recovery_quantity", 0) or 0)
+        for lot in lots
+        if isinstance(lot, dict)
+    )
+    row["closed_no_reentry_quantity"] = sum(
+        int(lot.get("closed_no_reentry_quantity", 0) or 0)
+        for lot in lots
+        if isinstance(lot, dict)
+    )
+    row["remaining_open_quantity"] = sum(
+        int(lot.get("remaining_open_quantity", 0) or 0)
+        for lot in lots
+        if isinstance(lot, dict)
+    )
+    row["pre_sale_active_buy_quantity"] = sum(
+        int(item.get("quantity", 0) or 0)
+        for item in row.get("pre_sale_active_buy_inventory", [])
+        if isinstance(item, dict)
+    )
+    row["unattributed_active_buy_quantity"] = sum(
+        int(item.get("quantity", 0) or 0)
+        for item in row.get("unattributed_active_buy_inventory", [])
+        if isinstance(item, dict)
+    )
+
+
+def _apply_r19_decision(
+    row: dict[str, Any],
+    decision: dict[str, Any],
+    *,
+    key: tuple[str, str, str],
+) -> None:
+    """Apply one schema-v2 review overlay without changing source totals."""
+
+    lots = row.get("sale_lots")
+    fill_allocations = row.get("qualifying_fill_allocations")
+    active_allocations = row.get("active_recovery_allocations")
+    unattributed_active = row.get("unattributed_active_buy_inventory")
+    if not all(isinstance(value, list) for value in (lots, fill_allocations, active_allocations, unattributed_active)):
+        raise ValueError(f"R19 recovery structures are missing for {key}")
+    assert isinstance(lots, list)
+    assert isinstance(fill_allocations, list)
+    assert isinstance(active_allocations, list)
+    assert isinstance(unattributed_active, list)
+    row["partial_terminal_decisions"] = []
+    lot_by_id = {
+        str(lot.get("sale_lot_id") or ""): lot
+        for lot in lots
+        if isinstance(lot, dict)
+    }
+
+    reallocation_events = list(row.get("qualifying_fill_reallocation_events", []))
+    for reallocation in decision.get("qualifying_fill_reallocations", []):
+        source_allocation_id = str(reallocation.get("source_allocation_id") or "")
+        matches = [
+            allocation
+            for allocation in fill_allocations
+            if isinstance(allocation, dict)
+            and str(allocation.get("allocation_id") or "") == source_allocation_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"R19 fill source allocation is missing or duplicated for {key}")
+        source = matches[0]
+        source_lot_id = str(reallocation.get("source_sale_lot_id") or "")
+        target_lot_id = str(reallocation.get("target_sale_lot_id") or "")
+        buy_transaction_id = str(reallocation.get("buy_transaction_id") or "")
+        quantity = int(reallocation.get("quantity") or 0)
+        if source_lot_id not in lot_by_id or target_lot_id not in lot_by_id:
+            raise ValueError(f"R19 fill reallocation references an unknown lot for {key}")
+        if (
+            str(source.get("sale_lot_id") or "") != source_lot_id
+            or str(source.get("buy_transaction_id") or "") != buy_transaction_id
+            or quantity > int(source.get("quantity", 0) or 0)
+        ):
+            raise ValueError(f"R19 fill reallocation source does not match exact inventory for {key}")
+        if any(
+            isinstance(allocation, dict)
+            and str(allocation.get("buy_transaction_id") or "") == buy_transaction_id
+            and str(allocation.get("sale_lot_id") or "") == target_lot_id
+            for allocation in fill_allocations
+        ):
+            raise ValueError(f"R19 fill reallocation duplicates an existing source-to-lot pair for {key}")
+        buy_time = _artifact_time(source.get("buy_timestamp"))
+        target_time = _artifact_time(lot_by_id[target_lot_id].get("sale_timestamp"))
+        if buy_time is None or target_time is None or buy_time.date() < target_time.date():
+            raise ValueError(f"R19 fill predates its target sale lot for {key}")
+
+        source["quantity"] = int(source.get("quantity") or 0) - quantity
+        if source["quantity"] == 0:
+            fill_allocations.remove(source)
+        target = copy.deepcopy(source)
+        target.update(
+            {
+                "allocation_id": str(reallocation.get("reallocation_id")),
+                "sale_lot_id": target_lot_id,
+                "quantity": quantity,
+                "allocation_method": "REVIEWED_EXACT_LOT_REALLOCATION_R19",
+                "reallocation_id": str(reallocation.get("reallocation_id")),
+                "source_allocation_id": source_allocation_id,
+                "source_sale_lot_id": source_lot_id,
+                "decision_id": decision.get("decision_id"),
+            }
+        )
+        fill_allocations.append(target)
+        reallocation_events.append(copy.deepcopy(reallocation))
+    if reallocation_events:
+        row["qualifying_fill_reallocation_events"] = reallocation_events
+
+    unattributed_by_stop = {
+        str(item.get("stop_loss_id") or ""): item
+        for item in unattributed_active
+        if isinstance(item, dict)
+    }
+    reviewed_active = decision.get("active_recovery_allocations", [])
+    active_by_stop: dict[str, list[dict[str, Any]]] = {}
+    for allocation in reviewed_active:
+        stop_loss_id = str(allocation.get("stop_loss_id") or "")
+        active_by_stop.setdefault(stop_loss_id, []).append(allocation)
+    for stop_loss_id, allocations in active_by_stop.items():
+        inventory = unattributed_by_stop.get(stop_loss_id)
+        if inventory is None:
+            raise ValueError(f"R19 active stop source is not exact unattributed inventory for {key}/{stop_loss_id}")
+        if any(
+            isinstance(item, dict) and str(item.get("stop_loss_id") or "") == stop_loss_id
+            for item in active_allocations
+        ):
+            raise ValueError(f"R19 active stop source is already attributed for {key}/{stop_loss_id}")
+        source_quantity = int(inventory.get("quantity", 0) or 0)
+        if sum(int(item.get("quantity", 0) or 0) for item in allocations) != source_quantity:
+            raise ValueError(f"R19 active stop source is not fully allocated for {key}/{stop_loss_id}")
+        for allocation in allocations:
+            lot_id = str(allocation.get("sale_lot_id") or "")
+            if lot_id not in lot_by_id:
+                raise ValueError(f"R19 active allocation references an unknown lot for {key}")
+            active_allocations.append(
+                {
+                    **copy.deepcopy(allocation),
+                    "source_quantity": source_quantity,
+                    "allocation_method": "REVIEWED_EXACT_STOP_TO_LOT_R19",
+                    "decision_id": decision.get("decision_id"),
+                }
+            )
+        unattributed_active.remove(inventory)
+
+    _recompute_recovery_row(row)
+
+    closure_summaries: list[dict[str, Any]] = []
+    for closure in decision.get("sale_lot_closures", []):
+        lot_id = str(closure.get("sale_lot_id") or "")
+        lot = lot_by_id.get(lot_id)
+        if lot is None:
+            raise ValueError(f"R19 terminal closure references an unknown lot for {key}")
+        for field in ("sale_transaction_id", "sale_timestamp"):
+            if str(closure.get(field) or "") != str(lot.get(field) or ""):
+                raise ValueError(f"R19 terminal closure {field} mismatch for {key}/{lot_id}")
+        quantity = int(closure.get("remaining_open_quantity_to_close") or 0)
+        available = int(lot.get("remaining_open_quantity", 0) or 0)
+        if quantity <= 0 or quantity > available:
+            raise ValueError(f"R19 terminal closure overcloses the exact residual for {key}/{lot_id}")
+        if isinstance(lot.get("no_reentry_decision"), dict) or lot.get("terminal_closure_decisions"):
+            raise ValueError(f"R19 terminal closure reuses a previously decided lot for {key}/{lot_id}")
+        recovered_before = (
+            int(lot.get("qualifying_filled_quantity", 0) or 0)
+            + int(lot.get("active_recovery_quantity", 0) or 0)
+            + int(lot.get("closed_no_reentry_quantity", 0) or 0)
+        )
+        lot_decision = {
+            "decision_id": str(closure.get("closure_id")),
+            "parent_decision_id": decision.get("decision_id"),
+            "tenant_session_id": key[0],
+            "account_id": key[1],
+            "orderbook_id": key[2],
+            "sale_date": str(lot.get("sale_timestamp") or "")[:10],
+            "sale_lot_id": lot_id,
+            "sale_transaction_id": lot.get("sale_transaction_id"),
+            "sale_timestamp": lot.get("sale_timestamp"),
+            "original_sold_quantity": int(lot.get("sold_quantity", 0) or 0),
+            "recovered_before_decision_quantity": recovered_before,
+            "sold_quantity": quantity,
+            "closed_quantity": quantity,
+            "remaining_after_decision_quantity": available - quantity,
+            "decision_at": decision.get("decision_at"),
+            "last_revalidated_at": decision.get("last_revalidated_at"),
+            "expires_at": decision.get("expires_at"),
+            "decision_basis": decision.get("decision_basis"),
+            "thesis_evidence": decision.get("thesis_evidence"),
+            "event_evidence": decision.get("event_evidence"),
+            "technical_evidence": decision.get("technical_evidence"),
+            "path_evidence": decision.get("path_evidence"),
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+        }
+        lot["terminal_closure_decisions"] = [lot_decision]
+        lot["closed_no_reentry_quantity"] = int(lot.get("closed_no_reentry_quantity", 0) or 0) + quantity
+        closure_summaries.append(lot_decision)
+
+    _recompute_recovery_row(row)
+    remaining = int(row.get("remaining_open_quantity", 0) or 0)
+    active = int(row.get("sale_attributed_active_buy_quantity", 0) or 0)
+    closed_total = int(row.get("closed_no_reentry_quantity", 0) or 0)
+    if remaining == 0 and active == 0 and closed_total > 0:
+        row["state"] = "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+        row["no_reentry_decision"] = {
+            "decision_id": decision.get("decision_id"),
+            "tenant_session_id": key[0],
+            "account_id": key[1],
+            "orderbook_id": key[2],
+            "sale_date": row.get("sale_date"),
+            "sold_quantity": closed_total,
+            "closed_quantity": closed_total,
+            "decision_at": decision.get("decision_at"),
+            "last_revalidated_at": decision.get("last_revalidated_at"),
+            "expires_at": decision.get("expires_at"),
+            "decision_basis": decision.get("decision_basis"),
+            "thesis_evidence": decision.get("thesis_evidence"),
+            "event_evidence": decision.get("event_evidence"),
+            "technical_evidence": decision.get("technical_evidence"),
+            "path_evidence": decision.get("path_evidence"),
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "recovery_cycle_id": row.get("recovery_cycle_id"),
+            "sale_lot_decision_ids": [item["decision_id"] for item in closure_summaries],
+            "current_holding": decision.get("current_holding"),
+        }
+    elif remaining == 0:
+        row["state"] = "FULL_SOLD_SLICE_RECOVERY_COVERED"
+        row.pop("no_reentry_decision", None)
+    else:
+        row["state"] = "PARTIAL_SOLD_SLICE_RECOVERY_ATTRIBUTED"
+        row.pop("no_reentry_decision", None)
+        if closure_summaries:
+            row["partial_terminal_decisions"] = [
+                {
+                    "decision_id": decision.get("decision_id"),
+                    "closure_ids": [item["decision_id"] for item in closure_summaries],
+                    "closed_quantity": sum(int(item["closed_quantity"]) for item in closure_summaries),
+                    "remaining_open_quantity": remaining,
+                    "expires_at": decision.get("expires_at"),
+                }
+            ]
+    row["recorded_stage_percentages_below_marker"] = "PERCENTAGE_NOT_SET"
+    row["recorded_stage_quantities"] = None
+    row["mixed_lot_resolution"] = {
+        "schema_version": 2,
+        "decision_id": decision.get("decision_id"),
+        "fill_reallocation_count": len(decision.get("qualifying_fill_reallocations", [])),
+        "active_allocation_count": len(decision.get("active_recovery_allocations", [])),
+        "terminal_closure_count": len(decision.get("sale_lot_closures", [])),
+        "remaining_open_quantity": remaining,
+        "broker_mutation": False,
+    }
+    row.pop("full_path_evidence", None)
 
 
 def apply_terminal_decisions_to_remediation(
@@ -279,6 +651,40 @@ def apply_terminal_decisions_to_remediation(
     if not isinstance(rows, list):
         raise ValueError("terminal-decision remediation rows must be a list")
     remediation_rows = {_row_key(row): row for row in rows if isinstance(row, dict)}
+
+    if decisions.get("schema_version") == 2:
+        for key, decision in decision_rows.items():
+            row = remediation_rows.get(key)
+            if row is None:
+                raise ValueError(f"R19 mixed-lot remediation row is missing for {key}")
+            if row.get("recovery_cycle_id") != decision.get("recovery_cycle_id"):
+                raise ValueError(f"R19 recovery cycle mismatch for {key}")
+            if row.get("instrument") != decision.get("instrument"):
+                raise ValueError(f"R19 instrument mismatch for {key}")
+            _apply_r19_decision(row, decision, key=key)
+
+        sources = list(result.get("sources", []))
+        if decision_source_path not in sources:
+            sources.append(decision_source_path)
+        result["sources"] = sources
+        existing_overlay = result.get("terminal_decision_overlay")
+        overlay_sources = []
+        if isinstance(existing_overlay, dict):
+            overlay_sources.extend(existing_overlay.get("sources", []))
+            if existing_overlay.get("source"):
+                overlay_sources.append(existing_overlay["source"])
+        overlay_sources.append(decision_source_path)
+        result["terminal_decision_overlay"] = {
+            "source": decision_source_path,
+            "sources": list(dict.fromkeys(str(value) for value in overlay_sources if value)),
+            "row_count": len(decision_rows),
+            "schema_version": 2,
+            "broker_mutation": False,
+        }
+        result["schema_version"] = max(int(result.get("schema_version", 0) or 0), 5)
+        result["summary"] = _remediation_summary(rows, result.get("summary"))
+        result["conclusion"] = _remediation_conclusion(result["summary"])
+        return result
 
     for key, decision in decision_rows.items():
         row = remediation_rows.get(key)
@@ -424,13 +830,93 @@ def filter_path_evidence_to_open_remediation(
     rows = result.get("rows")
     if not isinstance(rows, list):
         raise ValueError("R17 path evidence rows must be a list")
-    open_keys = {
-        _row_key(row)
+    open_remediation = {
+        _row_key(row): row
         for row in remediation_payload.get("rows", [])
         if isinstance(row, dict) and _is_positive_integer(row.get("remaining_open_quantity"))
     }
-    filtered = [row for row in rows if isinstance(row, dict) and _row_key(row) in open_keys]
-    if {_row_key(row) for row in filtered} != open_keys:
+    filtered: list[dict[str, Any]] = []
+    for source_row in rows:
+        if not isinstance(source_row, dict):
+            continue
+        key = _row_key(source_row)
+        remediation = open_remediation.get(key)
+        if remediation is None:
+            continue
+        if not isinstance(remediation.get("mixed_lot_resolution"), dict):
+            filtered.append(copy.deepcopy(source_row))
+            continue
+        open_lots = {
+            str(lot.get("sale_transaction_id") or ""): lot
+            for lot in remediation.get("sale_lots", [])
+            if isinstance(lot, dict) and _is_positive_integer(lot.get("remaining_open_quantity"))
+        }
+        exact_lots: list[dict[str, Any]] = []
+        for source_lot in source_row.get("exact_lots", []):
+            if not isinstance(source_lot, dict):
+                continue
+            transaction_id = str(source_lot.get("sale_transaction_id") or "")
+            remediation_lot = open_lots.get(transaction_id)
+            if remediation_lot is None:
+                continue
+            lot = copy.deepcopy(source_lot)
+            lot["remaining_open_quantity"] = int(remediation_lot["remaining_open_quantity"])
+            exact_lots.append(lot)
+        if {str(lot.get("sale_transaction_id") or "") for lot in exact_lots} != set(open_lots):
+            raise ValueError(f"R19 path evidence does not contain every exact residual lot for {key}")
+
+        row = copy.deepcopy(source_row)
+        row["exact_lots"] = exact_lots
+        row["remaining_open_lot_count"] = len(exact_lots)
+        row["remaining_open_quantity"] = sum(
+            int(lot.get("remaining_open_quantity", 0) or 0) for lot in exact_lots
+        )
+        row["active_buy_quantity"] = sum(
+            int(remediation.get(field, 0) or 0)
+            for field in (
+                "sale_attributed_active_buy_quantity",
+                "pre_sale_active_buy_quantity",
+                "unattributed_active_buy_quantity",
+            )
+        )
+        row["sale_attributed_active_buy_quantity"] = int(
+            remediation.get("sale_attributed_active_buy_quantity", 0) or 0
+        )
+        row["open_lots_crossing_8pct_alarm"] = sum(
+            lot.get("crossed_8pct_review_alarm") is True for lot in exact_lots
+        )
+        row["crossed_8pct_review_alarm"] = row["open_lots_crossing_8pct_alarm"] > 0
+        row["maximum_open_lot_drop_percent"] = max(
+            float(lot.get("maximum_drop_below_marker_percent", 0) or 0)
+            for lot in exact_lots
+        )
+        weighted_marker = sum(
+            float(
+                lot.get("comparable_sale_marker")
+                or source_row.get("weighted_open_sale_marker")
+                or 0
+            )
+            * int(lot.get("remaining_open_quantity", 0) or 0)
+            for lot in exact_lots
+        ) / row["remaining_open_quantity"]
+        if weighted_marker <= 0:
+            raise ValueError(f"R19 path evidence lacks a valid sold marker for {key}")
+        row["weighted_open_sale_marker"] = round(weighted_marker, 6)
+        current_close = float(row.get("current_close", 0) or 0)
+        row["current_drop_below_weighted_marker_percent"] = round(
+            (weighted_marker - current_close) / weighted_marker * 100,
+            4,
+        )
+        named = row.get("named_exception") is True
+        row["path_state"] = (
+            NAMED_PATH_STATE
+            if row["crossed_8pct_review_alarm"] and named
+            else MISSED_PATH_STATE
+            if row["crossed_8pct_review_alarm"]
+            else OPEN_PATH_STATE
+        )
+        filtered.append(row)
+    if {_row_key(row) for row in filtered} != set(open_remediation):
         raise ValueError("R17 filtered path rows do not match the post-decision open remediation rows")
     result["generated_at"] = generated_at
     result["path_observed_at"] = path_payload.get("generated_at")
@@ -707,21 +1193,105 @@ def apply_terminal_decisions_to_dynamic_rows(
 
     dynamic_rows = {_row_key(row): row for row in rows}
     for remediation in remediation_payload.get("rows", []):
-        if not isinstance(remediation, dict) or remediation.get("state") != "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
+        if not isinstance(remediation, dict):
             continue
-        decision = remediation.get("no_reentry_decision")
-        if not isinstance(decision, dict):
-            raise ValueError(f"R17 terminal remediation decision is missing for {_row_key(remediation)}")
+        mixed_resolution = remediation.get("mixed_lot_resolution")
+        terminal = remediation.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+        if not terminal and not isinstance(mixed_resolution, dict):
+            continue
         key = _row_key(remediation)
         row = dynamic_rows.get(key)
         if row is None:
             raise ValueError(f"R17 terminal dynamic row is missing for {key}")
-        if int(row.get("active_buy_volume", 0) or 0) != 0:
-            raise ValueError(f"R17 terminal dynamic row has contradictory active BUY inventory for {key}")
-        if int(row.get("sale_attributed_active_buy_quantity", 0) or 0) != 0:
-            raise ValueError(f"R17 terminal dynamic row has contradictory sale-attributed BUY inventory for {key}")
         if row.get("recovery_cycle_id") != remediation.get("recovery_cycle_id"):
             raise ValueError(f"R17 terminal dynamic recovery cycle mismatch for {key}")
+
+        sale_attributed = int(remediation.get("sale_attributed_active_buy_quantity", 0) or 0)
+        pre_sale = int(remediation.get("pre_sale_active_buy_quantity", 0) or 0)
+        unattributed = int(remediation.get("unattributed_active_buy_quantity", 0) or 0)
+        broker_active = sale_attributed + pre_sale + unattributed
+        if int(row.get("active_buy_volume", 0) or 0) != broker_active:
+            raise ValueError(f"R19 dynamic broker active BUY inventory mismatch for {key}")
+        row["sale_attributed_active_buy_quantity"] = sale_attributed
+        row["pre_sale_active_buy_quantity"] = pre_sale
+        row["unattributed_active_buy_quantity"] = unattributed
+        row["unattributed_later_buy_quantity"] = int(
+            remediation.get("unattributed_later_buy_quantity", 0) or 0
+        )
+        row["sale_lot_ids"] = [
+            str(lot.get("sale_lot_id") or "")
+            for lot in remediation.get("sale_lots", [])
+            if isinstance(lot, dict)
+        ]
+        row["latest_recent_sale_date"] = remediation.get("sale_date")
+
+        if not terminal:
+            remaining = int(remediation.get("remaining_open_quantity", 0) or 0)
+            row["target_rebuild_quantity"] = remaining if remaining > 0 else None
+            row["stages_percent_below_sold_marker"] = remediation.get(
+                "recorded_stage_percentages_below_marker", "PERCENTAGE_NOT_SET"
+            )
+            row["stage_quantities"] = remediation.get("recorded_stage_quantities")
+            row["mixed_lot_resolution"] = copy.deepcopy(mixed_resolution)
+            row["partial_terminal_decisions"] = copy.deepcopy(
+                remediation.get("partial_terminal_decisions", [])
+            )
+            row.pop("no_reentry_decision", None)
+            row.pop("full_path_evidence", None)
+            if remaining > 0:
+                open_lot_count = sum(
+                    _is_positive_integer(lot.get("remaining_open_quantity"))
+                    for lot in remediation.get("sale_lots", [])
+                    if isinstance(lot, dict)
+                )
+                instrument = str(row.get("instrument") or remediation.get("instrument") or "Instrument")
+                closed = int(remediation.get("closed_no_reentry_quantity", 0) or 0)
+                row["buyback_coverage_state"] = "LADDER_GAP"
+                row["low_exposure_decision"] = "REPAIR_REQUIRED"
+                row["coverage_reason"] = (
+                    f"{instrument}: R19 exact mixed-lot review attributes {sale_attributed} active BUY "
+                    f"shares, records {closed} dated terminal closures, and leaves {remaining} unresolved "
+                    f"shares across {open_lot_count} immutable sale lots. The residual has no supported "
+                    "stock-specific percentage ladder."
+                )
+                row["economic_resolution"] = {
+                    **dict(row.get("economic_resolution") or {}),
+                    "state": "REPAIR_REQUIRED",
+                    "source": "R19_MIXED_LOT_RESOLUTION",
+                    "reason": row["coverage_reason"],
+                    "next_review": row.get("exact_next_gate"),
+                }
+            else:
+                row["buyback_coverage_state"] = "LEDGER_ONLY"
+                if sale_attributed > 0:
+                    instrument = str(
+                        row.get("instrument") or remediation.get("instrument") or "Instrument"
+                    )
+                    row["low_exposure_decision"] = "REPAIR_REQUIRED"
+                    row["coverage_reason"] = (
+                        f"{instrument}: exact active recovery inventory now covers the full sold-cycle "
+                        "remainder, but this does not resolve the current position's economic build, "
+                        "hold, or exit intent."
+                    )
+                    next_review = str(row.get("exact_next_gate") or "").strip() or (
+                        f"Review {instrument}'s exact current position intent before treating the "
+                        "fully covered sold cycle as an intentional hold."
+                    )
+                    row["exact_next_gate"] = next_review
+                    row["economic_resolution"] = {
+                        **dict(row.get("economic_resolution") or {}),
+                        "state": "REPAIR_REQUIRED",
+                        "source": "R19_FULL_ACTIVE_RECOVERY_COVERAGE",
+                        "reason": row["coverage_reason"],
+                        "next_review": next_review,
+                    }
+            continue
+
+        decision = remediation.get("no_reentry_decision")
+        if not isinstance(decision, dict):
+            raise ValueError(f"R17 terminal remediation decision is missing for {key}")
+        if broker_active != 0:
+            raise ValueError(f"R17 terminal dynamic row has contradictory active BUY inventory for {key}")
         reviewed_holding = decision.get("current_holding")
         if reviewed_holding is not None and int(row.get("live_holding", 0) or 0) != int(
             reviewed_holding
@@ -734,7 +1304,6 @@ def apply_terminal_decisions_to_dynamic_rows(
         row["target_rebuild_quantity"] = None
         row["stages_percent_below_sold_marker"] = "PERCENTAGE_NOT_SET"
         row["stage_quantities"] = None
-        row["latest_recent_sale_date"] = remediation.get("sale_date")
         row["no_reentry_decision"] = copy.deepcopy(decision)
         row["coverage_reason"] = (
             "A current structured no-reentry decision closes only the exact unresolved "
@@ -852,9 +1421,12 @@ def enrich_payload(
                 resolution["source"] = "R17_COMPLETE_PATH_AND_POSITION_STRATEGY_RECONCILIATION"
                 row["economic_resolution"] = resolution
 
+    has_mixed_lot_resolution = any(
+        isinstance(row.get("mixed_lot_resolution"), dict) for row in enriched_rows
+    )
     result["schema_version"] = max(
         int(payload.get("schema_version", 0) or 0),
-        6 if path_rows is not None else 4,
+        7 if has_mixed_lot_resolution else 6 if path_rows is not None else 4,
     )
     result["generated_at"] = generated_at
     result["superseded"] = False

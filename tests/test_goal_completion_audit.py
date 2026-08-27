@@ -1,4 +1,11 @@
-from scripts.verify_goal_completion_audit import _validate_sold_marker_strategy_reconciliation, validate
+import json
+import sys
+
+from scripts.verify_goal_completion_audit import (
+    _validate_sold_marker_strategy_reconciliation,
+    main,
+    validate,
+)
 from scripts.enrich_goal_completion_transaction_gate import enrich
 
 
@@ -312,6 +319,100 @@ def complete_payload():
 
 def test_completion_audit_passes_only_when_open_work_is_explicit():
     assert validate(complete_payload()) == []
+
+
+def test_goal_audit_require_complete_rejects_a_valid_fail_closed_audit(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "audit.json"
+    path.write_text(json.dumps(complete_payload()), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["verify_goal_completion_audit.py", "--audit", str(path)])
+    assert main() == 0
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["verify_goal_completion_audit.py", "--audit", str(path), "--require-complete"],
+    )
+    assert main() == 1
+    assert "objective remains incomplete" in capsys.readouterr().out
+
+
+def _apply_schema7_r19_parity(payload):
+    buyback = payload["current_buyback_coverage"]
+    buyback["schema_version"] = 7
+    recovery = payload["current_sold_marker_recovery"]
+    recovery["schema_version"] = 5
+    recovery["summary"].update({
+        "exact_account_rows_with_prior_same_account_sales": 4,
+        "modeled_sale_lots": 4,
+        "percentage_not_set_open_rows": 4,
+        "material_path_open_rows": 1,
+        "named_exception_path_review_rows": 0,
+    })
+    summary = recovery["summary"]
+    payload["current_live_reconciliation"] = {
+        "source": "Exact-scoped MCP plus the approved R19 schema-7 dynamic buyback and sold-marker artifacts",
+        "dynamic_buyback_schema_version": 7,
+        "sold_marker_schema_version": 5,
+        "sold_marker_summary": {
+            field: summary[field]
+            for field in (
+                "exact_account_rows_with_prior_same_account_sales",
+                "modeled_sale_lots",
+                "open_material_rows",
+                "remaining_open_quantity_across_material_rows",
+                "repair_required_missed_path_rows",
+                "material_path_open_rows",
+                "named_exception_path_review_rows",
+                "explicit_no_reentry_rows",
+            )
+        },
+    }
+    requirements = {row["id"]: row for row in payload["requirements"]}
+    for requirement_id in ("R3", "R4", "R7"):
+        requirements[requirement_id]["governance_revision"] = "R19_MIXED_LOT"
+        requirements[requirement_id]["evidence"] = "Approved R19 mixed-lot evidence is current."
+    requirements["R3"]["evidence"] = (
+        "Approved R19 mixed-lot evidence models 4 immutable sale lots; "
+        "4 rows totaling 271 shares remain open, with 2 missed-path repairs, "
+        "1 unsupported material gaps, and 0 named-exception reviews."
+    )
+    requirements["R4"]["evidence"] = (
+        "Current exact-account audits retain 2 missed-path repairs and "
+        "1 unsupported material gaps under fail-closed review."
+    )
+
+
+def test_schema7_audit_rejects_stale_pre_r19_headline():
+    payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
+    payload["current_live_reconciliation"]["source"] = "Approved R18 schema-6 snapshot"
+    payload["requirements"][2]["governance_revision"] = "R18_SEMANTIC_REPAIR"
+
+    errors = validate(payload)
+
+    assert "current live reconciliation still names a pre-R19 source" in errors
+    assert "requirement R3 retains stale pre-R19 evidence" in errors
+
+
+def test_schema7_audit_accepts_current_r19_machine_and_narrative_parity():
+    payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
+
+    assert validate(payload) == []
+
+
+def test_schema7_audit_rejects_stale_r4_machine_totals():
+    payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
+    requirements = {row["id"]: row for row in payload["requirements"]}
+    requirements["R4"]["evidence"] = (
+        "Current exact-account audits retain 9 missed-path repairs and "
+        "8 unsupported material gaps under fail-closed review."
+    )
+
+    errors = validate(payload)
+
+    assert "requirement R4 evidence is missing current total: 2 missed-path repairs" in errors
+    assert "requirement R4 evidence is missing current total: 1 unsupported material gaps" in errors
 
 
 def test_schema4_sold_cycle_repair_does_not_rewrite_position_protection_class():

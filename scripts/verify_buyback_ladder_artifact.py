@@ -187,6 +187,8 @@ def _no_reentry_decision_gaps(
     identity_row: dict[str, Any],
     decision: Any,
     reference_time: datetime | None,
+    *,
+    require_fully_closed: bool = True,
 ) -> list[str]:
     """Validate a time-bounded exact-sale decision that closes recovery."""
 
@@ -227,7 +229,7 @@ def _no_reentry_decision_gaps(
         gaps.append("decision sold quantity does not match the exact sold slice")
     if closed_quantity != sold_quantity:
         gaps.append("closed quantity does not equal the exact sold quantity")
-    if identity_row.get("remaining_open_quantity") != 0:
+    if require_fully_closed and identity_row.get("remaining_open_quantity") != 0:
         gaps.append("remaining open quantity is not zero")
 
     original_sold_quantity = identity_row.get("original_sold_quantity")
@@ -241,9 +243,17 @@ def _no_reentry_decision_gaps(
             _is_positive_integer(original_sold_quantity)
             and _is_nonnegative_integer(recovered_before_decision)
             and _is_positive_integer(sold_quantity)
-            and original_sold_quantity != recovered_before_decision + sold_quantity
         ):
-            gaps.append("terminal decision slice does not reconcile to the original sale lot")
+            residual_after = original_sold_quantity - recovered_before_decision - sold_quantity
+            if require_fully_closed and residual_after != 0:
+                gaps.append("terminal decision slice does not reconcile to the original sale lot")
+            elif not require_fully_closed:
+                if residual_after < 0:
+                    gaps.append("terminal decision overcloses the original sale lot")
+                if decision.get("remaining_after_decision_quantity") != residual_after:
+                    gaps.append("terminal decision remaining quantity does not reconcile")
+                if identity_row.get("remaining_open_quantity") != residual_after:
+                    gaps.append("terminal decision residual differs from the current sale lot")
 
     sale_date = _artifact_date(identity_row.get("sale_date"))
     if sale_date is None:
@@ -847,18 +857,133 @@ def _validate_recovery_cycle(
         f"BUY fill is both sale-attributed and unattributed for {key}",
         errors,
     )
+    active_source_quantities: dict[str, int] = {}
+    active_allocated_quantities: dict[str, int] = defaultdict(int)
+    for allocation in active_allocations or []:
+        if not isinstance(allocation, dict):
+            continue
+        stop_loss_id = str(allocation.get("stop_loss_id") or "")
+        source_quantity = allocation.get("source_quantity")
+        if stop_loss_id and _is_positive_integer(source_quantity):
+            if stop_loss_id in active_source_quantities:
+                _require(
+                    active_source_quantities[stop_loss_id] == source_quantity,
+                    f"active recovery source quantity changes between allocations for {key}",
+                    errors,
+                )
+            else:
+                active_source_quantities[stop_loss_id] = source_quantity
+            active_allocated_quantities[stop_loss_id] += int(allocation.get("quantity", 0) or 0)
+        if allocation.get("allocation_method") == "REVIEWED_EXACT_STOP_TO_LOT_R19":
+            _require(
+                bool(str(allocation.get("strategy_intent") or "").strip())
+                and bool(str(allocation.get("strategy_reason") or "").strip()),
+                f"R19 active recovery allocation lacks strategy intent or reason for {key}",
+                errors,
+            )
+    for stop_loss_id, source_quantity in active_source_quantities.items():
+        _require(
+            active_allocated_quantities.get(stop_loss_id) == source_quantity,
+            f"active recovery stop source is not fully attributed for {key}/{stop_loss_id}",
+            errors,
+        )
+
+    mixed_resolution = row.get("mixed_lot_resolution")
+    if mixed_resolution is not None:
+        _require(isinstance(mixed_resolution, dict), f"R19 mixed-lot resolution is not an object for {key}", errors)
+        events = row.get("qualifying_fill_reallocation_events", [])
+        _require(isinstance(events, list), f"R19 fill reallocation events must be a list for {key}", errors)
+        event_ids: set[str] = set()
+        for event in events if isinstance(events, list) else []:
+            if not isinstance(event, dict):
+                errors.append(f"R19 fill reallocation event is not an object for {key}")
+                continue
+            event_id = str(event.get("reallocation_id") or "")
+            source_lot_id = str(event.get("source_sale_lot_id") or "")
+            target_lot_id = str(event.get("target_sale_lot_id") or "")
+            _require(
+                bool(event_id) and event_id not in event_ids,
+                f"R19 fill reallocation id is missing or duplicated for {key}",
+                errors,
+            )
+            _require(
+                source_lot_id in lot_ids and target_lot_id in lot_ids and source_lot_id != target_lot_id,
+                f"R19 fill reallocation references invalid lots for {key}",
+                errors,
+            )
+            _require(
+                _is_positive_integer(event.get("quantity")),
+                f"R19 fill reallocation quantity is invalid for {key}",
+                errors,
+            )
+            matching_targets = [
+                allocation
+                for allocation in fill_allocations or []
+                if isinstance(allocation, dict)
+                and allocation.get("allocation_id") == event_id
+                and allocation.get("buy_transaction_id") == event.get("buy_transaction_id")
+                and allocation.get("sale_lot_id") == target_lot_id
+                and allocation.get("quantity") == event.get("quantity")
+                and allocation.get("allocation_method") == "REVIEWED_EXACT_LOT_REALLOCATION_R19"
+            ]
+            _require(
+                len(matching_targets) == 1,
+                f"R19 fill reallocation does not match one exact target allocation for {key}",
+                errors,
+            )
+            event_ids.add(event_id)
+        if isinstance(mixed_resolution, dict):
+            _require(
+                mixed_resolution.get("schema_version") == 2
+                and mixed_resolution.get("broker_mutation") is False,
+                f"R19 mixed-lot resolution authority is invalid for {key}",
+                errors,
+            )
+            _require(
+                mixed_resolution.get("fill_reallocation_count") == len(events if isinstance(events, list) else []),
+                f"R19 fill reallocation count mismatch for {key}",
+                errors,
+            )
+            _require(
+                mixed_resolution.get("active_allocation_count")
+                == sum(
+                    allocation.get("decision_id") == mixed_resolution.get("decision_id")
+                    for allocation in active_allocations or []
+                    if isinstance(allocation, dict)
+                ),
+                f"R19 active allocation count mismatch for {key}",
+                errors,
+            )
 
     sold_total = 0
     fill_total = 0
     active_total = 0
     closed_total = 0
     remaining_total = 0
+    closure_ids: set[str] = set()
     for lot_id, lot in lot_by_id.items():
         sold = lot.get("sold_quantity")
         filled = fill_by_lot.get(lot_id, 0)
         active = active_by_lot.get(lot_id, 0)
         decision = lot.get("no_reentry_decision")
-        closed = decision.get("closed_quantity", 0) if isinstance(decision, dict) else 0
+        closure_decisions = lot.get("terminal_closure_decisions", [])
+        if not isinstance(closure_decisions, list):
+            errors.append(f"sale-lot terminal closure decisions must be a list for {key}/{lot_id}")
+            closure_decisions = []
+        _require(
+            not (isinstance(decision, dict) and closure_decisions),
+            f"sale lot mixes legacy and R19 terminal decisions for {key}/{lot_id}",
+            errors,
+        )
+        closed = (
+            decision.get("closed_quantity", 0)
+            if isinstance(decision, dict)
+            else sum(
+                int(item.get("closed_quantity", 0) or 0)
+                for item in closure_decisions
+                if isinstance(item, dict)
+            )
+        )
         remaining = lot.get("remaining_open_quantity")
         for field in (
             "qualifying_filled_quantity",
@@ -889,6 +1014,43 @@ def _validate_recovery_cycle(
             }
             for gap in _no_reentry_decision_gaps(identity, decision, reference_time):
                 errors.append(f"sale-lot no-reentry decision is invalid for {key}/{lot_id}: {gap}")
+        if closure_decisions:
+            _require(
+                len(closure_decisions) == 1,
+                f"R19 currently requires one exact terminal closure per sale lot for {key}/{lot_id}",
+                errors,
+            )
+            for closure_decision in closure_decisions:
+                if not isinstance(closure_decision, dict):
+                    errors.append(f"sale-lot terminal closure is not an object for {key}/{lot_id}")
+                    continue
+                closure_id = str(closure_decision.get("decision_id") or "")
+                _require(
+                    bool(closure_id) and closure_id not in closure_ids,
+                    f"R19 terminal closure id is missing or duplicated for {key}/{lot_id}",
+                    errors,
+                )
+                closure_ids.add(closure_id)
+                identity = {
+                    "tenant_session_id": key[0],
+                    "account_id": key[1],
+                    "orderbook_id": key[2],
+                    "sale_lot_id": lot_id,
+                    "sale_transaction_id": lot.get("sale_transaction_id"),
+                    "sale_timestamp": lot.get("sale_timestamp"),
+                    "sale_date": str(lot.get("sale_timestamp") or "")[:10],
+                    "sold_quantity": closure_decision.get("closed_quantity"),
+                    "remaining_open_quantity": remaining,
+                    "original_sold_quantity": sold,
+                    "recovered_before_decision_quantity": filled + active,
+                }
+                for gap in _no_reentry_decision_gaps(
+                    identity,
+                    closure_decision,
+                    reference_time,
+                    require_fully_closed=False,
+                ):
+                    errors.append(f"R19 sale-lot terminal closure is invalid for {key}/{lot_id}: {gap}")
         sold_total += int(sold or 0)
         fill_total += filled
         active_total += active
@@ -909,6 +1071,22 @@ def _validate_recovery_cycle(
         aggregate_fields["non_recovery_buy_quantity"] = non_recovery_buy_total
     for field, expected in aggregate_fields.items():
         _require(row.get(field) == expected, f"recovery cycle aggregate {field} mismatch for {key}", errors)
+    if isinstance(mixed_resolution, dict):
+        r19_closure_count = sum(
+            len(lot.get("terminal_closure_decisions", []))
+            for lot in lots
+            if isinstance(lot, dict) and isinstance(lot.get("terminal_closure_decisions", []), list)
+        )
+        _require(
+            mixed_resolution.get("terminal_closure_count") == r19_closure_count,
+            f"R19 terminal closure count mismatch for {key}",
+            errors,
+        )
+        _require(
+            mixed_resolution.get("remaining_open_quantity") == remaining_total,
+            f"R19 residual quantity mismatch for {key}",
+            errors,
+        )
     if unproven_envelope:
         _require(
             fill_total == 0 and active_total == 0 and closed_total == 0,
@@ -955,7 +1133,7 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     schema_version = payload.get("schema_version")
-    _require(schema_version in {2, 3, 4}, "sold-marker remediation schema version must be 2, 3 or 4", errors)
+    _require(schema_version in {2, 3, 4, 5}, "sold-marker remediation schema version must be 2, 3, 4 or 5", errors)
     _require(bool(str(payload.get("generated_at") or "").strip()), "sold-marker remediation generated_at missing", errors)
     remediation_reference_time = _latest_time(
         payload.get("generated_at"),
@@ -1570,6 +1748,8 @@ def sold_marker_dynamic_reconciliation_rows(
             "recovery_artifact_generated_at": remediation_payload.get("generated_at"),
             "recovery_artifact_verified_at": remediation_payload.get("verified_at"),
             "recovery_no_reentry_decision": recovery.get("no_reentry_decision"),
+            "recovery_mixed_lot_resolution": recovery.get("mixed_lot_resolution"),
+            "recovery_partial_terminal_decisions": recovery.get("partial_terminal_decisions"),
             "recovery_recorded_stage_percentages_below_marker": recovery.get(
                 "recorded_stage_percentages_below_marker"
             ),
@@ -1599,6 +1779,8 @@ def sold_marker_dynamic_reconciliation_rows(
             "dynamic_coverage_reason": dynamic.get("coverage_reason"),
             "dynamic_artifact_generated_at": dynamic_payload.get("generated_at"),
             "dynamic_no_reentry_decision": dynamic.get("no_reentry_decision"),
+            "dynamic_mixed_lot_resolution": dynamic.get("mixed_lot_resolution"),
+            "dynamic_partial_terminal_decisions": dynamic.get("partial_terminal_decisions"),
         })
     return result
 
@@ -1682,6 +1864,10 @@ def sold_marker_governance_gap_rows(
             reasons.append("dynamic recovery cycle id does not match the remediation source")
         if row.get("dynamic_sale_lot_ids") != row.get("sale_lot_ids"):
             reasons.append("dynamic coverage drops or reorders sale lots from the recovery cycle")
+        if row.get("dynamic_mixed_lot_resolution") != row.get("recovery_mixed_lot_resolution"):
+            reasons.append("dynamic mixed-lot resolution does not match the recovery cycle")
+        if row.get("dynamic_partial_terminal_decisions") != row.get("recovery_partial_terminal_decisions"):
+            reasons.append("dynamic partial terminal decisions do not match the recovery cycle")
         if (
             row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
             and _is_positive_number(dynamic_attributed)
@@ -1807,6 +1993,19 @@ def validate_dynamic_against_sold_marker_recovery(
             f"dynamic sale-lot set mismatch for sold-marker recovery {key}",
             errors,
         )
+        _require(
+            row.get("dynamic_mixed_lot_resolution") == row.get("recovery_mixed_lot_resolution")
+            and row.get("dynamic_partial_terminal_decisions")
+            == row.get("recovery_partial_terminal_decisions"),
+            f"dynamic R19 mixed-lot decision mismatch for sold-marker recovery {key}",
+            errors,
+        )
+        if row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW":
+            _require(
+                int(row.get("remaining_open_quantity", 0) or 0) == 0,
+                f"dynamic EXIT/no-reentry state retains an open sold-slice residual for {key}",
+                errors,
+            )
         reason = str(row.get("dynamic_coverage_reason") or "").lower()
         if state.startswith("REPAIR_REQUIRED"):
             _require(
@@ -1856,14 +2055,14 @@ def validate_dynamic_against_sold_marker_recovery(
             )
         elif state.startswith("PARTIAL_SOLD_SLICE_RECOVERY"):
             _require(
-                row.get("dynamic_buyback_coverage_state") == "LEDGER_ONLY"
+                row.get("dynamic_buyback_coverage_state") in {"LEDGER_ONLY", "LADDER_GAP", "REPAIR_REQUIRED"}
                 and row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
-                f"partial sold-slice row must remain explicit ledger-only coverage for {key}",
+                f"partial sold-slice row must remain explicit fail-closed coverage for {key}",
                 errors,
             )
             _require(
-                row.get("dynamic_target_rebuild_quantity") == row.get("sold_quantity"),
-                f"partial sold-slice target does not preserve exact sold quantity for {key}",
+                row.get("dynamic_target_rebuild_quantity") == row.get("remaining_open_quantity"),
+                f"partial sold-slice target does not preserve exact residual quantity for {key}",
                 errors,
             )
             _require(
@@ -2212,6 +2411,29 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
                     and isinstance(row.get("stages_percent_below_sold_marker"), list)
                     and isinstance(row.get("stage_quantities"), list),
                     f"dynamic BUILD_REVIEW lacks a quantified stock-specific ladder for {key}",
+                    errors,
+                )
+
+        if schema_version >= 7 and isinstance(row.get("mixed_lot_resolution"), dict):
+            mixed_resolution = row["mixed_lot_resolution"]
+            _require(
+                mixed_resolution.get("schema_version") == 2
+                and mixed_resolution.get("broker_mutation") is False,
+                f"dynamic R19 mixed-lot authority is invalid for {key}",
+                errors,
+            )
+            target = row.get("target_rebuild_quantity")
+            _require(
+                target == mixed_resolution.get("remaining_open_quantity")
+                if _is_positive_integer(mixed_resolution.get("remaining_open_quantity"))
+                else target is None,
+                f"dynamic R19 target does not equal the exact residual for {key}",
+                errors,
+            )
+            if _is_positive_integer(mixed_resolution.get("remaining_open_quantity")):
+                _require(
+                    row.get("low_exposure_decision") != "EXIT_OR_NO_REENTRY_REVIEW",
+                    f"dynamic R19 residual is incorrectly terminal for {key}",
                     errors,
                 )
 

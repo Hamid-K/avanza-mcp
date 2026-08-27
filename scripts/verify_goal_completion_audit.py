@@ -191,6 +191,106 @@ def _sold_marker_has_open_work(payload: dict[str, Any]) -> bool:
     )
 
 
+def _validate_r19_narrative_parity(payload: dict[str, Any], errors: list[str]) -> None:
+    """Reject a stale headline after schema-7 mixed-lot reconciliation."""
+
+    current_buyback = payload.get("current_buyback_coverage", {})
+    try:
+        dynamic_schema = int(current_buyback.get("schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        dynamic_schema = 0
+    if dynamic_schema < 7:
+        return
+
+    recovery = payload.get("current_sold_marker_recovery", {})
+    summary = recovery.get("summary", {})
+    expected = {
+        field: summary.get(field)
+        for field in (
+            "exact_account_rows_with_prior_same_account_sales",
+            "modeled_sale_lots",
+            "open_material_rows",
+            "remaining_open_quantity_across_material_rows",
+            "repair_required_missed_path_rows",
+            "material_path_open_rows",
+            "named_exception_path_review_rows",
+            "explicit_no_reentry_rows",
+        )
+    }
+    for field, value in expected.items():
+        _require(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+            f"current sold-marker summary field is invalid: {field}",
+            errors,
+        )
+    checkpoint = payload.get("current_live_reconciliation", {})
+    _require(
+        checkpoint.get("dynamic_buyback_schema_version") == dynamic_schema,
+        "current live reconciliation does not identify the schema-7 dynamic buyback source",
+        errors,
+    )
+    _require(
+        checkpoint.get("sold_marker_schema_version") == recovery.get("schema_version"),
+        "current live reconciliation sold-marker schema is stale",
+        errors,
+    )
+    _require(
+        checkpoint.get("sold_marker_summary") == expected,
+        "current live reconciliation sold-marker totals are stale",
+        errors,
+    )
+    source = str(checkpoint.get("source") or "")
+    _require(
+        "R19" in source and "R18" not in source,
+        "current live reconciliation still names a pre-R19 source",
+        errors,
+    )
+
+    requirements = {
+        str(row.get("id") or ""): row
+        for row in payload.get("requirements", [])
+        if isinstance(row, dict)
+    }
+    for requirement_id in ("R3", "R4", "R7"):
+        row = requirements.get(requirement_id, {})
+        evidence = str(row.get("evidence") or "")
+        revision_label_ok = requirement_id == "R4" or "R19" in evidence
+        current_state_label_ok = requirement_id == "R7" or "R18" not in evidence
+        _require(
+            row.get("governance_revision") == "R19_MIXED_LOT"
+            and revision_label_ok
+            and current_state_label_ok,
+            f"requirement {requirement_id} retains stale pre-R19 evidence",
+            errors,
+        )
+
+    r3_evidence = str(requirements.get("R3", {}).get("evidence") or "")
+    formatted = {
+        field: f"{value:,}" if isinstance(value, int) and not isinstance(value, bool) else str(value)
+        for field, value in expected.items()
+    }
+    phrases = (
+        f"{formatted['modeled_sale_lots']} immutable sale lots",
+        (
+            f"{formatted['open_material_rows']} rows totaling "
+            f"{formatted['remaining_open_quantity_across_material_rows']} shares remain open"
+        ),
+        f"{formatted['repair_required_missed_path_rows']} missed-path repairs",
+        f"{formatted['material_path_open_rows']} unsupported material gaps",
+        f"{formatted['named_exception_path_review_rows']} named-exception reviews",
+    )
+    for phrase in phrases:
+        _require(phrase in r3_evidence, f"requirement R3 evidence is missing current total: {phrase}", errors)
+
+    r4_evidence = str(requirements.get("R4", {}).get("evidence") or "")
+    r4_phrases = (
+        f"{formatted['repair_required_missed_path_rows']} missed-path repairs",
+        f"{formatted['material_path_open_rows']} unsupported material gaps",
+    )
+    for phrase in r4_phrases:
+        _require(phrase in r4_evidence, f"requirement R4 evidence is missing current total: {phrase}", errors)
+
+
 def _validate_sold_marker_strategy_reconciliation(
     payload: dict[str, Any],
     errors: list[str],
@@ -473,6 +573,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
     )
     _validate_current_buyback_link(payload, errors, require_clean=True)
     _validate_sold_marker_recovery_link(payload, errors, require_clean=True)
+    _validate_r19_narrative_parity(payload, errors)
 
     audit_coverage = payload.get("strategy_audit_coverage", {})
     _require(
@@ -709,6 +810,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
     )
     _validate_current_buyback_link(payload, errors, require_clean=False)
     _validate_sold_marker_recovery_link(payload, errors, require_clean=False)
+    _validate_r19_narrative_parity(payload, errors)
 
     strategy = payload.get("strategy_coverage", {})
     _require(strategy.get("artifact") == "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER", "strategy coverage link is missing", errors)
@@ -1076,6 +1178,11 @@ def validate(payload: dict[str, Any]) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit", type=Path, default=latest_audit_path())
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Fail unless the audit proves the full objective complete.",
+    )
     args = parser.parse_args()
     path = args.audit if args.audit.is_absolute() else ROOT / args.audit
     if not path.exists():
@@ -1086,6 +1193,9 @@ def main() -> int:
     if errors:
         for error in errors:
             print(f"[goal-audit] FAIL: {error}")
+        return 1
+    if args.require_complete and payload.get("complete") is not True:
+        print("[goal-audit] FAIL: objective remains incomplete")
         return 1
     if payload.get("complete") is True:
         print("[goal-audit] PASS: objective completion contract is proven")
