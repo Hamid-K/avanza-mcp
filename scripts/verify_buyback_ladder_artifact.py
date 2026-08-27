@@ -48,6 +48,7 @@ EXPECTED_DYNAMIC_SCOPES = {
     ("darkcell", "7616265"),
 }
 NO_REENTRY_MAX_VALIDITY = timedelta(days=14)
+PATH_CONTEXT_FIELD = "instrument_specific_path_context"
 
 
 def _require(condition: bool, message: str, errors: list[str]) -> None:
@@ -125,6 +126,61 @@ def _is_nonnegative_integer(value: Any) -> bool:
 
 def _is_positive_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _validate_instrument_specific_path_context(
+    row: dict[str, Any],
+    evidence: dict[str, Any],
+    key: tuple[str, str, str],
+    errors: list[str],
+) -> None:
+    context = row.get(PATH_CONTEXT_FIELD)
+    _require(isinstance(context, dict), f"dynamic instrument-specific path context missing for {key}", errors)
+    if not isinstance(context, dict):
+        return
+
+    instrument = str(row.get("instrument") or "").strip()
+    reason = str(context.get("coverage_reason") or "").strip()
+    next_gate = str(context.get("exact_next_gate") or "").strip()
+    _require(context.get("instrument") == instrument, f"dynamic path-context instrument mismatch for {key}", errors)
+    _require(
+        bool(reason) and instrument.casefold() in reason.casefold(),
+        f"dynamic complete-path reason is not instrument-specific for {key}",
+        errors,
+    )
+    _require(bool(next_gate), f"dynamic instrument-specific path next gate missing for {key}", errors)
+    for field in (
+        "remaining_open_quantity",
+        "remaining_open_lot_count",
+        "maximum_open_lot_drop_percent",
+        "current_drop_below_weighted_marker_percent",
+    ):
+        _require(
+            context.get(field) == evidence.get(field),
+            f"dynamic instrument-specific path context {field} mismatch for {key}",
+            errors,
+        )
+
+    top_reason = str(row.get("coverage_reason") or "")
+    _require(top_reason.startswith(reason), f"dynamic path reconciliation erased its stock-specific reason for {key}", errors)
+    _require(
+        row.get("exact_next_gate") == next_gate,
+        f"dynamic path reconciliation erased its stock-specific next gate for {key}",
+        errors,
+    )
+    resolution = row.get("economic_resolution")
+    if isinstance(resolution, dict):
+        _require(
+            resolution.get(PATH_CONTEXT_FIELD) == context,
+            f"dynamic economic resolution lost its stock-specific path context for {key}",
+            errors,
+        )
+        _require(
+            resolution.get("reason") == row.get("coverage_reason")
+            and resolution.get("next_review") == row.get("exact_next_gate"),
+            f"dynamic economic resolution contradicts the stock-specific path decision for {key}",
+            errors,
+        )
 
 
 def _no_reentry_decision_gaps(
@@ -1069,6 +1125,24 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
         "sold-marker remediation remaining quantity mismatch",
         errors,
     )
+    if int(schema_version or 2) >= 4:
+        conclusion = str(payload.get("conclusion") or "")
+        expected_conclusion_facts = (
+            (
+                int(summary.get("exact_account_rows_with_prior_same_account_sales", 0) or 0),
+                "governed prior-sale identities",
+            ),
+            (int(summary.get("modeled_sale_lots", 0) or 0), "raw sale lots"),
+            (int(summary.get("qualifying_filled_quantity_total", 0) or 0), "filled recovery shares"),
+            (remaining_quantity, "still-open shares"),
+        )
+        _require(bool(conclusion), "sold-marker remediation conclusion is missing", errors)
+        for value, label in expected_conclusion_facts:
+            _require(
+                f"{value:,} {label}" in conclusion,
+                f"sold-marker remediation conclusion contradicts {label}",
+                errors,
+            )
     _require(
         isinstance(summary.get("exact_account_rows_with_prior_same_account_sales"), int)
         and summary.get("exact_account_rows_with_prior_same_account_sales", 0) >= len(rows),
@@ -2187,6 +2261,8 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
                         f"crossed named complete path is not separately review-blocked for {key}",
                         errors,
                     )
+                if crossed and schema_version >= 6:
+                    _validate_instrument_specific_path_context(row, evidence, key, errors)
         elif schema_version >= 5:
             _require(
                 row.get("full_path_evidence") is None,

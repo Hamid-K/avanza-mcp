@@ -92,7 +92,7 @@ def dynamic_buyback_payload():
             "stages_percent_below_sold_marker": [8.4, 14.7],
             "stage_quantities": [2, 1],
             "latest_recent_sale_date": "2026-08-18",
-            "coverage_reason": "Individually calibrated from the account sale marker and current range.",
+            "coverage_reason": "Example Alpha is individually calibrated from its account sale marker and current range.",
             "exact_next_gate": "No additional BUY; review only after the residual fills or thesis changes.",
             "pending_cleanup_id": None,
         },
@@ -138,7 +138,7 @@ def dynamic_buyback_payload():
             "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
             "stage_quantities": None,
             "latest_recent_sale_date": "2026-08-18",
-            "coverage_reason": "The full exit has no supported re-entry structure yet.",
+            "coverage_reason": "Example Gamma's full exit has no supported re-entry structure yet.",
             "exact_next_gate": "Require post-event support, a regular-session reclaim, and all risk and friction gates.",
             "pending_cleanup_id": None,
         },
@@ -830,6 +830,8 @@ def test_r17_economic_enrichment_resolves_only_completed_reviewed_holds():
 
 def test_schema5_enrichment_binds_complete_path_and_preserves_missed_crossing():
     payload, registry, path = schema5_inputs()
+    specific_reason = payload["rows"][0]["coverage_reason"]
+    specific_gate = payload["rows"][0]["exact_next_gate"]
     result = enrich_payload(
         payload,
         registry,
@@ -840,11 +842,17 @@ def test_schema5_enrichment_binds_complete_path_and_preserves_missed_crossing():
     )
 
     rows = {row["orderbook_id"]: row for row in result["rows"]}
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 6
     assert rows["1001"]["buyback_coverage_state"] == "REPAIR_REQUIRED"
     assert rows["1001"]["low_exposure_decision"] == "REPAIR_REQUIRED"
     assert rows["1001"]["current_protection_classification"] == "MARKER_EXCEPTION"
     assert rows["1001"]["full_path_evidence"]["path_state"] == "MISSED_PATH_REPAIR_REQUIRED"
+    assert rows["1001"]["coverage_reason"].startswith(specific_reason)
+    assert rows["1001"]["exact_next_gate"] == specific_gate
+    assert rows["1001"]["instrument_specific_path_context"]["instrument"] == "Example Alpha"
+    assert rows["1001"]["economic_resolution"]["instrument_specific_path_context"] == rows["1001"][
+        "instrument_specific_path_context"
+    ]
     assert rows["1003"]["buyback_coverage_state"] == "LADDER_GAP"
     assert result["summary"]["repair_required_missed_path_rows"] == 1
     assert result["summary"]["rows_crossing_8pct_review_alarm"] == 1
@@ -921,6 +929,8 @@ def test_schema5_enrichment_rejects_missing_or_quantity_mismatched_path_row():
 
 def test_schema5_named_crossing_stays_named_and_requires_named_review():
     payload, registry, path = schema5_inputs(named_crossing=True)
+    specific_reason = payload["rows"][2]["coverage_reason"]
+    specific_gate = payload["rows"][2]["exact_next_gate"]
     result = enrich_payload(
         payload,
         registry,
@@ -934,8 +944,34 @@ def test_schema5_named_crossing_stays_named_and_requires_named_review():
     assert gamma["buyback_coverage_state"] == "LADDER_GAP"
     assert gamma["low_exposure_decision"] == "NAMED_EXCEPTION"
     assert gamma["full_path_evidence"]["path_state"] == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
+    assert gamma["coverage_reason"].startswith(specific_reason)
+    assert gamma["exact_next_gate"] == specific_gate
+    assert gamma["instrument_specific_path_context"]["instrument"] == "Example Gamma"
     assert result["summary"]["named_exception_path_review_rows"] == 1
     assert validate_dynamic_live_coverage(result) == []
+
+
+def test_schema6_validator_rejects_flattened_complete_path_decision():
+    payload, registry, path = schema5_inputs()
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-26T18:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_20260826_1754.json",
+    )
+    alpha = next(row for row in result["rows"] if row["orderbook_id"] == "1001")
+    alpha.pop("instrument_specific_path_context")
+    alpha["economic_resolution"].pop("instrument_specific_path_context")
+    alpha["coverage_reason"] = "The complete path crossed a generic review alarm."
+    alpha["exact_next_gate"] = "Reconcile thesis, technicals, capacity and friction."
+    alpha["economic_resolution"]["reason"] = alpha["coverage_reason"]
+    alpha["economic_resolution"]["next_review"] = alpha["exact_next_gate"]
+
+    errors = validate_dynamic_live_coverage(result)
+
+    assert any("instrument-specific path context missing" in error for error in errors)
 
 
 def test_terminal_decision_closes_only_multi_sale_residuals_after_prior_fills():
@@ -1094,6 +1130,17 @@ def test_terminal_decision_closes_only_multi_sale_residuals_after_prior_fills():
         path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_output.json",
     )
     assert validate_sold_marker_remediation(enriched) == []
+    remaining = enriched["summary"]["remaining_open_quantity_across_material_rows"]
+    assert f"{remaining:,} still-open shares" in enriched["conclusion"]
+
+    stale = copy.deepcopy(enriched)
+    stale["conclusion"] = stale["conclusion"].replace(
+        f"{remaining:,} still-open shares",
+        f"{remaining + 1:,} still-open shares",
+    )
+    assert "sold-marker remediation conclusion contradicts still-open shares" in validate_sold_marker_remediation(
+        stale
+    )
 
 
 def test_schema5_validator_rejects_erased_crossing_and_summary_drift():

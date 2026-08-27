@@ -27,6 +27,7 @@ MISSED_PATH_STATE = "MISSED_PATH_REPAIR_REQUIRED"
 OPEN_PATH_STATE = "LADDER_GAP_PERCENTAGE_NOT_SET"
 TERMINAL_DECISION_ARTIFACT = "PORTFOLIO_R17_TERMINAL_DECISIONS"
 TERMINAL_DECISION_MAX_VALIDITY = timedelta(days=14)
+PATH_CONTEXT_FIELD = "instrument_specific_path_context"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -63,6 +64,116 @@ def _is_positive_integer(value: Any) -> bool:
 
 def _is_nonnegative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _instrument_specific_path_context(
+    row: dict[str, Any],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve the stock-specific decision that complete-path evidence refines."""
+
+    instrument = str(row.get("instrument") or "").strip()
+    reason = str(row.get("coverage_reason") or "").strip()
+    next_gate = str(row.get("exact_next_gate") or "").strip()
+    if not instrument or not reason or not next_gate:
+        raise ValueError(f"R17 complete-path row lacks stock-specific decision evidence for {_row_key(row)}")
+    if instrument.casefold() not in reason.casefold():
+        raise ValueError(f"R17 complete-path reason is not instrument-specific for {_row_key(row)}")
+
+    resolution = row.get("economic_resolution")
+    resolution = resolution if isinstance(resolution, dict) else {}
+    return {
+        "instrument": instrument,
+        "source": resolution.get("source"),
+        "registry_updated_at": resolution.get("registry_updated_at"),
+        "coverage_reason": reason,
+        "exact_next_gate": next_gate,
+        "remaining_open_quantity": evidence.get("remaining_open_quantity"),
+        "remaining_open_lot_count": evidence.get("remaining_open_lot_count"),
+        "maximum_open_lot_drop_percent": evidence.get("maximum_open_lot_drop_percent"),
+        "current_drop_below_weighted_marker_percent": evidence.get(
+            "current_drop_below_weighted_marker_percent"
+        ),
+    }
+
+
+def _path_reconciled_reason(context: dict[str, Any], *, named: bool) -> str:
+    maximum = context.get("maximum_open_lot_drop_percent")
+    maximum_text = f"{float(maximum):.2f}%" if isinstance(maximum, (int, float)) else "an authenticated amount"
+    suffix = (
+        f" Complete authenticated path evidence records a maximum {maximum_text} drop below the "
+        "applicable sold markers and an unserved 8% review-alarm crossing. A later rebound does not "
+        "erase that crossing."
+    )
+    if named:
+        suffix += " The named-instrument restrictions remain binding."
+    return f"{context['coverage_reason']}{suffix}"
+
+
+def _remediation_summary(
+    rows: list[dict[str, Any]],
+    existing: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary = dict(existing or {})
+    repair_rows = [row for row in rows if str(row.get("state") or "").startswith("REPAIR_REQUIRED")]
+    percentage_gap_rows = [
+        row for row in rows if row.get("state") == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"
+    ]
+    named_path_rows = [
+        row for row in rows if row.get("state") == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
+    ]
+    no_reentry_rows = [
+        row for row in rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+    ]
+    partial_rows = [
+        row for row in rows if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")
+    ]
+    open_rows = [row for row in rows if _is_positive_integer(row.get("remaining_open_quantity"))]
+    percentage_not_set_rows = [
+        row
+        for row in open_rows
+        if row.get("recorded_stage_percentages_below_marker") in (None, "PERCENTAGE_NOT_SET")
+    ]
+    path_rows = [row for row in open_rows if isinstance(row.get("full_path_evidence"), dict)]
+    crossed_rows = [
+        row
+        for row in path_rows
+        if row["full_path_evidence"].get("crossed_8pct_review_alarm") is True
+    ]
+
+    summary.update(
+        {
+            "repair_required_missed_path_rows": len(repair_rows),
+            "sold_cycle_repair_required_rows": len(repair_rows),
+            "percentage_not_set_open_rows": len(percentage_not_set_rows),
+            "material_path_open_rows": len(percentage_gap_rows),
+            "named_exception_path_review_rows": len(named_path_rows),
+            "explicit_no_reentry_rows": len(no_reentry_rows),
+            "partial_sale_attributed_active_rows": len(partial_rows),
+            "open_material_rows": len(open_rows),
+            "remaining_open_quantity_across_material_rows": sum(
+                int(row.get("remaining_open_quantity", 0) or 0) for row in open_rows
+            ),
+            "full_path_evidence_rows": len(path_rows),
+            "rows_crossing_8pct_review_alarm": len(crossed_rows),
+            "path_evidence_missing_rows": len(open_rows) - len(path_rows),
+        }
+    )
+    return summary
+
+
+def _remediation_conclusion(summary: dict[str, Any]) -> str:
+    identities = int(summary.get("exact_account_rows_with_prior_same_account_sales", 0) or 0)
+    lots = int(summary.get("modeled_sale_lots", 0) or 0)
+    filled = int(summary.get("qualifying_filled_quantity_total", 0) or 0)
+    remaining = int(summary.get("remaining_open_quantity_across_material_rows", 0) or 0)
+    return (
+        f"R17 B9/B11 boundary and allocation gaps are cleared for all {identities:,} governed "
+        f"prior-sale identities. The ledger preserves {lots:,} raw sale lots, split-normalized "
+        f"parity, {filled:,} filled recovery shares and {remaining:,} still-open shares. Open "
+        "percentage design and economic position decisions remain fail-closed; no broker or paper "
+        "mutation occurred."
+    )
 
 
 def _artifact_time(value: Any) -> datetime | None:
@@ -294,6 +405,8 @@ def apply_terminal_decisions_to_remediation(
         "row_count": len(decision_rows),
         "broker_mutation": False,
     }
+    result["summary"] = _remediation_summary(rows, result.get("summary"))
+    result["conclusion"] = _remediation_conclusion(result["summary"])
     return result
 
 
@@ -705,44 +818,34 @@ def enrich_payload(
 
             row["full_path_evidence"] = evidence
             if evidence["crossed_8pct_review_alarm"] and not evidence["named_exception"]:
+                context = _instrument_specific_path_context(row, evidence)
                 row["buyback_coverage_state"] = "REPAIR_REQUIRED"
                 row["low_exposure_decision"] = "REPAIR_REQUIRED"
-                row["coverage_reason"] = (
-                    "The complete authenticated path crossed the 8 percent review alarm "
-                    "without a qualifying exact-lot fill or still-valid same-lot recovery row. "
-                    "A later rebound does not erase the missed crossing."
-                )
-                row["exact_next_gate"] = (
-                    "Reconcile the exact open sale lots against current thesis, catalyst, "
-                    "technical reversal, spread, capacity, factors and full friction; do not "
-                    "chase a rebound or invent a generic percentage ladder."
-                )
+                row[PATH_CONTEXT_FIELD] = context
+                row["coverage_reason"] = _path_reconciled_reason(context, named=False)
+                row["exact_next_gate"] = context["exact_next_gate"]
                 row["economic_resolution"] = {
                     **dict(row.get("economic_resolution") or {}),
                     "state": "REPAIR_REQUIRED",
                     "source": "R17_COMPLETE_PATH_RECONCILIATION",
                     "reason": row["coverage_reason"],
                     "next_review": row["exact_next_gate"],
+                    PATH_CONTEXT_FIELD: copy.deepcopy(context),
                 }
             elif evidence["crossed_8pct_review_alarm"]:
+                context = _instrument_specific_path_context(row, evidence)
                 row["buyback_coverage_state"] = "LADDER_GAP"
                 row["low_exposure_decision"] = "NAMED_EXCEPTION"
-                row["coverage_reason"] = (
-                    "The complete authenticated path crossed the 8 percent review alarm, "
-                    "but this named instrument remains separately governed and cannot be "
-                    "promoted into ordinary buyback authority."
-                )
-                row["exact_next_gate"] = (
-                    "Run the exact named-instrument thesis, path, technical, exposure, "
-                    "capacity and friction review; any broker mutation still requires fresh "
-                    "named authorization."
-                )
+                row[PATH_CONTEXT_FIELD] = context
+                row["coverage_reason"] = _path_reconciled_reason(context, named=True)
+                row["exact_next_gate"] = context["exact_next_gate"]
                 row["economic_resolution"] = {
                     **dict(row.get("economic_resolution") or {}),
                     "state": "NAMED_EXCEPTION",
                     "source": "CURRENT_NAMED_EXCEPTION_WITH_R17_PATH_REVIEW",
                     "reason": row["coverage_reason"],
                     "next_review": row["exact_next_gate"],
+                    PATH_CONTEXT_FIELD: copy.deepcopy(context),
                 }
             else:
                 resolution = dict(row.get("economic_resolution") or {})
@@ -751,7 +854,7 @@ def enrich_payload(
 
     result["schema_version"] = max(
         int(payload.get("schema_version", 0) or 0),
-        5 if path_rows is not None else 4,
+        6 if path_rows is not None else 4,
     )
     result["generated_at"] = generated_at
     result["superseded"] = False
@@ -948,40 +1051,14 @@ def enrich_remediation_payload(
         "broker_mutation": False,
     }
 
+    summary = _remediation_summary(enriched_rows, payload.get("summary"))
+    result["summary"] = summary
+    result["conclusion"] = _remediation_conclusion(summary)
+
     repair_rows = [row for row in enriched_rows if str(row.get("state") or "").startswith("REPAIR_REQUIRED")]
-    percentage_gap_rows = [
-        row for row in enriched_rows if row.get("state") == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"
-    ]
     named_path_rows = [
         row for row in enriched_rows if row.get("state") == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"
     ]
-    no_reentry_rows = [
-        row for row in enriched_rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
-    ]
-    partial_rows = [
-        row
-        for row in enriched_rows
-        if str(row.get("state") or "").startswith("PARTIAL_SOLD_SLICE_RECOVERY")
-    ]
-    open_material_rows = [
-        row for row in enriched_rows if _is_positive_integer(row.get("remaining_open_quantity"))
-    ]
-    summary = dict(payload.get("summary", {}))
-    summary["repair_required_missed_path_rows"] = len(repair_rows)
-    summary["sold_cycle_repair_required_rows"] = len(repair_rows)
-    summary["percentage_not_set_open_rows"] = len(path_rows)
-    summary["material_path_open_rows"] = len(percentage_gap_rows)
-    summary["named_exception_path_review_rows"] = len(named_path_rows)
-    summary["explicit_no_reentry_rows"] = len(no_reentry_rows)
-    summary["partial_sale_attributed_active_rows"] = len(partial_rows)
-    summary["open_material_rows"] = len(open_material_rows)
-    summary["remaining_open_quantity_across_material_rows"] = sum(
-        int(row.get("remaining_open_quantity", 0) or 0) for row in open_material_rows
-    )
-    summary["full_path_evidence_rows"] = len(path_rows)
-    summary["rows_crossing_8pct_review_alarm"] = len(repair_rows) + len(named_path_rows)
-    summary["path_evidence_missing_rows"] = 0
-    result["summary"] = summary
 
     verification = dict(payload.get("verification", {}))
     for tenant in ("personal", "darkcell"):
