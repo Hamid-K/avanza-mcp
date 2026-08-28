@@ -66,6 +66,17 @@ def _is_nonnegative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _clear_instrument_specific_path_context(row: dict[str, Any]) -> None:
+    """Discard path context whenever the exact residual lot set changes."""
+
+    row.pop(PATH_CONTEXT_FIELD, None)
+    resolution = row.get("economic_resolution")
+    if isinstance(resolution, dict) and PATH_CONTEXT_FIELD in resolution:
+        resolution = dict(resolution)
+        resolution.pop(PATH_CONTEXT_FIELD, None)
+        row["economic_resolution"] = resolution
+
+
 def _instrument_specific_path_context(
     row: dict[str, Any],
     evidence: dict[str, Any],
@@ -1224,6 +1235,7 @@ def apply_terminal_decisions_to_dynamic_rows(
             if isinstance(lot, dict)
         ]
         row["latest_recent_sale_date"] = remediation.get("sale_date")
+        _clear_instrument_specific_path_context(row)
 
         if not terminal:
             remaining = int(remediation.get("remaining_open_quantity", 0) or 0)
@@ -1385,6 +1397,7 @@ def enrich_payload(
             ]:
                 raise ValueError(f"R17 named-exception path flag mismatch for {key}")
 
+            _clear_instrument_specific_path_context(row)
             row["full_path_evidence"] = evidence
             if evidence["crossed_8pct_review_alarm"] and not evidence["named_exception"]:
                 context = _instrument_specific_path_context(row, evidence)
@@ -1426,7 +1439,15 @@ def enrich_payload(
     )
     result["schema_version"] = max(
         int(payload.get("schema_version", 0) or 0),
-        7 if has_mixed_lot_resolution else 6 if path_rows is not None else 4,
+        (
+            8
+            if has_mixed_lot_resolution and path_rows is not None
+            else 7
+            if has_mixed_lot_resolution
+            else 6
+            if path_rows is not None
+            else 4
+        ),
     )
     result["generated_at"] = generated_at
     result["superseded"] = False

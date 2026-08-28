@@ -192,7 +192,7 @@ def _sold_marker_has_open_work(payload: dict[str, Any]) -> bool:
 
 
 def _validate_r19_narrative_parity(payload: dict[str, Any], errors: list[str]) -> None:
-    """Reject a stale headline after schema-7 mixed-lot reconciliation."""
+    """Reject a stale headline after R19 mixed-lot reconciliation."""
 
     current_buyback = payload.get("current_buyback_coverage", {})
     try:
@@ -226,7 +226,7 @@ def _validate_r19_narrative_parity(payload: dict[str, Any], errors: list[str]) -
     checkpoint = payload.get("current_live_reconciliation", {})
     _require(
         checkpoint.get("dynamic_buyback_schema_version") == dynamic_schema,
-        "current live reconciliation does not identify the schema-7 dynamic buyback source",
+        "current live reconciliation does not identify the current R19 dynamic buyback source",
         errors,
     )
     _require(

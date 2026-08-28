@@ -1339,11 +1339,69 @@ def test_r19_reallocates_fill_attributes_full_stop_and_preserves_exact_residual(
     assert filtered_soundhound["crossed_8pct_review_alarm"] is False
     assert validate_r17_open_path_evidence(filtered_path) == []
 
+    stale_context = {
+        "instrument": "SoundHound AI",
+        "coverage_reason": "SoundHound AI had an older crossed lot.",
+        "exact_next_gate": "Repair the older crossed lot.",
+        "remaining_open_quantity": 178,
+        "remaining_open_lot_count": 2,
+        "maximum_open_lot_drop_percent": 12.5,
+        "current_drop_below_weighted_marker_percent": 10.0,
+    }
+    dynamic_row["instrument_specific_path_context"] = copy.deepcopy(stale_context)
+    dynamic_row.setdefault("economic_resolution", {})[
+        "instrument_specific_path_context"
+    ] = copy.deepcopy(stale_context)
     apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
     assert dynamic_row["target_rebuild_quantity"] == 16
     assert dynamic_row["sale_attributed_active_buy_quantity"] == 2
     assert dynamic_row["unattributed_active_buy_quantity"] == 0
     assert dynamic_row["low_exposure_decision"] != "EXIT_OR_NO_REENTRY_REVIEW"
+    assert "instrument_specific_path_context" not in dynamic_row
+    assert "instrument_specific_path_context" not in dynamic_row["economic_resolution"]
+
+    isolated_dynamic = copy.deepcopy(dynamic)
+    isolated_dynamic["rows"] = [
+        row for row in isolated_dynamic["rows"] if row["orderbook_id"] == "1393460"
+    ]
+    isolated_decided = copy.deepcopy(decided)
+    isolated_decided["rows"] = [
+        row for row in isolated_decided["rows"] if row["orderbook_id"] == "1393460"
+    ]
+    isolated_path = r17_path_payload([copy.deepcopy(filtered_soundhound)])
+    isolated_path["generated_at"] = filtered_path["generated_at"]
+    isolated_soundhound = isolated_dynamic["rows"][0]
+    isolated_soundhound["instrument_specific_path_context"] = copy.deepcopy(stale_context)
+    isolated_soundhound.setdefault("economic_resolution", {})[
+        "instrument_specific_path_context"
+    ] = copy.deepcopy(stale_context)
+
+    enriched = enrich_payload(
+        isolated_dynamic,
+        {"updated_at": "2026-08-27T18:06:00+02:00", "accounts": {}},
+        generated_at="2026-08-27T18:07:00+02:00",
+        source_path="output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_input.json",
+        path_evidence=isolated_path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_filtered.json",
+        remediation_payload=isolated_decided,
+    )
+    enriched_soundhound = next(
+        row for row in enriched["rows"] if row["orderbook_id"] == "1393460"
+    )
+    assert enriched["schema_version"] == 8
+    assert enriched_soundhound["full_path_evidence"]["crossed_8pct_review_alarm"] is False
+    assert "instrument_specific_path_context" not in enriched_soundhound
+    assert "instrument_specific_path_context" not in enriched_soundhound["economic_resolution"]
+
+    stale = copy.deepcopy(enriched)
+    stale_soundhound = next(row for row in stale["rows"] if row["orderbook_id"] == "1393460")
+    stale_soundhound["instrument_specific_path_context"] = copy.deepcopy(stale_context)
+    stale_soundhound["economic_resolution"]["instrument_specific_path_context"] = copy.deepcopy(
+        stale_context
+    )
+    errors = validate_dynamic_live_coverage(stale)
+    assert any("noncrossed complete path retains stale" in error for error in errors)
+    assert any("noncrossed economic resolution retains stale" in error for error in errors)
 
 
 def test_r19_active_only_attribution_canonicalizes_empty_partial_decisions():

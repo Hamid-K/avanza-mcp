@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.2.42 - 2026-08-28
+
+- Refresh the requirement-level live-reconciliation checkpoint from the exact
+  current R19 dynamic and sold-marker sources so a later schema revision cannot
+  leave the goal audit pinned to stale schema-7 metadata.
+- Clear inherited instrument path context whenever R19 mixed-lot remediation
+  changes the exact residual lot set, then rebuild that context only from the
+  surviving authenticated complete path.
+- Reject schema-8 dynamic ledgers that retain a crossed-lot explanation after
+  the surviving residual is noncrossed. This prevents stale maximum drawdown
+  and quantity evidence from keeping an otherwise exact row in false repair.
+- Add regression coverage for the mixed-lot residual transition and retain the
+  local review-only, no-broker-authority contract.
+
 ## 0.2.40 - 2026-08-26
 
 - Added review-only R17 terminal-decision overlays that close only the exact

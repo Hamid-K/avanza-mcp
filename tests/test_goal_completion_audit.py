@@ -400,6 +400,45 @@ def test_schema7_audit_accepts_current_r19_machine_and_narrative_parity():
     assert validate(payload) == []
 
 
+def test_enrichment_refreshes_r19_checkpoint_for_new_dynamic_schema():
+    payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
+    buyback = current_buyback_coverage()
+    buyback["schema_version"] = 8
+    recovery = current_sold_marker_recovery()
+    recovery["schema_version"] = 5
+    recovery["summary"].update(
+        {
+            "exact_account_rows_with_prior_same_account_sales": 105,
+            "modeled_sale_lots": 1980,
+            "material_path_open_rows": 23,
+            "named_exception_path_review_rows": 2,
+        }
+    )
+
+    enriched = enrich(
+        payload,
+        {},
+        live_strategy_audit={"generated_at": "2026-08-28T13:55:24+02:00", "scopes": []},
+        current_buyback=buyback,
+        current_buyback_source="output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_20260828_1348.json",
+        sold_marker_recovery=recovery,
+        sold_marker_recovery_source=(
+            "output/PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_20260828_1348.json"
+        ),
+    )
+
+    checkpoint = enriched["current_live_reconciliation"]
+    assert checkpoint["dynamic_buyback_schema_version"] == 8
+    assert checkpoint["sold_marker_schema_version"] == 5
+    assert checkpoint["dynamic_buyback_source"].endswith("20260828_1348.json")
+    assert checkpoint["sold_marker_source"].endswith("20260828_1348.json")
+    assert checkpoint["sold_marker_summary"]["modeled_sale_lots"] == 1980
+    assert "R19 schema-8 dynamic buyback" in checkpoint["source"]
+    assert enriched["current_live_audit"].endswith("2026-08-28T13:55:24+02:00")
+    assert enriched["current_live_governance_overlay"].endswith("20260828_1348.json")
+
+
 def test_schema7_audit_rejects_stale_r4_machine_totals():
     payload = complete_payload()
     _apply_schema7_r19_parity(payload)

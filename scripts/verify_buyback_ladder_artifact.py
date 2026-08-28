@@ -2485,6 +2485,19 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
                     )
                 if crossed and schema_version >= 6:
                     _validate_instrument_specific_path_context(row, evidence, key, errors)
+                elif schema_version >= 8:
+                    _require(
+                        PATH_CONTEXT_FIELD not in row,
+                        f"noncrossed complete path retains stale instrument-specific path context for {key}",
+                        errors,
+                    )
+                    resolution = row.get("economic_resolution")
+                    if isinstance(resolution, dict):
+                        _require(
+                            PATH_CONTEXT_FIELD not in resolution,
+                            f"noncrossed economic resolution retains stale instrument-specific path context for {key}",
+                            errors,
+                        )
         elif schema_version >= 5:
             _require(
                 row.get("full_path_evidence") is None,

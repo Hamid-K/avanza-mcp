@@ -282,6 +282,46 @@ def _current_sold_marker_recovery_link(
     }
 
 
+def _refresh_r19_live_reconciliation(
+    existing: dict[str, Any] | None,
+    current_buyback: dict[str, Any],
+    current_buyback_source: str,
+    sold_marker_recovery: dict[str, Any],
+    sold_marker_recovery_source: str,
+) -> dict[str, Any]:
+    checkpoint = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    dynamic_schema = int(current_buyback.get("schema_version", 0) or 0)
+    sold_marker_schema = int(sold_marker_recovery.get("schema_version", 0) or 0)
+    summary = sold_marker_recovery.get("summary", {})
+    summary_fields = (
+        "exact_account_rows_with_prior_same_account_sales",
+        "modeled_sale_lots",
+        "open_material_rows",
+        "remaining_open_quantity_across_material_rows",
+        "repair_required_missed_path_rows",
+        "material_path_open_rows",
+        "named_exception_path_review_rows",
+        "explicit_no_reentry_rows",
+    )
+    runtime = checkpoint.get("runtime_version")
+    runtime_label = f" runtime {runtime}" if runtime else ""
+    checkpoint.update(
+        {
+            "source": (
+                f"Exact-scoped Avanza MCP{runtime_label} plus the approved R19 "
+                f"schema-{dynamic_schema} dynamic buyback, schema-{sold_marker_schema} "
+                "sold-marker remediation, factor/capacity, and rolling-friction artifacts"
+            ),
+            "dynamic_buyback_source": current_buyback_source,
+            "dynamic_buyback_schema_version": dynamic_schema,
+            "sold_marker_source": sold_marker_recovery_source,
+            "sold_marker_schema_version": sold_marker_schema,
+            "sold_marker_summary": {field: summary.get(field) for field in summary_fields},
+        }
+    )
+    return checkpoint
+
+
 def _live_audit_counts(scopes: list[dict[str, Any]]) -> dict[str, int | None]:
     def count(tool: str, tenant: str, field: str) -> int | None:
         for row in scopes:
@@ -626,10 +666,14 @@ def enrich(
         },
     }
     if current_buyback is not None:
+        current_buyback_link_source = (
+            current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json"
+        )
         enriched["current_buyback_coverage"] = _current_buyback_link(
             current_buyback,
-            current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json",
+            current_buyback_link_source,
         )
+        enriched["current_live_governance_overlay"] = current_buyback_link_source
     if sold_marker_recovery is not None and current_buyback is not None:
         enriched["current_sold_marker_recovery"] = _current_sold_marker_recovery_link(
             sold_marker_recovery,
@@ -637,8 +681,20 @@ def enrich(
             current_buyback,
             current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json",
         )
+        enriched["current_live_reconciliation"] = _refresh_r19_live_reconciliation(
+            enriched.get("current_live_reconciliation"),
+            current_buyback,
+            current_buyback_source or "output/PORTFOLIO_BUYBACK_LIVE_COVERAGE_LATEST.json",
+            sold_marker_recovery,
+            sold_marker_recovery_source or "output/PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_LATEST.json",
+        )
     live_strategy_audit = live_strategy_audit or {}
     live_scopes = live_strategy_audit.get("scopes", [])
+    if live_strategy_audit.get("generated_at"):
+        enriched["current_live_audit"] = (
+            "LIVE_MCP exact-account position and stop audits "
+            f"{live_strategy_audit['generated_at']}"
+        )
     audit_counts = _live_audit_counts(live_scopes)
     audit_count_summary = (
         f"Personal position {audit_counts['personal_positions']}/{audit_counts['personal_planned']} and stops "
