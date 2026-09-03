@@ -21,7 +21,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
       - name: Run test suite
-        run: uv run pytest -q
+        # Private governance ledgers are intentionally gitignored and are
+        # covered by the mandatory local scripts/verify.sh gate.
+        run: |
+          uv run pytest -q \
+            --ignore=tests/test_catalyst_coverage_artifacts.py \
+            --ignore=tests/test_forward_kpi_coverage_artifacts.py \
+            --ignore=tests/test_scheduler_coverage_artifacts.py \
+            --ignore=tests/test_transaction_coverage_artifacts.py \
+            --deselect=tests/test_buyback_artifacts.py::test_dynamic_buyback_selector_ignores_legacy_recheck_names \
+            --deselect=tests/test_buyback_artifacts.py::test_sold_marker_selector_is_dated_and_current \
+            --deselect=tests/test_buyback_artifacts.py::test_ladder_source_records_the_verified_current_refresh \
+            --deselect=tests/test_buyback_artifacts.py::test_repair_refresh_keeps_account_specific_designs_review_only \
+            --deselect=tests/test_buyback_artifacts.py::test_buyback_validator_accepts_an_explicit_current_live_refresh \
+            --deselect=tests/test_buyback_artifacts.py::test_rendered_ladder_table_is_explicitly_current_but_read_only
       - name: Compile check
         run: |
           uv run python -m py_compile avanza_cli.py tests/test_cli.py tests/test_tui_helpers.py
