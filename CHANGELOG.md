@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Resolved the Starlette security alerts by requiring the patched 1.3.1 lock,
+  refreshed supported FastAPI, Textual, HTTPX, pytest, and setuptools floors,
+  and updated the GitHub Actions dependency set. The TUI now accepts both the
+  legacy and current Textual empty-selection sentinels during upgrades.
 - Replaced fixed strategy-universe completion checks with row-derived
   instrument and exact account-position identity contracts, including digest
   parity across strategy, objective, factor, portfolio-control, and transaction

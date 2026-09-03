@@ -25,8 +25,8 @@ jobs:
     name: pip-audit (resolved environment)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - name: Export locked dependencies
         run: uv export --frozen --no-dev --no-emit-project --format requirements-txt > locked-requirements.txt
       - name: Audit against PyPI advisory + OSV databases
@@ -42,8 +42,8 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: google/osv-scanner-action/osv-scanner-action@v2.0.2
+      - uses: actions/checkout@v7
+      - uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
             --lockfile=uv.lock
@@ -51,7 +51,7 @@ jobs:
             --output=osv-results.sarif
         continue-on-error: true
       - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: osv-results.sarif
           category: osv-scanner

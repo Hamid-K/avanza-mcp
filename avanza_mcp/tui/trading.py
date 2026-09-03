@@ -26,6 +26,14 @@ from textual.widgets import Button, DataTable, Input, Select, Static, Switch
 from typing import Any
 
 
+def empty_select_value() -> Any:
+    """Return Textual's no-selection sentinel across the 6.x and 8.x APIs."""
+    for attribute in ("NULL", "BLANK"):
+        if hasattr(Select, attribute):
+            return getattr(Select, attribute)
+    raise RuntimeError("Textual Select has no empty-value sentinel")
+
+
 class TradingMixin:
     """Order/stop-loss ticket building, dry runs, live placement, cancel flow."""
     def open_order_modal_for_portfolio_action(self, side: str, target: dict[str, str]) -> None:
@@ -158,7 +166,7 @@ class TradingMixin:
         self.pending_stoploss_edit_id = None
         self.query_one("#stoploss-modal-title", Static).update("New Stop-Loss")
         self.query_one("#place-confirm", Input).value = ""
-        self.query_one("#strategy-intent", Select).value = Select.BLANK
+        self.query_one("#strategy-intent", Select).value = empty_select_value()
         self.query_one("#strategy-reason", Input).value = ""
         self.query_one("#place-live", Button).label = "Create Paper Stop-Loss" if self.paper_mode_enabled else "Submit Live Stop-Loss"
 
@@ -228,7 +236,7 @@ class TradingMixin:
         strategy_row = self.stoploss_mcp_row(item)
         strategy_intent = str(strategy_row.get("strategy_intent") or "")
         self.query_one("#strategy-intent", Select).value = (
-            strategy_intent if strategy_intent else Select.BLANK
+            strategy_intent if strategy_intent else empty_select_value()
         )
         self.query_one("#strategy-reason", Input).value = str(
             strategy_row.get("strategy_reason") or ""

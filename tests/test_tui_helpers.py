@@ -18,6 +18,7 @@ from avanza_mcp.tui.layout import (
     side_panel_width_after_drag,
     ticket_pane_width_after_drag,
 )
+from avanza_mcp.tui.trading import empty_select_value
 from avanza_mcp.paper import (
     create_paper_order,
     create_paper_stop_loss_order,
@@ -77,10 +78,21 @@ from avanza_mcp.utils import (
     mcp_result_log_detail,
     mcp_result_log_suffix,
 )
+from textual.widgets import Select
 
 
 def test_amount_formats_value_objects():
     assert amount({"value": {"value": 123.45, "unit": "SEK"}}, "value") == "123.45 SEK"
+
+
+def test_empty_select_value_uses_supported_textual_sentinel():
+    supported = [
+        getattr(Select, attribute)
+        for attribute in ("NULL", "BLANK")
+        if hasattr(Select, attribute)
+    ]
+
+    assert empty_select_value() in supported
 
 
 def test_parse_transaction_types_defaults_to_buy_sell():
