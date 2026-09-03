@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,10 @@ def _validate_current_buyback_link(
     summary = current.get("summary", {})
     governance = current.get("live_governance", {})
     validation = current.get("validation", {})
+    try:
+        schema_version = int(current.get("schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        schema_version = 0
     _require(
         current.get("artifact") == "PORTFOLIO_BUYBACK_LIVE_COVERAGE",
         "current dynamic buyback coverage link is missing",
@@ -166,10 +171,44 @@ def _validate_current_buyback_link(
     )
     pending_cleanup = summary.get("pending_r6a_cleanup_rows")
     _require(isinstance(pending_cleanup, int) and pending_cleanup >= 0, "current dynamic cleanup count is invalid", errors)
+    hold_statuses: dict[str, Any] = {}
+    if schema_version >= 9:
+        hold_required = summary.get("small_hold_revalidation_required_rows")
+        hold_statuses = summary.get("small_hold_revalidation_status_counts", {})
+        expected_statuses = {"CURRENT", "EXPIRED", "MISSING", "INVALID"}
+        _require(
+            isinstance(hold_required, int) and 0 <= hold_required <= row_count,
+            "current dynamic small-hold revalidation count is invalid",
+            errors,
+        )
+        _require(
+            isinstance(hold_statuses, dict)
+            and set(hold_statuses).issubset(expected_statuses)
+            and all(isinstance(value, int) and value >= 0 for value in hold_statuses.values())
+            and isinstance(hold_required, int)
+            and sum(hold_statuses.values()) == hold_required,
+            "current dynamic small-hold revalidation statuses do not reconcile",
+            errors,
+        )
     if require_clean:
+        _require(
+            schema_version >= 9,
+            "completed goal lacks the structured five-session small-hold revalidation contract",
+            errors,
+        )
         _require(state_counts.get("REPAIR_REQUIRED", 0) == 0, "completed goal retains buyback REPAIR_REQUIRED rows", errors)
         _require(low_counts.get("REPAIR_REQUIRED", 0) == 0, "completed goal retains low-exposure REPAIR_REQUIRED rows", errors)
         _require(pending_cleanup == 0, "completed goal retains pending buyback cleanup rows", errors)
+        if schema_version >= 9 and isinstance(hold_statuses, dict):
+            _require(
+                sum(
+                    int(hold_statuses.get(status, 0) or 0)
+                    for status in ("EXPIRED", "MISSING", "INVALID")
+                )
+                == 0,
+                "completed goal retains stale or invalid small-hold revalidation rows",
+                errors,
+            )
 
 
 def _artifact_time(value: Any) -> datetime | None:
@@ -177,6 +216,290 @@ def _artifact_time(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _is_nonnegative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_positive_int(value: Any) -> bool:
+    return _is_nonnegative_int(value) and value > 0
+
+
+def _is_sha256(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 64 and all(character in "0123456789abcdef" for character in text)
+
+
+def _is_nonnegative_decimal(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return parsed.is_finite() and parsed >= 0
+
+
+def _validate_strategy_count_parity(
+    payload: dict[str, Any],
+    errors: list[str],
+) -> tuple[int | None, int | None]:
+    """Validate strategy coverage from its current row-derived identity contract."""
+
+    strategy = payload.get("strategy_coverage", {})
+    _require(
+        strategy.get("artifact") == "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER",
+        "strategy coverage link is missing",
+        errors,
+    )
+    instrument_count = strategy.get("unique_instruments")
+    account_count = strategy.get("account_position_rows")
+    valid_instruments = _is_positive_int(instrument_count)
+    valid_accounts = _is_positive_int(account_count)
+    _require(valid_instruments, "strategy instrument count must be a positive row-derived integer", errors)
+    _require(valid_accounts, "strategy account-position count must be a positive row-derived integer", errors)
+    _require(
+        valid_accounts and strategy.get("exact_account_scope_rows") == account_count,
+        "strategy exact-account scope count must equal the account-position count",
+        errors,
+    )
+    _require(strategy.get("exact_account_scope_complete") is True, "strategy exact scope must be complete", errors)
+    _require(
+        valid_instruments and strategy.get("top_level_stop_recovery_rows") == instrument_count,
+        "strategy stop/recovery coverage must equal the current instrument count",
+        errors,
+    )
+    _require(
+        valid_instruments and strategy.get("top_level_review_schedule_rows") == instrument_count,
+        "strategy review-schedule coverage must equal the current instrument count",
+        errors,
+    )
+    _require(
+        valid_accounts and strategy.get("account_semantic_rows") == account_count,
+        "strategy semantic coverage must equal the current account-position count",
+        errors,
+    )
+    _require(
+        valid_accounts and strategy.get("account_semantic_stop_recovery_rows") == account_count,
+        "account stop/recovery coverage must equal the current account-position count",
+        errors,
+    )
+    identity = strategy.get("dynamic_identity_contract", {})
+    _require(identity.get("schema_version") == 1, "strategy dynamic identity contract is missing", errors)
+    _require(
+        valid_instruments and identity.get("instrument_count") == instrument_count,
+        "strategy dynamic instrument count does not reconcile",
+        errors,
+    )
+    _require(
+        valid_accounts and identity.get("account_position_count") == account_count,
+        "strategy dynamic account-position count does not reconcile",
+        errors,
+    )
+    _require(
+        _is_sha256(identity.get("instrument_identity_sha256")),
+        "strategy instrument identity digest is invalid",
+        errors,
+    )
+    _require(
+        _is_sha256(identity.get("account_position_identity_sha256")),
+        "strategy account-position identity digest is invalid",
+        errors,
+    )
+    _require(
+        identity.get("objective_audit_identity_parity") is True,
+        "strategy identities do not prove objective-audit parity",
+        errors,
+    )
+    return (
+        int(instrument_count) if valid_instruments else None,
+        int(account_count) if valid_accounts else None,
+    )
+
+
+def _validate_factor_strategy_parity(
+    payload: dict[str, Any],
+    errors: list[str],
+    instrument_count: int | None,
+    account_count: int | None,
+) -> None:
+    factor = payload.get("portfolio_control_coverage", {}).get("factor", {})
+    _require(factor.get("artifact") == "PORTFOLIO_FACTOR_EXPOSURE", "factor coverage link is missing", errors)
+    _require(
+        instrument_count is not None
+        and factor.get("instrument_rows") == instrument_count
+        and factor.get("unique_instruments") == instrument_count,
+        "factor coverage instrument counts must equal the current strategy universe",
+        errors,
+    )
+    _require(
+        account_count is not None and factor.get("account_position_rows") == account_count,
+        "factor coverage account-position count must equal the current strategy universe",
+        errors,
+    )
+    _require(
+        account_count is not None and factor.get("exact_account_scope_rows") == account_count,
+        "factor exact-account scope count must equal the current strategy universe",
+        errors,
+    )
+
+
+def _validate_full_history_governance_link(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    require_present: bool,
+    require_clean: bool,
+) -> None:
+    """Validate the immutable full-history/mirror binding carried by the audit."""
+
+    link = payload.get("full_history_governance")
+    if not isinstance(link, dict) or not link:
+        if require_present:
+            errors.append("full-history governance link is missing")
+        return
+
+    _require(
+        link.get("artifact") == "PORTFOLIO_FULL_HISTORY_GOVERNANCE_LINK"
+        and link.get("schema_version") == 1,
+        "full-history governance link contract is invalid",
+        errors,
+    )
+    canonical = link.get("canonical", {})
+    mirror = link.get("dynamic_mirror", {})
+    official = link.get("official_close", {})
+    boundary = link.get("raw_boundary", {})
+    validation = link.get("validation", {})
+    authority = link.get("authority", {})
+
+    _require(
+        canonical.get("artifact") == "PORTFOLIO_FULL_HISTORY_CANONICAL"
+        and "PORTFOLIO_FULL_HISTORY_CANONICAL_" in str(canonical.get("source") or ""),
+        "full-history canonical source is invalid",
+        errors,
+    )
+    _require(
+        mirror.get("artifact") == "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR"
+        and "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_" in str(mirror.get("source") or ""),
+        "full-history dynamic mirror source is invalid",
+        errors,
+    )
+    _require(
+        "OFFICIAL_CLOSE_REACHABILITY" in str(official.get("artifact") or "")
+        and "OFFICIAL_CLOSE_REACHABILITY_" in str(official.get("source") or ""),
+        "official-close reachability source is invalid",
+        errors,
+    )
+    _require(
+        "FULL_RAW_BOUNDARY" in str(boundary.get("artifact") or "")
+        and "FULL_RAW_BOUNDARY" in str(boundary.get("source") or ""),
+        "full-history raw boundary source is invalid",
+        errors,
+    )
+    for label, row in (
+        ("canonical", canonical),
+        ("dynamic mirror", mirror),
+        ("official close", official),
+        ("raw boundary", boundary),
+    ):
+        _require(_artifact_time(row.get("generated_at")) is not None, f"full-history {label} timestamp is invalid", errors)
+        _require(_is_sha256(row.get("payload_sha256")), f"full-history {label} payload digest is invalid", errors)
+
+    source_count = canonical.get("source_identity_count")
+    lineage_count = canonical.get("effective_lineage_count")
+    lot_count = canonical.get("immutable_sale_lot_count")
+    unique_transaction_count = canonical.get("unique_sale_transaction_id_count")
+    open_lot_count = canonical.get("open_sale_lot_count")
+    open_quantity = canonical.get("open_sale_quantity_exact")
+    _require(_is_positive_int(source_count), "full-history source-identity count is invalid", errors)
+    _require(
+        _is_positive_int(lineage_count)
+        and _is_positive_int(source_count)
+        and lineage_count <= source_count,
+        "full-history effective-lineage count is invalid",
+        errors,
+    )
+    _require(_is_positive_int(lot_count), "full-history immutable sale-lot count is invalid", errors)
+    _require(
+        _is_positive_int(lot_count) and unique_transaction_count == lot_count,
+        "full-history sale-lot and transaction identities do not reconcile",
+        errors,
+    )
+    _require(
+        _is_nonnegative_int(open_lot_count)
+        and _is_positive_int(lot_count)
+        and open_lot_count <= lot_count,
+        "full-history open sale-lot count is invalid",
+        errors,
+    )
+    _require(_is_nonnegative_decimal(open_quantity), "full-history open quantity is invalid", errors)
+
+    dynamic_count = mirror.get("dynamic_row_count")
+    repair_count = mirror.get("repair_required_row_count")
+    _require(_is_positive_int(dynamic_count), "full-history dynamic row count is invalid", errors)
+    _require(
+        mirror.get("mirrored_effective_lineage_count") == lineage_count,
+        "full-history mirror lineage count mismatch",
+        errors,
+    )
+    _require(
+        mirror.get("mirrored_source_identity_count") == source_count,
+        "full-history mirror source-identity count mismatch",
+        errors,
+    )
+    _require(
+        mirror.get("mirrored_immutable_sale_lot_count") == lot_count,
+        "full-history mirror sale-lot count mismatch",
+        errors,
+    )
+    _require(
+        _is_nonnegative_int(repair_count)
+        and _is_positive_int(dynamic_count)
+        and repair_count <= dynamic_count,
+        "full-history mirror repair count is invalid",
+        errors,
+    )
+
+    official_rows = official.get("row_count")
+    official_states = official.get("state_counts")
+    _require(_is_positive_int(official_rows), "official-close reachability row count is invalid", errors)
+    _require(
+        isinstance(official_states, dict)
+        and bool(official_states)
+        and all(str(key).strip() and _is_nonnegative_int(value) for key, value in official_states.items())
+        and _is_positive_int(official_rows)
+        and sum(official_states.values()) == official_rows,
+        "official-close reachability states do not reconcile",
+        errors,
+    )
+    _require(
+        official.get("later_rebound_erases_crossing") is False,
+        "official-close reachability must preserve earlier unserved crossings",
+        errors,
+    )
+    _require(boundary.get("truncation_risk") is False, "full-history raw boundary retains truncation risk", errors)
+    _require(
+        validation.get("status") == "PASSED"
+        and validation.get("error_count") == 0
+        and validation.get("errors") == [],
+        "full-history canonical or mirror validation did not pass",
+        errors,
+    )
+    _require(
+        authority
+        == {"trade_authority": False, "broker_mutation": False, "paper_mutation": False},
+        "full-history governance link must remain read-only",
+        errors,
+    )
+    _require(link.get("objective_complete") is False, "full-history evidence cannot self-authorize completion", errors)
+    _require(
+        payload.get("current_live_reconciliation", {}).get("full_history_governance") == link,
+        "current live reconciliation does not preserve the exact full-history governance link",
+        errors,
+    )
+    if require_clean:
+        _require(repair_count == 0, "completed goal retains full-history REPAIR_REQUIRED rows", errors)
 
 
 def _sold_marker_has_open_work(payload: dict[str, Any]) -> bool:
@@ -246,6 +569,11 @@ def _validate_r19_narrative_parity(payload: dict[str, Any], errors: list[str]) -
         errors,
     )
 
+    full_history_link = payload.get("full_history_governance", {})
+    full_history_current = (
+        isinstance(full_history_link, dict)
+        and full_history_link.get("validation", {}).get("status") == "PASSED"
+    )
     requirements = {
         str(row.get("id") or ""): row
         for row in payload.get("requirements", [])
@@ -256,8 +584,13 @@ def _validate_r19_narrative_parity(payload: dict[str, Any], errors: list[str]) -
         evidence = str(row.get("evidence") or "")
         revision_label_ok = requirement_id == "R4" or "R19" in evidence
         current_state_label_ok = requirement_id == "R7" or "R18" not in evidence
+        expected_revision = (
+            "R390_DYNAMIC_FULL_HISTORY"
+            if requirement_id == "R3" and full_history_current
+            else "R19_MIXED_LOT"
+        )
         _require(
-            row.get("governance_revision") == "R19_MIXED_LOT"
+            row.get("governance_revision") == expected_revision
             and revision_label_ok
             and current_state_label_ok,
             f"requirement {requirement_id} retains stale pre-R19 evidence",
@@ -269,10 +602,22 @@ def _validate_r19_narrative_parity(payload: dict[str, Any], errors: list[str]) -
         field: f"{value:,}" if isinstance(value, int) and not isinstance(value, bool) else str(value)
         for field, value in expected.items()
     }
-    phrases = (
-        f"{formatted['modeled_sale_lots']} immutable sale lots",
+    full_history = payload.get("full_history_governance", {})
+    full_canonical = full_history.get("canonical", {}) if isinstance(full_history, dict) else {}
+    full_mirror = full_history.get("dynamic_mirror", {}) if isinstance(full_history, dict) else {}
+    if full_canonical:
+        full_history_phrases = (
+            f"{int(full_canonical.get('source_identity_count', 0) or 0):,} source identities",
+            f"{int(full_canonical.get('effective_lineage_count', 0) or 0):,} effective lineages",
+            f"{int(full_canonical.get('immutable_sale_lot_count', 0) or 0):,} immutable sale lots",
+            f"across {int(full_mirror.get('dynamic_row_count', 0) or 0):,} dynamic rows",
+        )
+    else:
+        full_history_phrases = (f"{formatted['modeled_sale_lots']} immutable sale lots",)
+    open_row_label = "inner remediation rows" if full_canonical else "rows"
+    phrases = full_history_phrases + (
         (
-            f"{formatted['open_material_rows']} rows totaling "
+            f"{formatted['open_material_rows']} {open_row_label} totaling "
             f"{formatted['remaining_open_quantity_across_material_rows']} shares remain open"
         ),
         f"{formatted['repair_required_missed_path_rows']} missed-path repairs",
@@ -505,12 +850,7 @@ def _validate_sold_marker_recovery_link(
         )
         if state.startswith("REPAIR_REQUIRED"):
             _require(
-                dynamic.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED"
-                and dynamic.get("dynamic_low_exposure_decision") == "REPAIR_REQUIRED"
-                and (
-                    schema_version >= 4
-                    or dynamic.get("dynamic_protection_classification") == "REPAIR_REQUIRED"
-                ),
+                dynamic.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED",
                 f"sold-marker missed path is not retained as REPAIR_REQUIRED for {key}",
                 errors,
             )
@@ -574,6 +914,12 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
     _validate_current_buyback_link(payload, errors, require_clean=True)
     _validate_sold_marker_recovery_link(payload, errors, require_clean=True)
     _validate_r19_narrative_parity(payload, errors)
+    _validate_full_history_governance_link(
+        payload,
+        errors,
+        require_present=True,
+        require_clean=True,
+    )
 
     audit_coverage = payload.get("strategy_audit_coverage", {})
     _require(
@@ -604,13 +950,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
     _validate_sold_marker_strategy_reconciliation(payload, errors, require_clean=True)
 
     strategy = payload.get("strategy_coverage", {})
-    _require(strategy.get("unique_instruments") == 65, "strategy coverage must report 65 instruments", errors)
-    _require(strategy.get("account_position_rows") == 107, "strategy coverage must report 107 account rows", errors)
-    _require(strategy.get("exact_account_scope_complete") is True, "strategy exact scope must be complete", errors)
-    _require(strategy.get("top_level_stop_recovery_rows") == 65, "strategy stop/recovery coverage must report 65 instruments", errors)
-    _require(strategy.get("top_level_review_schedule_rows") == 65, "strategy review schedule coverage must report 65 instruments", errors)
-    _require(strategy.get("account_semantic_rows") == 107, "strategy semantic coverage must report 107 account rows", errors)
-    _require(strategy.get("account_semantic_stop_recovery_rows") == 107, "account stop/recovery coverage must report 107 rows", errors)
+    strategy_instruments, strategy_accounts = _validate_strategy_count_parity(payload, errors)
     _require(strategy.get("generic_recommendation_rows_remaining") == 0, "strategy generic recommendations must be zero", errors)
     _require(
         "0 stop/order error rows" in str(strategy.get("current_drift_or_error_rows", "")),
@@ -619,6 +959,7 @@ def _validate_completed(payload: dict[str, Any]) -> list[str]:
     )
 
     controls = payload.get("portfolio_control_coverage", {})
+    _validate_factor_strategy_parity(payload, errors, strategy_instruments, strategy_accounts)
     for label, control_payload in controls.items():
         if not isinstance(control_payload, dict):
             continue
@@ -811,13 +1152,15 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
     _validate_current_buyback_link(payload, errors, require_clean=False)
     _validate_sold_marker_recovery_link(payload, errors, require_clean=False)
     _validate_r19_narrative_parity(payload, errors)
+    _validate_full_history_governance_link(
+        payload,
+        errors,
+        require_present=False,
+        require_clean=False,
+    )
 
     strategy = payload.get("strategy_coverage", {})
-    _require(strategy.get("artifact") == "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER", "strategy coverage link is missing", errors)
-    _require(strategy.get("unique_instruments") == 65, "strategy coverage must report 65 instruments", errors)
-    _require(strategy.get("account_position_rows") == 107, "strategy coverage must report 107 account rows", errors)
-    _require(strategy.get("exact_account_scope_rows") == 107, "strategy coverage must report 107 exact scopes", errors)
-    _require(strategy.get("exact_account_scope_complete") is True, "strategy exact scope must be complete", errors)
+    strategy_instruments, strategy_accounts = _validate_strategy_count_parity(payload, errors)
     _require(strategy.get("generic_recommendation_rows_remaining") == 0, "strategy generic recommendations must be zero", errors)
     _require(
         "0 stop/order error rows" in str(strategy.get("current_drift_or_error_rows", "")),
@@ -861,10 +1204,7 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
             f"{label} control freshness must remain non-current and refresh-gated",
             errors,
         )
-    factor = controls.get("factor", {})
-    _require(factor.get("artifact") == "PORTFOLIO_FACTOR_EXPOSURE", "factor coverage link is missing", errors)
-    _require(factor.get("instrument_rows") == 65 and factor.get("unique_instruments") == 65, "factor coverage must report 65 instruments", errors)
-    _require(factor.get("account_position_rows") == 107, "factor coverage must report 107 account rows", errors)
+    _validate_factor_strategy_parity(payload, errors, strategy_instruments, strategy_accounts)
     pending = controls.get("pending_order", {})
     _require(pending.get("artifact") == "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION", "pending-order coverage link is missing", errors)
     _require(pending.get("active_rows") == 54 and pending.get("unique_stop_ids") == 54, "pending-order coverage must report 54 unique active rows", errors)
@@ -975,8 +1315,9 @@ def _validate_incomplete(payload: dict[str, Any]) -> list[str]:
         errors,
     )
     _require(
-        transaction.get("historical_account_position_rows") == 107,
-        "transaction coverage must report 107 historical account-position rows",
+        strategy_accounts is not None
+        and transaction.get("historical_account_position_rows") == strategy_accounts,
+        "transaction coverage account-position count must equal the current strategy universe",
         errors,
     )
     transaction_live = transaction.get("status") == "LIVE_SCOPED_REFRESH_RAW_SOURCE_GAP"

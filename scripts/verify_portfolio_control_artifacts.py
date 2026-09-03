@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ DEFAULT_FACTOR = ROOT / "output" / "PORTFOLIO_FACTOR_EXPOSURE_20260731.json"
 DEFAULT_PENDING = ROOT / "output" / "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION_20260731.json"
 DEFAULT_DISPLACEMENT = ROOT / "output" / "PORTFOLIO_CAPITAL_DISPLACEMENT_20260731.json"
 DEFAULT_RISK = ROOT / "output" / "PORTFOLIO_RISK_GOVERNANCE_20260731.json"
+DEFAULT_STRATEGY = ROOT / "output" / "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER_20260731.json"
 EXPECTED_SCOPE = [
     {"tenant_session_id": "personal", "account_id": "5227886"},
     {"tenant_session_id": "darkcell", "account_id": "7616265"},
@@ -22,6 +24,63 @@ EXPECTED_SCOPE = [
 
 def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _identity_digest(values: set[tuple[str, ...]] | set[str]) -> str:
+    encoded = json.dumps(sorted(values), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _strategy_identity_contract(master: dict[str, Any]) -> dict[str, Any]:
+    rows = master.get("instruments", [])
+    names = {str(row.get("instrument") or "").strip() for row in rows}
+    positions = {
+        (
+            str(account.get("tenant_session_id") or ""),
+            str(account.get("account_id") or ""),
+            str(account.get("orderbook_id") or ""),
+        )
+        for row in rows
+        for account in row.get("accounts", [])
+    }
+    return {
+        "schema_version": 1,
+        "instrument_count": len(names),
+        "account_position_count": len(positions),
+        "instrument_name_sha256": _identity_digest(names),
+        "account_position_identity_sha256": _identity_digest(positions),
+    }
+
+
+def _identity_contract_errors(
+    factor: dict[str, Any],
+    *,
+    strategy_master: dict[str, Any] | None,
+) -> list[str]:
+    errors: list[str] = []
+    validation = factor.get("validation", {})
+    contract = validation.get("dynamic_identity_contract")
+    if not isinstance(contract, dict) or contract.get("schema_version") != 1:
+        return ["factor dynamic identity contract is missing or invalid"]
+    rows = factor.get("instrument_postfill", [])
+    names = {
+        str(row.get("instrument") or "").strip()
+        for row in rows
+        if isinstance(row, dict)
+    }
+    if not rows:
+        errors.append("factor dynamic instrument identity set is empty")
+    if contract.get("instrument_count") != len(rows) or len(names) != len(rows):
+        errors.append("factor dynamic instrument identity count mismatch")
+    if contract.get("instrument_name_sha256") != _identity_digest(names):
+        errors.append("factor dynamic instrument identity digest mismatch")
+    if validation.get("unique_instruments") != len(rows):
+        errors.append("factor validation instrument count does not match its identities")
+    if validation.get("account_position_rows") != contract.get("account_position_count"):
+        errors.append("factor validation account-row count does not match its identity contract")
+    if strategy_master is not None and contract != _strategy_identity_contract(strategy_master):
+        errors.append("factor dynamic identity contract does not match the strategy master")
+    return errors
 
 
 def _read_only(payload: dict[str, Any], label: str, errors: list[str]) -> None:
@@ -47,6 +106,7 @@ def validate(
     pending: dict[str, Any],
     displacement: dict[str, Any],
     risk: dict[str, Any],
+    strategy_master: dict[str, Any] | None = None,
 ) -> list[str]:
     errors: list[str] = []
 
@@ -70,12 +130,7 @@ def validate(
         _analysis_snapshot(payload, label, errors)
     if factor.get("current_governance_overlay", {}).get("supersedes_dynamic_factor_values") is not True:
         errors.append("factor artifact does not declare its current overlay authoritative")
-    if len(factor.get("instrument_postfill", [])) != 65:
-        errors.append("factor artifact must contain 65 instrument rows")
-    if factor.get("validation", {}).get("unique_instruments") != 65:
-        errors.append("factor validation instrument count is not 65")
-    if factor.get("validation", {}).get("account_position_rows") != 107:
-        errors.append("factor validation account-row count is not 107")
+    errors.extend(_identity_contract_errors(factor, strategy_master=strategy_master))
     limits = latest_factor.get("limits", {})
     checks = (
         ("Personal 5227886", "AI_SEMI_DATACENTER", "combined_AI_SEMI_DATACENTER_soft_cap_percent", "Personal AI/semi/data-center"),
@@ -137,8 +192,15 @@ def main() -> int:
     parser.add_argument("--pending", type=Path, default=DEFAULT_PENDING)
     parser.add_argument("--displacement", type=Path, default=DEFAULT_DISPLACEMENT)
     parser.add_argument("--risk", type=Path, default=DEFAULT_RISK)
+    parser.add_argument("--strategy-master", type=Path, default=DEFAULT_STRATEGY)
     args = parser.parse_args()
-    errors = validate(_read(args.factor), _read(args.pending), _read(args.displacement), _read(args.risk))
+    errors = validate(
+        _read(args.factor),
+        _read(args.pending),
+        _read(args.displacement),
+        _read(args.risk),
+        _read(args.strategy_master),
+    )
     if errors:
         for error in errors:
             print(f"[portfolio-controls] FAIL: {error}")

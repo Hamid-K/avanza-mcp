@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Replaced fixed strategy-universe completion checks with row-derived
+  instrument and exact account-position identity contracts, including digest
+  parity across strategy, objective, factor, portfolio-control, and transaction
+  evidence.
+- Added an ignored full-history canonical and dynamic governance mirror that
+  preserve every source identity, effective lineage, immutable sale lot,
+  recovery allocation, terminal closure, official-close state, and current raw
+  boundary. Completion now fails closed on omissions, duplicated or mutated
+  sources, allocation drift, stale terminal evidence, or unresolved repairs.
+- Tightened sold-slice recovery attribution so strategy metadata dates cannot
+  credit an unrelated older sale, and added exact post-split corporate-action
+  quantity normalization without changing immutable broker history.
+- Added append-only, canonical-hash-bound timing annotations for preserving
+  specific historical failed streak attempts without rewriting review records
+  or manufacturing eligibility. All R390 controls remain review-only and grant
+  no broker or paper mutation authority.
+
 ## 0.2.42 - 2026-08-28
 
 - Refresh the requirement-level live-reconciliation checkpoint from the exact

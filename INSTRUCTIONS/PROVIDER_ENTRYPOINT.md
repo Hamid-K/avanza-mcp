@@ -103,6 +103,9 @@ substituting its template.
 - Run the repository verification described in `docs/development.md` before a
   commit or handoff, and record any tests that could not be run.
 - The verification suite includes read-only structural validation of the
-  65-instrument/107-position strategy master, the buy-back freshness contract,
-  authoritative portfolio-control overlays, and the objective-completion audit;
-  none authorizes broker or paper actions or claims goal completion.
+  strategy master's row-derived identity contract, the full-history
+  source/lineage/sale-lot canonical and dynamic mirror, the buy-back freshness
+  contract, authoritative portfolio-control overlays, and the
+  objective-completion audit. No fixed historical universe count is authority;
+  none of these artifacts authorizes broker or paper actions or claims goal
+  completion.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,33 @@ EXPECTED_SCOPE = {
     "Personal": {"tenant_session_id": "personal", "account_id": "5227886"},
     "DarkCell": {"tenant_session_id": "darkcell", "account_id": "7616265"},
 }
+
+
+def _identity_digest(values: set[tuple[str, ...]] | set[str]) -> str:
+    encoded = json.dumps(sorted(values), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _objective_identities(
+    objective_audit: dict[str, Any],
+) -> tuple[set[str], set[tuple[str, str, str]]]:
+    instruments: set[str] = set()
+    positions: set[tuple[str, str, str]] = set()
+    for row in objective_audit.get("instruments", []):
+        identity = str(row.get("key") or row.get("ticker") or "").strip()
+        if identity:
+            instruments.add(identity)
+        exposure = row.get("intended_exposure")
+        accounts = exposure.get("accounts", []) if isinstance(exposure, dict) else []
+        for account in accounts if isinstance(accounts, list) else []:
+            positions.add(
+                (
+                    str(account.get("tenant_session_id") or ""),
+                    str(account.get("account_id") or ""),
+                    str(account.get("orderbook_id") or ""),
+                )
+            )
+    return instruments, positions
 
 
 def portfolio_role_for(instrument: dict[str, Any]) -> str:
@@ -64,6 +92,7 @@ def enrich(master: dict[str, Any], objective_audit: dict[str, Any] | None = None
         raise ValueError("strategy master instruments must be a list")
 
     seen: set[tuple[str, str, str]] = set()
+    instrument_identities: set[str] = set()
     account_rows = 0
     source_rows = {
         str(row.get("key") or row.get("ticker") or ""): row
@@ -71,6 +100,9 @@ def enrich(master: dict[str, Any], objective_audit: dict[str, Any] | None = None
     }
     for instrument in instruments:
         key = str(instrument.get("key") or instrument.get("ticker") or "")
+        if not key or key in instrument_identities:
+            raise ValueError(f"missing or duplicate instrument identity {key!r}")
+        instrument_identities.add(key)
         role = portfolio_role_for(instrument)
         instrument["portfolio_role"] = role
         source = source_rows.get(key, {})
@@ -126,9 +158,26 @@ def enrich(master: dict[str, Any], objective_audit: dict[str, Any] | None = None
         {"tenant_session_id": "darkcell", "account_id": "7616265"},
     ]
     validation = dict(master.get("validation") or {})
+    validation["unique_instruments"] = len(instrument_identities)
+    validation["account_position_rows"] = account_rows
     validation["exact_account_scope"] = master["scope"]
     validation["exact_account_scope_rows"] = account_rows
-    validation["exact_account_scope_complete"] = account_rows == 107
+    validation["exact_account_scope_complete"] = len(seen) == account_rows
+    identity_contract = {
+        "schema_version": 1,
+        "instrument_count": len(instrument_identities),
+        "account_position_count": len(seen),
+        "instrument_identity_sha256": _identity_digest(instrument_identities),
+        "account_position_identity_sha256": _identity_digest(seen),
+    }
+    if objective_audit is not None:
+        objective_instruments, objective_positions = _objective_identities(objective_audit)
+        if objective_instruments != instrument_identities:
+            raise ValueError("objective audit instrument identities do not match strategy master")
+        if objective_positions != seen:
+            raise ValueError("objective audit account-position identities do not match strategy master")
+        identity_contract["objective_audit_identity_parity"] = True
+    validation["dynamic_identity_contract"] = identity_contract
     master["validation"] = validation
     return master
 

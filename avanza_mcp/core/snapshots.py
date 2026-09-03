@@ -115,15 +115,49 @@ def sold_slice_recovery_stop_attribution(
         return False, "STRATEGY_INTENT_NOT_SOLD_SLICE_RECOVERY"
 
     target_token = target_date.isoformat()
-    reason = str(row.get("strategy_reason") or "")
-    if target_token in reason:
-        return True, "RECOVERY_REASON_NAMES_TRADE_DATE"
+    reason = re.sub(r"\s+", " ", str(row.get("strategy_reason") or "")).strip()
+    reason_lower = reason.lower()
 
-    recorded_at = str(row.get("strategy_recorded_at") or "")
-    updated_at = str(row.get("strategy_updated_at") or "")
-    if recorded_at.startswith(target_token) or updated_at.startswith(target_token):
-        return True, "RECOVERY_METADATA_RECORDED_ON_TRADE_DATE"
-    return False, "RECOVERY_METADATA_PREDATES_OR_DOES_NOT_NAME_TRADE_DATE"
+    attributed_only_dates = set(
+        re.findall(
+            r"attribut(?:e|ed)\s+only\s+to(?:\s+the)?(?:\s+exact)?\s+"
+            r"(\d{4}-\d{2}-\d{2})",
+            reason_lower,
+        )
+    )
+    later_sale_denied = bool(
+        re.search(
+            r"(?:no|zero)\s+(?:recovery\s+)?(?:credit|attribution)\s+for\s+"
+            r"(?:any|all|every)\s+(?:newer|later|future)\s+sale",
+            reason_lower,
+        )
+    )
+    if (attributed_only_dates and target_token not in attributed_only_dates) or (
+        later_sale_denied and target_token not in reason_lower
+    ):
+        return False, "RECOVERY_REASON_EXPLICITLY_DENIES_TRADE_DATE"
+
+    target_specific_denial = any(
+        re.search(
+            rf"(?:this|current)\s+(?:buy\s+)?(?:stop|row).*?"
+            rf"(?:no|zero|not|does\s+not).*?(?:credit|attribut).*?{re.escape(target_token)}"
+            rf"|(?:no|zero)\s+(?:recovery\s+)?(?:credit|attribution).*?"
+            rf"{re.escape(target_token)}\s+(?:sold\s+slice|sale\s+lot)",
+            clause,
+        )
+        for clause in re.split(r"[.;]", reason_lower)
+        if target_token in clause
+    )
+    if target_specific_denial:
+        return False, "RECOVERY_REASON_EXPLICITLY_DENIES_TRADE_DATE"
+
+    positive_patterns = (
+        rf"{re.escape(target_token)}[^.;]{{0,120}}(?:sold[- ]slice|sale\s+lot)",
+        rf"(?:sold[- ]slice|sale\s+lot)[^.;]{{0,120}}{re.escape(target_token)}",
+    )
+    if any(re.search(pattern, reason_lower) for pattern in positive_patterns):
+        return True, "RECOVERY_REASON_NAMES_EXACT_SOLD_SLICE"
+    return False, "RECOVERY_REASON_DOES_NOT_NAME_EXACT_SOLD_SLICE"
 
 
 def tradingview_exchange_from_market(market: Any) -> str:

@@ -1,5 +1,9 @@
 from scripts.enrich_instrument_strategy_scope import enrich
-from scripts.verify_instrument_strategy_master import validate, validate_objective_audit
+from scripts.verify_instrument_strategy_master import (
+    validate,
+    validate_identity_parity,
+    validate_objective_audit,
+)
 
 
 def _plan(ticker: str) -> dict[str, str]:
@@ -161,5 +165,35 @@ def test_objective_audit_rejects_missing_required_field():
     }
 
     errors = validate_objective_audit(audit)
-    assert any("expected 65 instruments" in error for error in errors)
-    assert any("expected 107 intended-exposure rows" in error for error in errors)
+    assert any("embedded instrument count" in error for error in errors)
+    assert any("embedded account-row count" in error for error in errors)
+
+
+def test_dynamic_identity_parity_does_not_depend_on_historical_counts():
+    master = _complete_master()
+    master["instruments"] = master["instruments"][:2]
+    master["validation"].update(
+        {
+            "unique_instruments": 2,
+            "account_position_rows": 4,
+            "exact_account_scope_rows": 4,
+        }
+    )
+    enriched = enrich(master)
+    audit = {
+        "instruments": [
+            {
+                "key": row["ticker"],
+                "intended_exposure": {
+                    "accounts": row["intended_exposure"]["accounts"],
+                },
+            }
+            for row in enriched["instruments"]
+        ]
+    }
+
+    assert validate(enriched) == []
+    assert validate_identity_parity(enriched, audit) == []
+
+    audit["instruments"][0]["intended_exposure"]["accounts"][0]["orderbook_id"] = "omitted"
+    assert any("account-position identities" in error for error in validate_identity_parity(enriched, audit))

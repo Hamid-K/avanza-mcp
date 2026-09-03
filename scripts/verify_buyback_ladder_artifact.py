@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import argparse
+import hashlib
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +29,14 @@ SOLD_MARKER_REMEDIATION_GLOB = "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.js
 SOLD_MARKER_FULL_PATH_GLOB = "PORTFOLIO_SOLD_MARKER_FULL_PATH_AUDIT_[0-9]*.json"
 R17_MIGRATION_WORKLIST_GLOB = "PORTFOLIO_R17_MULTI_SALE_MIGRATION_WORKLIST_[0-9]*.json"
 R17_OPEN_PATH_EVIDENCE_GLOB = "PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_[0-9]*.json"
+FULL_HISTORY_CANONICAL_GLOB = "PORTFOLIO_FULL_HISTORY_CANONICAL_[0-9]*.json"
+FULL_DYNAMIC_GOVERNANCE_MIRROR_GLOB = (
+    "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_[0-9]*.json"
+)
+OFFICIAL_CLOSE_REACHABILITY_GLOB = (
+    "PORTFOLIO_R*_OFFICIAL_CLOSE_REACHABILITY_[0-9]*.json"
+)
+CURRENT_RAW_BOUNDARY_GLOB = "PORTFOLIO_R*_FULL_RAW_BOUNDARY_*.json"
 
 DYNAMIC_BUYBACK_STATES = {
     "LADDER_ACTIVE",
@@ -48,7 +59,29 @@ EXPECTED_DYNAMIC_SCOPES = {
     ("darkcell", "7616265"),
 }
 NO_REENTRY_MAX_VALIDITY = timedelta(days=14)
+SMALL_HOLD_MAX_REGULAR_SESSIONS = 5
+SMALL_HOLD_CALENDAR_BASIS = "CONSERVATIVE_WEEKDAY_CEILING"
+SMALL_HOLD_REVALIDATION_STATUSES = {"CURRENT", "EXPIRED", "MISSING", "INVALID"}
+STOCKHOLM = ZoneInfo("Europe/Stockholm")
 PATH_CONTEXT_FIELD = "instrument_specific_path_context"
+PATH_RECONCILIATION_MARKER = " Complete authenticated path evidence records a maximum "
+
+
+def _expected_path_reconciled_reason(context: dict[str, Any], *, named: bool) -> str:
+    maximum = context.get("maximum_open_lot_drop_percent")
+    maximum_text = (
+        f"{float(maximum):.2f}%"
+        if isinstance(maximum, (int, float)) and not isinstance(maximum, bool)
+        else "an authenticated amount"
+    )
+    result = (
+        f"{str(context.get('coverage_reason') or '').strip()}"
+        f"{PATH_RECONCILIATION_MARKER}{maximum_text} drop below the applicable sold markers "
+        "and an unserved 8% review-alarm crossing. A later rebound does not erase that crossing."
+    )
+    if named:
+        result += " The named-instrument restrictions remain binding."
+    return result
 
 
 def _require(condition: bool, message: str, errors: list[str]) -> None:
@@ -91,6 +124,751 @@ def latest_r17_open_path_evidence_path() -> Path | None:
     return paths[-1] if paths else None
 
 
+def _latest_output_path(pattern: str) -> Path | None:
+    paths = sorted((ROOT / "output").glob(pattern))
+    return paths[-1] if paths else None
+
+
+def latest_full_history_canonical_path() -> Path | None:
+    return _latest_output_path(FULL_HISTORY_CANONICAL_GLOB)
+
+
+def latest_full_dynamic_governance_mirror_path() -> Path | None:
+    return _latest_output_path(FULL_DYNAMIC_GOVERNANCE_MIRROR_GLOB)
+
+
+def latest_official_close_reachability_path() -> Path | None:
+    return _latest_output_path(OFFICIAL_CLOSE_REACHABILITY_GLOB)
+
+
+def latest_current_raw_boundary_path() -> Path | None:
+    return _latest_output_path(CURRENT_RAW_BOUNDARY_GLOB)
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _exact_decimal(value: Any) -> Decimal | None:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def validate_full_history_canonical(
+    payload: dict[str, Any],
+    raw_boundary_payload: dict[str, Any] | None = None,
+) -> list[str]:
+    """Validate every source, lineage, lot, and recovery source independently."""
+
+    errors: list[str] = []
+    _require(
+        payload.get("artifact") == "PORTFOLIO_FULL_HISTORY_CANONICAL",
+        "full-history canonical artifact id missing",
+        errors,
+    )
+    _require(
+        payload.get("schema_version") == 2,
+        "full-history canonical schema version must be 2",
+        errors,
+    )
+    authority = payload.get("authority", {})
+    _require(authority.get("trade_authority") is False, "full-history trade authority must be false", errors)
+    _require(authority.get("broker_mutation") is False, "full-history broker mutation must be false", errors)
+    _require(authority.get("paper_mutation") is False, "full-history paper mutation must be false", errors)
+    _require(_artifact_time(payload.get("generated_at")) is not None, "full-history generated_at is invalid", errors)
+
+    array_names = (
+        "source_identity_to_lineage_map",
+        "effective_lineages",
+        "immutable_sale_lots",
+        "buy_sources",
+        "qualifying_fill_allocations",
+        "active_recovery_sources",
+        "active_recovery_allocations",
+        "terminal_closures",
+        "dynamic_mirror_projection",
+    )
+    arrays: dict[str, list[dict[str, Any]]] = {}
+    for name in array_names:
+        value = payload.get(name)
+        _require(isinstance(value, list), f"full-history {name} must be a list", errors)
+        arrays[name] = [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+        if isinstance(value, list):
+            _require(
+                len(arrays[name]) == len(value),
+                f"full-history {name} contains a non-object row",
+                errors,
+            )
+
+    mappings = arrays["source_identity_to_lineage_map"]
+    lineages = arrays["effective_lineages"]
+    lots = arrays["immutable_sale_lots"]
+    buy_sources = arrays["buy_sources"]
+    fill_allocations = arrays["qualifying_fill_allocations"]
+    active_sources = arrays["active_recovery_sources"]
+    active_allocations = arrays["active_recovery_allocations"]
+    terminal_closures = arrays["terminal_closures"]
+
+    source_ids = [str(row.get("source_identity_id") or "") for row in mappings]
+    lineage_ids = [str(row.get("effective_lineage_id") or "") for row in lineages]
+    lot_ids = [str(row.get("sale_lot_id") or "") for row in lots]
+    sale_transaction_ids = [str(row.get("sale_transaction_id") or "") for row in lots]
+    _require(all(source_ids), "full-history source identity id is missing", errors)
+    _require(len(source_ids) == len(set(source_ids)), "full-history source identity id is duplicated", errors)
+    _require(all(lineage_ids), "full-history lineage id is missing", errors)
+    _require(len(lineage_ids) == len(set(lineage_ids)), "full-history lineage id is duplicated", errors)
+    _require(all(lot_ids), "full-history sale lot id is missing", errors)
+    _require(len(lot_ids) == len(set(lot_ids)), "full-history sale lot id is duplicated", errors)
+    _require(all(sale_transaction_ids), "full-history sale transaction id is missing", errors)
+    _require(
+        len(sale_transaction_ids) == len(set(sale_transaction_ids)),
+        "full-history sale transaction id is duplicated",
+        errors,
+    )
+
+    mapping_by_source = {str(row.get("source_identity_id") or ""): row for row in mappings}
+    lineage_by_id = {str(row.get("effective_lineage_id") or ""): row for row in lineages}
+    lot_by_id = {str(row.get("sale_lot_id") or ""): row for row in lots}
+    for source_id, mapping in mapping_by_source.items():
+        target = str(mapping.get("effective_lineage_id") or "")
+        _require(target in lineage_by_id, f"full-history source {source_id} maps to an unknown lineage", errors)
+
+    for lineage_id, lineage in lineage_by_id.items():
+        expected_sources = [
+            str(row.get("source_identity_id") or "")
+            for row in mappings
+            if str(row.get("effective_lineage_id") or "") == lineage_id
+        ]
+        expected_lots = [
+            str(row.get("sale_lot_id") or "")
+            for row in lots
+            if str(row.get("effective_lineage_id") or "") == lineage_id
+        ]
+        _require(
+            lineage.get("source_identity_ids") == expected_sources,
+            f"full-history lineage source order or membership mismatch for {lineage_id}",
+            errors,
+        )
+        _require(
+            lineage.get("sale_lot_ids") == expected_lots,
+            f"full-history lineage lot order or membership mismatch for {lineage_id}",
+            errors,
+        )
+
+    fill_by_lot: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    fill_by_source: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    fill_ids: list[str] = []
+    for allocation in fill_allocations:
+        allocation_id = str(allocation.get("allocation_id") or "")
+        source_id = str(allocation.get("buy_transaction_id") or "")
+        lot_id = str(allocation.get("sale_lot_id") or "")
+        quantity = _exact_decimal(allocation.get("quantity_exact"))
+        fill_ids.append(allocation_id)
+        _require(bool(allocation_id), "full-history fill allocation id is missing", errors)
+        _require(quantity is not None and quantity > 0, f"full-history fill allocation quantity is invalid for {allocation_id}", errors)
+        _require(lot_id in lot_by_id, f"full-history fill allocation lot is unknown for {allocation_id}", errors)
+        if quantity is not None:
+            fill_by_lot[lot_id] += quantity
+            fill_by_source[source_id] += quantity
+        if lot_id in lot_by_id:
+            _require(
+                allocation.get("effective_lineage_id") == lot_by_id[lot_id].get("effective_lineage_id"),
+                f"full-history fill allocation lineage mismatch for {allocation_id}",
+                errors,
+            )
+    _require(len(fill_ids) == len(set(fill_ids)), "full-history fill allocation id is duplicated", errors)
+
+    buy_source_ids = [str(row.get("buy_transaction_id") or "") for row in buy_sources]
+    _require(all(buy_source_ids), "full-history buy source id is missing", errors)
+    _require(len(buy_source_ids) == len(set(buy_source_ids)), "full-history buy source id is duplicated", errors)
+    buy_source_by_id = {str(row.get("buy_transaction_id") or ""): row for row in buy_sources}
+    for source_id, source in buy_source_by_id.items():
+        source_quantity = _exact_decimal(source.get("source_quantity_exact"))
+        allocated = _exact_decimal(source.get("allocated_recovery_quantity_exact"))
+        non_recovery = _exact_decimal(source.get("non_recovery_quantity_exact"))
+        unattributed = _exact_decimal(source.get("unattributed_quantity_exact"))
+        _require(
+            None not in (source_quantity, allocated, non_recovery, unattributed)
+            and source_quantity == allocated + non_recovery + unattributed,
+            f"full-history buy source quantity parity failed for {source_id}",
+            errors,
+        )
+        _require(
+            allocated == fill_by_source[source_id],
+            f"full-history buy source allocation parity failed for {source_id}",
+            errors,
+        )
+        _require(
+            str(source.get("effective_lineage_id") or "") in lineage_by_id,
+            f"full-history buy source lineage is unknown for {source_id}",
+            errors,
+        )
+    for source_id in fill_by_source:
+        _require(source_id in buy_source_by_id, f"full-history fill source is missing for {source_id}", errors)
+
+    active_by_lot: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    active_by_source: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    active_allocation_ids: list[str] = []
+    for allocation in active_allocations:
+        allocation_id = str(allocation.get("allocation_id") or "")
+        source_id = str(allocation.get("active_recovery_source_id") or "")
+        lot_id = str(allocation.get("sale_lot_id") or "")
+        quantity = _exact_decimal(allocation.get("quantity_exact"))
+        active_allocation_ids.append(allocation_id)
+        _require(bool(allocation_id), "full-history active allocation id is missing", errors)
+        _require(quantity is not None and quantity > 0, f"full-history active allocation quantity is invalid for {allocation_id}", errors)
+        _require(lot_id in lot_by_id, f"full-history active allocation lot is unknown for {allocation_id}", errors)
+        if quantity is not None:
+            active_by_lot[lot_id] += quantity
+            active_by_source[source_id] += quantity
+        if lot_id in lot_by_id:
+            _require(
+                allocation.get("effective_lineage_id") == lot_by_id[lot_id].get("effective_lineage_id"),
+                f"full-history active allocation lineage mismatch for {allocation_id}",
+                errors,
+            )
+    _require(
+        len(active_allocation_ids) == len(set(active_allocation_ids)),
+        "full-history active allocation id is duplicated",
+        errors,
+    )
+    active_source_ids = [str(row.get("active_recovery_source_id") or "") for row in active_sources]
+    _require(all(active_source_ids), "full-history active source id is missing", errors)
+    _require(len(active_source_ids) == len(set(active_source_ids)), "full-history active source id is duplicated", errors)
+    _require(
+        not set(active_source_ids).intersection(buy_source_ids),
+        "full-history one source is classified as both filled and active",
+        errors,
+    )
+    active_source_by_id = {
+        str(row.get("active_recovery_source_id") or ""): row for row in active_sources
+    }
+    for source_id, source in active_source_by_id.items():
+        source_quantity = _exact_decimal(source.get("source_quantity_exact"))
+        allocated = _exact_decimal(source.get("allocated_recovery_quantity_exact"))
+        unattributed = _exact_decimal(source.get("unattributed_quantity_exact"))
+        _require(
+            None not in (source_quantity, allocated, unattributed)
+            and source_quantity == allocated + unattributed,
+            f"full-history active source quantity parity failed for {source_id}",
+            errors,
+        )
+        _require(
+            allocated == active_by_source[source_id],
+            f"full-history active source allocation parity failed for {source_id}",
+            errors,
+        )
+        _require(
+            str(source.get("effective_lineage_id") or "") in lineage_by_id,
+            f"full-history active source lineage is unknown for {source_id}",
+            errors,
+        )
+    for source_id in active_by_source:
+        _require(source_id in active_source_by_id, f"full-history active source is missing for {source_id}", errors)
+
+    closure_by_lot: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    closure_ids: list[str] = []
+    generated_at = _artifact_time(payload.get("generated_at"))
+    for closure in terminal_closures:
+        closure_id = str(closure.get("closure_id") or "")
+        lot_id = str(closure.get("sale_lot_id") or "")
+        quantity = _exact_decimal(
+            closure.get(
+                "canonical_terminal_closure_antal_exact",
+                closure.get(
+                    "post_split_equivalent_terminal_closure_antal_exact",
+                    closure.get("terminal_closure_antal_exact"),
+                ),
+            )
+        )
+        closure_ids.append(closure_id)
+        _require(bool(closure_id), "full-history terminal closure id is missing", errors)
+        _require(lot_id in lot_by_id, f"full-history terminal closure lot is unknown for {closure_id}", errors)
+        _require(quantity is not None and quantity > 0, f"full-history terminal closure quantity is invalid for {closure_id}", errors)
+        if quantity is not None:
+            closure_by_lot[lot_id] += quantity
+        if lot_id in lot_by_id:
+            _require(
+                closure.get("sale_transaction_id") == lot_by_id[lot_id].get("sale_transaction_id"),
+                f"full-history terminal closure transaction mismatch for {closure_id}",
+                errors,
+            )
+        if closure.get("selected_outcome") == "NON_STOP_ELIGIBLE":
+            classification_time = _artifact_time(closure.get("classification_time"))
+            _require(
+                closure.get("verified_non_stop_eligible") is True
+                and classification_time is not None
+                and bool(str(closure.get("non_stop_basis") or "").strip())
+                and isinstance(closure.get("availability_evidence"), dict),
+                f"full-history non-stop closure evidence is invalid for {closure_id}",
+                errors,
+            )
+            if generated_at is not None and classification_time is not None:
+                try:
+                    current = (
+                        generated_at >= classification_time
+                        and generated_at - classification_time
+                        <= NO_REENTRY_MAX_VALIDITY
+                    )
+                except TypeError:
+                    current = False
+                _require(
+                    current,
+                    f"full-history non-stop closure evidence is stale for {closure_id}",
+                    errors,
+                )
+        else:
+            decision_time = _artifact_time(closure.get("decision_time"))
+            expires_at = _artifact_time(closure.get("expires_at"))
+            _require(
+                decision_time is not None
+                and expires_at is not None
+                and expires_at > decision_time
+                and expires_at - decision_time <= NO_REENTRY_MAX_VALIDITY,
+                f"full-history terminal closure validity is invalid for {closure_id}",
+                errors,
+            )
+            if generated_at is not None and expires_at is not None:
+                try:
+                    current = expires_at > generated_at
+                except TypeError:
+                    current = False
+                _require(
+                    current,
+                    f"full-history terminal closure is expired for {closure_id}",
+                    errors,
+                )
+        _require(
+            closure.get("contradiction_status") == "NONE",
+            f"full-history terminal closure is contradicted for {closure_id}",
+            errors,
+        )
+    _require(len(closure_ids) == len(set(closure_ids)), "full-history terminal closure id is duplicated", errors)
+
+    for lot_id, lot in lot_by_id.items():
+        raw = _exact_decimal(lot.get("raw_sold_quantity_exact"))
+        factor = _exact_decimal(lot.get("quantity_normalization_factor_exact"))
+        normalized = _exact_decimal(lot.get("normalized_sold_quantity_exact"))
+        filled = _exact_decimal(lot.get("qualifying_filled_quantity_exact"))
+        active = _exact_decimal(lot.get("active_recovery_quantity_exact"))
+        terminal = _exact_decimal(lot.get("terminal_closure_quantity_exact"))
+        remaining = _exact_decimal(lot.get("remaining_open_quantity_exact"))
+        _require(_artifact_time(lot.get("sale_timestamp")) is not None, f"full-history sale timestamp is invalid for {lot_id}", errors)
+        _require(
+            None not in (raw, factor, normalized, filled, active, terminal, remaining)
+            and raw > 0
+            and factor > 0
+            and normalized == raw * factor,
+            f"full-history lot normalization parity failed for {lot_id}",
+            errors,
+        )
+        _require(
+            None not in (normalized, filled, active, terminal, remaining)
+            and normalized == filled + active + terminal + remaining,
+            f"full-history lot quantity parity failed for {lot_id}",
+            errors,
+        )
+        _require(filled == fill_by_lot[lot_id], f"full-history lot fill allocation mismatch for {lot_id}", errors)
+        _require(active == active_by_lot[lot_id], f"full-history lot active allocation mismatch for {lot_id}", errors)
+        _require(terminal == closure_by_lot[lot_id], f"full-history lot terminal closure mismatch for {lot_id}", errors)
+        _require(
+            lot.get("terminal_closure_ids")
+            == [
+                str(row.get("closure_id") or "")
+                for row in terminal_closures
+                if str(row.get("sale_lot_id") or "") == lot_id
+            ],
+            f"full-history lot terminal closure membership mismatch for {lot_id}",
+            errors,
+        )
+        source = mapping_by_source.get(str(lot.get("source_identity_id") or ""))
+        _require(source is not None, f"full-history lot source identity is unknown for {lot_id}", errors)
+        if source is not None:
+            _require(
+                lot.get("effective_lineage_id") == source.get("effective_lineage_id"),
+                f"full-history lot lineage conflicts with source mapping for {lot_id}",
+                errors,
+            )
+        _require(_exact_decimal(lot.get("parity_delta_exact")) == 0, f"full-history lot parity delta is nonzero for {lot_id}", errors)
+
+    boundary = payload.get("raw_boundary", {})
+    observed_counts = {
+        "source_identity_count": len(source_ids),
+        "effective_lineage_count": len(lineage_ids),
+        "immutable_sale_lot_count": len(lot_ids),
+        "unique_sale_transaction_id_count": len(set(sale_transaction_ids)),
+        "duplicate_sale_transaction_id_count": len(sale_transaction_ids) - len(set(sale_transaction_ids)),
+        "missing_sale_transaction_id_count": sum(not value for value in sale_transaction_ids),
+    }
+    for field, expected in observed_counts.items():
+        _require(boundary.get(field) == expected, f"full-history raw boundary {field} mismatch", errors)
+    _require(boundary.get("truncation_risk") is False, "full-history raw boundary has truncation risk", errors)
+    digest_values = {
+        "source_identity_set_sha256": sorted(source_ids),
+        "source_identity_to_lineage_map_sha256": mappings,
+        "effective_lineage_set_sha256": sorted(lineage_ids),
+        "effective_lineage_content_sha256": lineages,
+        "sale_transaction_id_set_sha256": sorted(sale_transaction_ids),
+        "sale_lot_id_set_sha256": sorted(lot_ids),
+        "immutable_sale_lot_content_sha256": lots,
+        "allocation_content_sha256": fill_allocations,
+        "active_recovery_source_content_sha256": active_sources,
+        "active_recovery_allocation_content_sha256": active_allocations,
+        "terminal_closure_content_sha256": terminal_closures,
+    }
+    for field, value in digest_values.items():
+        _require(
+            boundary.get(field) == _canonical_json_sha256(value),
+            f"full-history raw boundary {field} mismatch",
+            errors,
+        )
+    _require(
+        boundary.get("live_raw_vs_canonical_sale_transaction_id_set_parity") is True,
+        "full-history live raw transaction parity is not true",
+        errors,
+    )
+
+    if raw_boundary_payload is not None:
+        _require(
+            raw_boundary_payload.get("artifact")
+            == "PORTFOLIO_R386_FULL_RAW_BOUNDARY_AFTER_ETH_SETTLEMENT",
+            "current raw-boundary artifact id is invalid",
+            errors,
+        )
+        current = raw_boundary_payload.get("current_boundary", {})
+        expected_current = {
+            "source_identity_count": current.get("source_identity_count"),
+            "effective_lineage_count": current.get(
+                "effective_lineage_count_from_unchanged_corporate_action_map"
+            ),
+            "immutable_sale_lot_count": current.get("immutable_sale_lot_count"),
+            "unique_sale_transaction_id_count": current.get("unique_sale_transaction_id_count"),
+            "duplicate_sale_transaction_id_count": current.get("duplicate_sale_transaction_id_count"),
+            "missing_sale_transaction_id_count": current.get("missing_sale_transaction_id_count"),
+        }
+        _require(observed_counts == expected_current, "full-history canonical does not match current raw boundary", errors)
+        _require(current.get("truncation_risk") is False, "current raw boundary has truncation risk", errors)
+        new_transactions = raw_boundary_payload.get("parity", {}).get("new_sale_transaction_ids", [])
+        for transaction_id in new_transactions if isinstance(new_transactions, list) else []:
+            _require(
+                sale_transaction_ids.count(str(transaction_id)) == 1,
+                f"current raw-boundary transaction is not inserted exactly once: {transaction_id}",
+                errors,
+            )
+        _require(
+            raw_boundary_payload.get("parity", {}).get("prior_sale_transaction_id_omissions") == [],
+            "current raw boundary reports prior transaction omissions",
+            errors,
+        )
+    return errors
+
+
+def validate_full_dynamic_governance_mirror(
+    mirror: dict[str, Any],
+    canonical: dict[str, Any],
+    official_close: dict[str, Any],
+) -> list[str]:
+    """Validate complete dynamic identity parity and close-path preservation."""
+
+    errors: list[str] = []
+    _require(
+        mirror.get("artifact") == "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR",
+        "full dynamic mirror artifact id missing",
+        errors,
+    )
+    _require(mirror.get("schema_version") == 2, "full dynamic mirror schema version must be 2", errors)
+    authority = mirror.get("authority", {})
+    _require(authority.get("authoritative_dynamic_ledger") is True, "full dynamic mirror is not authoritative", errors)
+    _require(authority.get("trade_authority") is False, "full dynamic mirror trade authority must be false", errors)
+    _require(authority.get("broker_mutation") is False, "full dynamic mirror broker mutation must be false", errors)
+    _require(mirror.get("objective_complete") is False, "full dynamic mirror cannot claim objective completion", errors)
+
+    canonical_errors = validate_full_history_canonical(canonical)
+    errors.extend(f"canonical link: {error}" for error in canonical_errors)
+    canonical_contract = mirror.get("canonical_contract", {})
+    _require(
+        canonical_contract.get("payload_sha256") == _canonical_json_sha256(canonical),
+        "full dynamic mirror canonical payload hash mismatch",
+        errors,
+    )
+    official_contract = mirror.get("official_close_contract", {})
+    _require(
+        official_contract.get("payload_sha256") == _canonical_json_sha256(official_close),
+        "full dynamic mirror official-close payload hash mismatch",
+        errors,
+    )
+    _require(
+        official_contract.get("later_rebound_erases_crossing") is False,
+        "full dynamic mirror permits a rebound to erase a crossing",
+        errors,
+    )
+
+    rows_value = mirror.get("rows")
+    _require(isinstance(rows_value, list), "full dynamic mirror rows must be a list", errors)
+    rows = [row for row in rows_value if isinstance(row, dict)] if isinstance(rows_value, list) else []
+    if isinstance(rows_value, list):
+        _require(len(rows) == len(rows_value), "full dynamic mirror contains a non-object row", errors)
+    row_keys = [
+        (
+            str(row.get("tenant_session_id") or ""),
+            str(row.get("account_id") or ""),
+            str(row.get("orderbook_id") or ""),
+        )
+        for row in rows
+    ]
+    row_ids = [str(row.get("r390_dynamic_row_id") or "") for row in rows]
+    _require(all(row_ids), "full dynamic mirror row id is missing", errors)
+    _require(
+        len(row_ids) == len(set(row_ids)),
+        "full dynamic mirror row id is duplicated",
+        errors,
+    )
+
+    lineage_by_id = {
+        str(row.get("effective_lineage_id") or ""): row
+        for row in canonical.get("effective_lineages", [])
+        if isinstance(row, dict)
+    }
+    lot_by_id = {
+        str(row.get("sale_lot_id") or ""): row
+        for row in canonical.get("immutable_sale_lots", [])
+        if isinstance(row, dict)
+    }
+    canonical_lineage_ids = list(lineage_by_id)
+    canonical_source_ids = [
+        str(row.get("source_identity_id") or "")
+        for row in canonical.get("source_identity_to_lineage_map", [])
+        if isinstance(row, dict)
+    ]
+    canonical_lot_ids = list(lot_by_id)
+    active_source_by_lineage: dict[str, list[str]] = defaultdict(list)
+    for source in canonical.get("active_recovery_sources", []):
+        if isinstance(source, dict):
+            active_source_by_lineage[
+                str(source.get("effective_lineage_id") or "")
+            ].append(str(source.get("active_recovery_source_id") or ""))
+    terminal_closures_by_lot: dict[str, list[str]] = defaultdict(list)
+    for closure in canonical.get("terminal_closures", []):
+        if isinstance(closure, dict):
+            terminal_closures_by_lot[str(closure.get("sale_lot_id") or "")].append(
+                str(closure.get("closure_id") or "")
+            )
+    mirrored_lineages: list[str] = []
+    mirrored_sources: list[str] = []
+    mirrored_lots: list[str] = []
+    mirrored_active_sources: list[str] = []
+    mirrored_terminal_closures: list[str] = []
+    attached_official: list[dict[str, Any]] = []
+    for key, row in zip(row_keys, rows):
+        lineage_link = [
+            str(value)
+            for value in row.get("r137_canonical_lineage_ids", [])
+            if str(value)
+        ]
+        expected_row_id = (
+            "lineage::" + "|".join(lineage_link)
+            if lineage_link
+            else "current::" + "/".join((key[0], key[1], f"orderbook-{row.get('orderbook_id')}"))
+        )
+        _require(
+            row.get("r390_dynamic_row_id") == expected_row_id,
+            f"full dynamic row id does not match its lineage or current identity for {key}",
+            errors,
+        )
+        history = row.get("r390_full_history")
+        _require(isinstance(history, dict), f"full dynamic history link missing for {key}", errors)
+        if not isinstance(history, dict):
+            continue
+        lineage_ids = history.get("effective_lineage_ids")
+        lineage_ids = lineage_ids if isinstance(lineage_ids, list) else []
+        expected_sources: list[str] = []
+        expected_lots: list[str] = []
+        for lineage_id in lineage_ids:
+            lineage = lineage_by_id.get(str(lineage_id))
+            _require(lineage is not None, f"full dynamic row references unknown lineage for {key}", errors)
+            if lineage is not None:
+                expected_sources.extend(str(value) for value in lineage.get("source_identity_ids", []))
+                expected_lots.extend(str(value) for value in lineage.get("sale_lot_ids", []))
+        expected_open_lots = [
+            lot_id
+            for lot_id in expected_lots
+            if _exact_decimal(lot_by_id[lot_id].get("remaining_open_quantity_exact")) > 0
+        ]
+        _require(history.get("source_identity_ids") == expected_sources, f"full dynamic source identity mismatch for {key}", errors)
+        _require(history.get("sale_lot_ids") == expected_lots, f"full dynamic sale-lot order or membership mismatch for {key}", errors)
+        _require(history.get("open_sale_lot_ids") == expected_open_lots, f"full dynamic open-lot membership mismatch for {key}", errors)
+        expected_active_sources = sorted(
+            source_id
+            for lineage_id in lineage_ids
+            for source_id in active_source_by_lineage.get(str(lineage_id), [])
+        )
+        expected_terminal_closures = [
+            closure_id
+            for lot_id in expected_lots
+            for closure_id in terminal_closures_by_lot.get(lot_id, [])
+        ]
+        _require(
+            history.get("active_recovery_source_ids") == expected_active_sources,
+            f"full dynamic active-source membership mismatch for {key}",
+            errors,
+        )
+        _require(
+            history.get("terminal_closure_ids") == expected_terminal_closures,
+            f"full dynamic terminal-closure membership mismatch for {key}",
+            errors,
+        )
+        totals = {
+            field: sum(
+                (_exact_decimal(lot_by_id[lot_id].get(field)) or Decimal("0") for lot_id in expected_lots),
+                Decimal("0"),
+            )
+            for field in (
+                "normalized_sold_quantity_exact",
+                "qualifying_filled_quantity_exact",
+                "active_recovery_quantity_exact",
+                "terminal_closure_quantity_exact",
+                "remaining_open_quantity_exact",
+            )
+        }
+        for field, total in totals.items():
+            _require(
+                _exact_decimal(history.get(field)) == total,
+                f"full dynamic {field} mismatch for {key}",
+                errors,
+            )
+        mirrored_lineages.extend(str(value) for value in lineage_ids)
+        mirrored_sources.extend(expected_sources)
+        mirrored_lots.extend(expected_lots)
+        mirrored_active_sources.extend(expected_active_sources)
+        mirrored_terminal_closures.extend(expected_terminal_closures)
+
+        close_row = row.get("r390_official_close_reachability")
+        if close_row is not None:
+            _require(isinstance(close_row, dict), f"full dynamic official-close row is invalid for {key}", errors)
+            if isinstance(close_row, dict):
+                attached_official.append(close_row)
+                if close_row.get("state") in {
+                    "CURRENT_STAGE_REACHED_UNSERVED_REPAIR",
+                    "HISTORICAL_STAGE_REACHED_REBOUNDED_REPAIR",
+                }:
+                    _require(
+                        row.get("buyback_coverage_state") == "REPAIR_REQUIRED"
+                        and row.get("r390_missed_crossing_preserved") is True,
+                        f"full dynamic missed crossing was cleared for {key}",
+                        errors,
+                    )
+
+        components = row.get("r390_recovery_components")
+        if components is not None:
+            _require(isinstance(components, list) and bool(components), f"full dynamic recovery components are invalid for {key}", errors)
+            if isinstance(components, list):
+                component_lots: list[str] = []
+                component_target = 0
+                component_ids: list[str] = []
+                for component in components:
+                    if not isinstance(component, dict):
+                        errors.append(f"full dynamic recovery component is not an object for {key}")
+                        continue
+                    component_ids.append(str(component.get("component_id") or ""))
+                    target = component.get("target_rebuild_quantity")
+                    stages = component.get("stages_percent_below_sold_marker")
+                    quantities = component.get("stage_quantities")
+                    lots_for_component = component.get("exact_open_sale_lot_ids")
+                    _require(
+                        component.get("state") == "LADDER_DORMANT"
+                        and isinstance(target, int)
+                        and not isinstance(target, bool)
+                        and target > 0
+                        and isinstance(stages, list)
+                        and 1 <= len(stages) <= 3
+                        and all(_is_positive_number(value) for value in stages)
+                        and all(float(left) < float(right) for left, right in zip(stages, stages[1:]))
+                        and isinstance(quantities, list)
+                        and len(quantities) == len(stages)
+                        and all(_is_positive_integer(value) for value in quantities)
+                        and sum(quantities) == target,
+                        f"full dynamic dormant component is not fully quantified for {key}",
+                        errors,
+                    )
+                    if isinstance(target, int) and not isinstance(target, bool):
+                        component_target += target
+                    if isinstance(lots_for_component, list):
+                        component_lots.extend(str(value) for value in lots_for_component)
+                _require(all(component_ids) and len(component_ids) == len(set(component_ids)), f"full dynamic recovery component id is missing or duplicated for {key}", errors)
+                _require(component_lots == expected_open_lots, f"full dynamic recovery component lot parity failed for {key}", errors)
+                _require(
+                    Decimal(component_target) == totals["remaining_open_quantity_exact"],
+                    f"full dynamic recovery component target parity failed for {key}",
+                    errors,
+                )
+
+    _require(Counter(mirrored_lineages) == Counter(canonical_lineage_ids), "full dynamic lineage parity mismatch", errors)
+    _require(Counter(mirrored_sources) == Counter(canonical_source_ids), "full dynamic source identity parity mismatch", errors)
+    _require(Counter(mirrored_lots) == Counter(canonical_lot_ids), "full dynamic sale-lot parity mismatch", errors)
+    _require(
+        Counter(mirrored_active_sources)
+        == Counter(
+            str(row.get("active_recovery_source_id") or "")
+            for row in canonical.get("active_recovery_sources", [])
+            if isinstance(row, dict)
+        ),
+        "full dynamic active-source parity mismatch",
+        errors,
+    )
+    _require(
+        Counter(mirrored_terminal_closures)
+        == Counter(
+            str(row.get("closure_id") or "")
+            for row in canonical.get("terminal_closures", [])
+            if isinstance(row, dict)
+        ),
+        "full dynamic terminal-closure parity mismatch",
+        errors,
+    )
+
+    official_rows = [row for row in official_close.get("rows", []) if isinstance(row, dict)]
+    _require(
+        Counter(_canonical_json_sha256(row) for row in attached_official)
+        == Counter(_canonical_json_sha256(row) for row in official_rows),
+        "full dynamic official-close row parity mismatch",
+        errors,
+    )
+    official_identities = sorted(
+        [
+            [
+                str(row.get("tenant_session_id") or ""),
+                str(row.get("account_id") or ""),
+                str(row.get("orderbook_id") or ""),
+            ]
+            for row in official_rows
+        ]
+    )
+    _require(
+        official_contract.get("row_identity_set_sha256")
+        == _canonical_json_sha256(official_identities),
+        "full dynamic official-close identity digest mismatch",
+        errors,
+    )
+    summary = mirror.get("summary", {})
+    for field, expected in (
+        ("dynamic_row_count", len(rows)),
+        ("mirrored_effective_lineage_count", len(mirrored_lineages)),
+        ("mirrored_source_identity_count", len(mirrored_sources)),
+        ("mirrored_immutable_sale_lot_count", len(mirrored_lots)),
+        ("official_close_row_count", len(attached_official)),
+    ):
+        _require(summary.get(field) == expected, f"full dynamic summary {field} mismatch", errors)
+    return errors
+
+
 def _artifact_time(value: Any) -> datetime | None:
     try:
         return datetime.fromisoformat(str(value))
@@ -120,12 +898,129 @@ def _is_positive_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _independent_dormant_ladder_decision_gaps(
+    decision: Any,
+    *,
+    tenant_session_id: Any,
+    account_id: Any,
+    orderbook_id: Any,
+    recovery_cycle_id: Any,
+    exact_open_sale_lot_ids: Any,
+    target_rebuild_quantity: Any,
+    stages_percent_below_sold_marker: Any,
+    stage_quantities: Any,
+    allow_legacy: bool = False,
+) -> list[str]:
+    """Validate future rebuild intent without clearing a historical path repair."""
+
+    if not isinstance(decision, dict):
+        return ["independent dormant ladder decision is not an object"]
+    gaps: list[str] = []
+    strict_fields = (
+        "authority",
+        "broker_mutation",
+        "trade_authority",
+        "exact_open_sale_lot_ids",
+    )
+    legacy = allow_legacy and all(field not in decision for field in strict_fields)
+    if not legacy:
+        if (
+            decision.get("authority") != "LOCAL_REVIEW_ONLY"
+            or decision.get("broker_mutation") is not False
+            or decision.get("trade_authority") is not False
+        ):
+            gaps.append("independent dormant ladder authority is invalid")
+    if decision.get("state") != "LADDER_DORMANT" or decision.get("economic_state") != "BUILD_REVIEW":
+        gaps.append("independent dormant ladder state is invalid")
+    for field, expected in (
+        ("tenant_session_id", tenant_session_id),
+        ("account_id", account_id),
+        ("orderbook_id", orderbook_id),
+        ("recovery_cycle_id", recovery_cycle_id),
+    ):
+        if str(decision.get(field) or "") != str(expected or ""):
+            gaps.append(f"independent dormant ladder {field} mismatch")
+    if decision.get("target_rebuild_quantity") != target_rebuild_quantity:
+        gaps.append("independent dormant ladder target mismatch")
+    if decision.get("stages_percent_below_sold_marker") != stages_percent_below_sold_marker:
+        gaps.append("independent dormant ladder percentages mismatch")
+    if decision.get("stage_quantities") != stage_quantities:
+        gaps.append("independent dormant ladder quantities mismatch")
+    if not legacy:
+        lot_ids = decision.get("exact_open_sale_lot_ids")
+        if (
+            not isinstance(lot_ids, list)
+            or not lot_ids
+            or len(lot_ids) != len(set(str(value) for value in lot_ids))
+            or any(not str(value or "") for value in lot_ids)
+            or lot_ids != exact_open_sale_lot_ids
+        ):
+            gaps.append("independent dormant ladder exact sale-lot set mismatch")
+    for field in (
+        "decision_id",
+        "calibration_evidence",
+        "promotion_evidence",
+        "rejection_evidence",
+        "next_review",
+        "expires_at",
+    ):
+        if not str(decision.get(field) or "").strip():
+            gaps.append(f"independent dormant ladder {field} is missing")
+    expires_at = _artifact_time(decision.get("expires_at"))
+    if expires_at is None or expires_at.tzinfo is None:
+        gaps.append("independent dormant ladder expiry is invalid")
+    return gaps
+
+
+def _independent_dormant_ladder_semantic_gaps(row: dict[str, Any]) -> list[str]:
+    """Reject stale gap wording beside a valid independent rebuild decision."""
+
+    decision = row.get("dormant_ladder_decision")
+    if not isinstance(decision, dict):
+        return ["independent dormant ladder decision is not an object"]
+    instrument = str(row.get("instrument") or decision.get("instrument") or "").strip()
+    calibration = str(decision.get("calibration_evidence") or "").strip()
+    next_review = str(decision.get("next_review") or "").strip()
+    expected_reason = f"{instrument}: {calibration}" if instrument and calibration else ""
+    path_context = row.get(PATH_CONTEXT_FIELD)
+    current_reason = str(row.get("coverage_reason") or "").strip()
+    current_gate = str(row.get("exact_next_gate") or "").strip()
+    if isinstance(path_context, dict):
+        current_reason = str(path_context.get("coverage_reason") or "").strip()
+        current_gate = str(path_context.get("exact_next_gate") or "").strip()
+
+    gaps: list[str] = []
+    if not expected_reason or current_reason != expected_reason:
+        gaps.append("independent dormant ladder coverage reason is stale or contradictory")
+    if not next_review or current_gate != next_review:
+        gaps.append("independent dormant ladder next gate is stale or contradictory")
+    resolution = row.get("economic_resolution")
+    if not isinstance(resolution, dict):
+        gaps.append("independent dormant ladder economic resolution is missing")
+    else:
+        if str(resolution.get("reason") or "").strip() != expected_reason:
+            gaps.append("independent dormant ladder economic rationale mismatch")
+        if str(resolution.get("next_review") or "").strip() != next_review:
+            gaps.append("independent dormant ladder economic next review mismatch")
+    return gaps
+
+
 def _is_nonnegative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _is_positive_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _conservative_weekday_deadline(reviewed_at: datetime) -> date:
+    cursor = reviewed_at.astimezone(STOCKHOLM).date()
+    sessions = 0
+    while sessions < SMALL_HOLD_MAX_REGULAR_SESSIONS:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            sessions += 1
+    return cursor
 
 
 def _validate_instrument_specific_path_context(
@@ -162,7 +1057,16 @@ def _validate_instrument_specific_path_context(
         )
 
     top_reason = str(row.get("coverage_reason") or "")
-    _require(top_reason.startswith(reason), f"dynamic path reconciliation erased its stock-specific reason for {key}", errors)
+    expected_reason = _expected_path_reconciled_reason(
+        context,
+        named=evidence.get("named_exception") is True,
+    )
+    _require(
+        top_reason == expected_reason
+        and top_reason.count(PATH_RECONCILIATION_MARKER) == 1,
+        f"dynamic path reconciliation reason is not canonical for {key}",
+        errors,
+    )
     _require(
         row.get("exact_next_gate") == next_gate,
         f"dynamic path reconciliation erased its stock-specific next gate for {key}",
@@ -173,12 +1077,6 @@ def _validate_instrument_specific_path_context(
         _require(
             resolution.get(PATH_CONTEXT_FIELD) == context,
             f"dynamic economic resolution lost its stock-specific path context for {key}",
-            errors,
-        )
-        _require(
-            resolution.get("reason") == row.get("coverage_reason")
-            and resolution.get("next_review") == row.get("exact_next_gate"),
-            f"dynamic economic resolution contradicts the stock-specific path decision for {key}",
             errors,
         )
 
@@ -891,6 +1789,11 @@ def _validate_recovery_cycle(
     mixed_resolution = row.get("mixed_lot_resolution")
     if mixed_resolution is not None:
         _require(isinstance(mixed_resolution, dict), f"R19 mixed-lot resolution is not an object for {key}", errors)
+        mixed_schema = (
+            int(mixed_resolution.get("schema_version", 0) or 0)
+            if isinstance(mixed_resolution, dict)
+            else 0
+        )
         events = row.get("qualifying_fill_reallocation_events", [])
         _require(isinstance(events, list), f"R19 fill reallocation events must be a list for {key}", errors)
         event_ids: set[str] = set()
@@ -916,16 +1819,39 @@ def _validate_recovery_cycle(
                 f"R19 fill reallocation quantity is invalid for {key}",
                 errors,
             )
-            matching_targets = [
-                allocation
-                for allocation in fill_allocations or []
-                if isinstance(allocation, dict)
-                and allocation.get("allocation_id") == event_id
-                and allocation.get("buy_transaction_id") == event.get("buy_transaction_id")
-                and allocation.get("sale_lot_id") == target_lot_id
-                and allocation.get("quantity") == event.get("quantity")
-                and allocation.get("allocation_method") == "REVIEWED_EXACT_LOT_REALLOCATION_R19"
-            ]
+            if event.get("target_allocation_id"):
+                before = event.get("target_quantity_before")
+                after = event.get("target_quantity_after")
+                target_allocation_id = str(event.get("target_allocation_id") or "")
+                _require(
+                    bool(target_allocation_id)
+                    and _is_positive_integer(before)
+                    and _is_positive_integer(after)
+                    and int(after) - int(before) == int(event.get("quantity", 0) or 0),
+                    f"R31 fill reallocation target delta is invalid for {key}",
+                    errors,
+                )
+                matching_targets = [
+                    allocation
+                    for allocation in fill_allocations or []
+                    if isinstance(allocation, dict)
+                    and allocation.get("allocation_id") == target_allocation_id
+                    and allocation.get("buy_transaction_id") == event.get("buy_transaction_id")
+                    and allocation.get("sale_lot_id") == target_lot_id
+                    and allocation.get("quantity") == after
+                    and event_id in (allocation.get("reviewed_reallocation_ids") or [])
+                ]
+            else:
+                matching_targets = [
+                    allocation
+                    for allocation in fill_allocations or []
+                    if isinstance(allocation, dict)
+                    and allocation.get("allocation_id") == event_id
+                    and allocation.get("buy_transaction_id") == event.get("buy_transaction_id")
+                    and allocation.get("sale_lot_id") == target_lot_id
+                    and allocation.get("quantity") == event.get("quantity")
+                    and allocation.get("allocation_method") == "REVIEWED_EXACT_LOT_REALLOCATION_R19"
+                ]
             _require(
                 len(matching_targets) == 1,
                 f"R19 fill reallocation does not match one exact target allocation for {key}",
@@ -934,13 +1860,21 @@ def _validate_recovery_cycle(
             event_ids.add(event_id)
         if isinstance(mixed_resolution, dict):
             _require(
-                mixed_resolution.get("schema_version") == 2
+                mixed_resolution.get("schema_version") in {2, 3}
                 and mixed_resolution.get("broker_mutation") is False,
                 f"R19 mixed-lot resolution authority is invalid for {key}",
                 errors,
             )
+            decision_events = [
+                event
+                for event in events
+                if isinstance(event, dict)
+                and event.get("decision_id") == mixed_resolution.get("decision_id")
+            ]
+            if mixed_schema == 2 and not decision_events:
+                decision_events = events if isinstance(events, list) else []
             _require(
-                mixed_resolution.get("fill_reallocation_count") == len(events if isinstance(events, list) else []),
+                mixed_resolution.get("fill_reallocation_count") == len(decision_events),
                 f"R19 fill reallocation count mismatch for {key}",
                 errors,
             )
@@ -1015,11 +1949,8 @@ def _validate_recovery_cycle(
             for gap in _no_reentry_decision_gaps(identity, decision, reference_time):
                 errors.append(f"sale-lot no-reentry decision is invalid for {key}/{lot_id}: {gap}")
         if closure_decisions:
-            _require(
-                len(closure_decisions) == 1,
-                f"R19 currently requires one exact terminal closure per sale lot for {key}/{lot_id}",
-                errors,
-            )
+            prior_terminal_closed = 0
+            prior_decision_at: datetime | None = None
             for closure_decision in closure_decisions:
                 if not isinstance(closure_decision, dict):
                     errors.append(f"sale-lot terminal closure is not an object for {key}/{lot_id}")
@@ -1031,6 +1962,15 @@ def _validate_recovery_cycle(
                     errors,
                 )
                 closure_ids.add(closure_id)
+                closure_quantity = closure_decision.get("closed_quantity")
+                recovered_before = filled + active + prior_terminal_closed
+                remaining_after = (
+                    sold - recovered_before - closure_quantity
+                    if _is_positive_integer(sold)
+                    and _is_nonnegative_integer(recovered_before)
+                    and _is_positive_integer(closure_quantity)
+                    else None
+                )
                 identity = {
                     "tenant_session_id": key[0],
                     "account_id": key[1],
@@ -1039,10 +1979,10 @@ def _validate_recovery_cycle(
                     "sale_transaction_id": lot.get("sale_transaction_id"),
                     "sale_timestamp": lot.get("sale_timestamp"),
                     "sale_date": str(lot.get("sale_timestamp") or "")[:10],
-                    "sold_quantity": closure_decision.get("closed_quantity"),
-                    "remaining_open_quantity": remaining,
+                    "sold_quantity": closure_quantity,
+                    "remaining_open_quantity": remaining_after,
                     "original_sold_quantity": sold,
-                    "recovered_before_decision_quantity": filled + active,
+                    "recovered_before_decision_quantity": recovered_before,
                 }
                 for gap in _no_reentry_decision_gaps(
                     identity,
@@ -1051,6 +1991,35 @@ def _validate_recovery_cycle(
                     require_fully_closed=False,
                 ):
                     errors.append(f"R19 sale-lot terminal closure is invalid for {key}/{lot_id}: {gap}")
+                decision_at = _artifact_time(closure_decision.get("decision_at"))
+                if (
+                    prior_decision_at is not None
+                    and decision_at is not None
+                    and decision_at < prior_decision_at
+                ):
+                    errors.append(
+                        f"R19 sale-lot terminal closures are not chronological for {key}/{lot_id}"
+                    )
+                if decision_at is not None:
+                    prior_decision_at = decision_at
+                if _is_positive_integer(closure_quantity):
+                    prior_terminal_closed += int(closure_quantity)
+            _require(
+                prior_terminal_closed == closed,
+                f"R19 cumulative terminal closure quantity mismatch for {key}/{lot_id}",
+                errors,
+            )
+            if (
+                _is_positive_integer(sold)
+                and _is_nonnegative_integer(filled)
+                and _is_nonnegative_integer(active)
+                and _is_nonnegative_integer(remaining)
+            ):
+                _require(
+                    sold - filled - active - prior_terminal_closed == remaining,
+                    f"R19 cumulative terminal closure residual mismatch for {key}/{lot_id}",
+                    errors,
+                )
         sold_total += int(sold or 0)
         fill_total += filled
         active_total += active
@@ -1207,6 +2176,11 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
     ]
     no_reentry_rows = [row for row in rows if row.get("state") == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"]
     named_path_rows = [row for row in rows if row.get("state") == "NAMED_EXCEPTION_PATH_REVIEW_REQUIRED"]
+    dormant_ladder_rows = [
+        row
+        for row in rows
+        if row.get("state") == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+    ]
     open_rows = [row for row in rows if int(row.get("remaining_open_quantity", 0) or 0) > 0]
     open_percentage_not_set_rows = [
         row
@@ -1274,6 +2248,12 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
             errors,
         )
         _require(
+            int(summary.get("dormant_stock_specific_review_ladder_rows", 0) or 0)
+            == len(dormant_ladder_rows),
+            "sold-marker remediation dormant-ladder count mismatch",
+            errors,
+        )
+        _require(
             summary.get("path_evidence_missing_rows") == 0,
             "sold-marker remediation retains missing path evidence",
             errors,
@@ -1283,6 +2263,34 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
             if not isinstance(evidence, dict):
                 continue
             key = _remediation_key(row)
+            dormant_decision = row.get("dormant_ladder_decision")
+            if dormant_decision is not None:
+                open_lot_ids = [
+                    str(lot.get("sale_lot_id") or "")
+                    for lot in row.get("sale_lots", [])
+                    if isinstance(lot, dict)
+                    and int(lot.get("remaining_open_quantity", 0) or 0) > 0
+                ]
+                for gap in _independent_dormant_ladder_decision_gaps(
+                    dormant_decision,
+                    tenant_session_id=row.get("tenant_session_id"),
+                    account_id=row.get("account_id"),
+                    orderbook_id=row.get("orderbook_id"),
+                    recovery_cycle_id=row.get("recovery_cycle_id"),
+                    exact_open_sale_lot_ids=open_lot_ids,
+                    target_rebuild_quantity=row.get("remaining_open_quantity"),
+                    stages_percent_below_sold_marker=row.get(
+                        "recorded_stage_percentages_below_marker"
+                    ),
+                    stage_quantities=row.get("recorded_stage_quantities"),
+                    allow_legacy=(
+                        row.get("state")
+                        == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+                    ),
+                ):
+                    errors.append(
+                        f"sold-marker remediation independent dormant ladder is invalid for {key}: {gap}"
+                    )
             crossed = evidence.get("crossed_8pct_review_alarm") is True
             named = evidence.get("named_exception") is True
             expected_state = (
@@ -1290,6 +2298,8 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
                 if crossed and named
                 else "REPAIR_REQUIRED_MISSED_PATH"
                 if crossed
+                else "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+                if row.get("state") == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
                 else "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET"
             )
             _require(
@@ -1297,6 +2307,40 @@ def validate_sold_marker_remediation(payload: dict[str, Any]) -> list[str]:
                 f"sold-marker remediation path state is inconsistent for {key}",
                 errors,
             )
+            if row.get("state") == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED":
+                stages = row.get("recorded_stage_percentages_below_marker")
+                quantities = row.get("recorded_stage_quantities")
+                remaining = int(row.get("remaining_open_quantity", 0) or 0)
+                _require(
+                    isinstance(stages, list)
+                    and 1 <= len(stages) <= 3
+                    and all(isinstance(value, (int, float)) and float(value) > 0 for value in stages)
+                    and all(float(left) < float(right) for left, right in zip(stages, stages[1:])),
+                    f"sold-marker remediation dormant ladder percentages are invalid for {key}",
+                    errors,
+                )
+                _require(
+                    isinstance(quantities, list)
+                    and isinstance(stages, list)
+                    and len(quantities) == len(stages)
+                    and all(isinstance(value, int) and value > 0 for value in quantities)
+                    and sum(quantities) == remaining,
+                    f"sold-marker remediation dormant ladder quantities are invalid for {key}",
+                    errors,
+                )
+                if isinstance(dormant_decision, dict):
+                    expected_next_gate = str(dormant_decision.get("next_review") or "").strip()
+                    actual_next_gate = str(row.get("next_gate") or "").strip()
+                    _require(
+                        actual_next_gate == expected_next_gate,
+                        f"sold-marker remediation dormant ladder next gate is stale for {key}",
+                        errors,
+                    )
+                    _require(
+                        "percentage_not_set" not in actual_next_gate.casefold(),
+                        f"sold-marker remediation dormant ladder next gate contradicts quantified coverage for {key}",
+                        errors,
+                    )
     _require(summary.get("open_material_rows") == len(open_rows), "sold-marker remediation open-row count mismatch", errors)
     _require(
         summary.get("remaining_open_quantity_across_material_rows") == remaining_quantity,
@@ -1729,6 +2773,12 @@ def sold_marker_dynamic_reconciliation_rows(
             for lot in recovery.get("sale_lots", [])
             if isinstance(lot, dict)
         ]
+        open_sale_lot_ids = [
+            str(lot.get("sale_lot_id") or "")
+            for lot in recovery.get("sale_lots", [])
+            if isinstance(lot, dict)
+            and int(lot.get("remaining_open_quantity", 0) or 0) > 0
+        ]
         result.append({
             "tenant_session_id": key[0],
             "account_id": key[1],
@@ -1744,12 +2794,17 @@ def sold_marker_dynamic_reconciliation_rows(
             "unattributed_later_buy_quantity": recovery.get("unattributed_later_buy_quantity"),
             "recovery_cycle_id": recovery.get("recovery_cycle_id"),
             "sale_lot_ids": sale_lot_ids,
+            "open_sale_lot_ids": open_sale_lot_ids,
             "recovery_state": recovery.get("state"),
             "recovery_artifact_generated_at": remediation_payload.get("generated_at"),
             "recovery_artifact_verified_at": remediation_payload.get("verified_at"),
+            "recovery_schema_version": remediation_payload.get("schema_version"),
             "recovery_no_reentry_decision": recovery.get("no_reentry_decision"),
             "recovery_mixed_lot_resolution": recovery.get("mixed_lot_resolution"),
-            "recovery_partial_terminal_decisions": recovery.get("partial_terminal_decisions"),
+            "recovery_partial_terminal_decisions": recovery.get(
+                "partial_terminal_decisions", []
+            ),
+            "recovery_dormant_ladder_decision": recovery.get("dormant_ladder_decision"),
             "recovery_recorded_stage_percentages_below_marker": recovery.get(
                 "recorded_stage_percentages_below_marker"
             ),
@@ -1772,15 +2827,20 @@ def sold_marker_dynamic_reconciliation_rows(
             ),
             "dynamic_recovery_cycle_id": dynamic.get("recovery_cycle_id"),
             "dynamic_sale_lot_ids": dynamic.get("sale_lot_ids"),
+            "dynamic_open_sale_lot_ids": dynamic.get("open_sale_lot_ids"),
             "dynamic_target_rebuild_quantity": dynamic.get("target_rebuild_quantity"),
             "dynamic_latest_recent_sale_date": dynamic.get("latest_recent_sale_date"),
             "dynamic_stages_percent_below_sold_marker": dynamic.get("stages_percent_below_sold_marker"),
             "dynamic_stage_quantities": dynamic.get("stage_quantities"),
             "dynamic_coverage_reason": dynamic.get("coverage_reason"),
             "dynamic_artifact_generated_at": dynamic_payload.get("generated_at"),
+            "dynamic_schema_version": dynamic_payload.get("schema_version"),
             "dynamic_no_reentry_decision": dynamic.get("no_reentry_decision"),
             "dynamic_mixed_lot_resolution": dynamic.get("mixed_lot_resolution"),
-            "dynamic_partial_terminal_decisions": dynamic.get("partial_terminal_decisions"),
+            "dynamic_partial_terminal_decisions": dynamic.get(
+                "partial_terminal_decisions", []
+            ),
+            "dynamic_dormant_ladder_decision": dynamic.get("dormant_ladder_decision"),
         })
     return result
 
@@ -1823,6 +2883,19 @@ def _dormant_ladder_governance_gaps(row: dict[str, Any]) -> list[str]:
     if recorded_quantities != quantities:
         gaps.append("dynamic quantities do not match the authenticated recovery record")
     return gaps
+
+
+def governed_dormant_ladder_count(
+    dynamic_payload: dict[str, Any],
+    remediation_payload: dict[str, Any],
+) -> int:
+    """Count fully governed dormant review ladders, never broker orders."""
+
+    return sum(
+        row.get("recovery_state") == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+        and not _dormant_ladder_governance_gaps(row)
+        for row in sold_marker_dynamic_reconciliation_rows(dynamic_payload, remediation_payload)
+    )
 
 
 def sold_marker_governance_gap_rows(
@@ -1868,6 +2941,10 @@ def sold_marker_governance_gap_rows(
             reasons.append("dynamic mixed-lot resolution does not match the recovery cycle")
         if row.get("dynamic_partial_terminal_decisions") != row.get("recovery_partial_terminal_decisions"):
             reasons.append("dynamic partial terminal decisions do not match the recovery cycle")
+        if row.get("dynamic_dormant_ladder_decision") != row.get(
+            "recovery_dormant_ladder_decision"
+        ):
+            reasons.append("dynamic dormant ladder decision does not match the recovery cycle")
         if (
             row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
             and _is_positive_number(dynamic_attributed)
@@ -1875,6 +2952,24 @@ def sold_marker_governance_gap_rows(
             reasons.append("exit/no-reentry classification is contradicted by active recovery inventory")
 
         if state.startswith("REPAIR_REQUIRED"):
+            if row.get("recovery_dormant_ladder_decision") is not None:
+                reasons.extend(
+                    _independent_dormant_ladder_decision_gaps(
+                        row.get("recovery_dormant_ladder_decision"),
+                        tenant_session_id=row.get("tenant_session_id"),
+                        account_id=row.get("account_id"),
+                        orderbook_id=row.get("orderbook_id"),
+                        recovery_cycle_id=row.get("recovery_cycle_id"),
+                        exact_open_sale_lot_ids=row.get("open_sale_lot_ids"),
+                        target_rebuild_quantity=row.get("remaining_open_quantity"),
+                        stages_percent_below_sold_marker=row.get(
+                            "recovery_recorded_stage_percentages_below_marker"
+                        ),
+                        stage_quantities=row.get("recovery_recorded_stage_quantities"),
+                    )
+                )
+                if row.get("dynamic_low_exposure_decision") != "BUILD_REVIEW":
+                    reasons.append("independent dormant ladder is not retained as BUILD_REVIEW")
             reasons.append("sold-marker path remains REPAIR_REQUIRED")
         elif state == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET":
             reasons.append("material sold-marker path remains PERCENTAGE_NOT_SET")
@@ -1906,7 +3001,6 @@ def sold_marker_governance_gap_rows(
             if (
                 remaining != 0
                 or row.get("dynamic_buyback_coverage_state") != "LEDGER_ONLY"
-                or row.get("dynamic_low_exposure_decision") != "EXIT_OR_NO_REENTRY_REVIEW"
                 or dynamic_attributed != 0
                 or row.get("dynamic_stages_percent_below_sold_marker") != "PERCENTAGE_NOT_SET"
                 or row.get("dynamic_target_rebuild_quantity") is not None
@@ -1993,11 +3087,23 @@ def validate_dynamic_against_sold_marker_recovery(
             f"dynamic sale-lot set mismatch for sold-marker recovery {key}",
             errors,
         )
+        if int(row.get("dynamic_schema_version", 0) or 0) >= 9:
+            _require(
+                row.get("dynamic_open_sale_lot_ids") == row.get("open_sale_lot_ids"),
+                f"dynamic open-sale-lot set mismatch for sold-marker recovery {key}",
+                errors,
+            )
         _require(
             row.get("dynamic_mixed_lot_resolution") == row.get("recovery_mixed_lot_resolution")
             and row.get("dynamic_partial_terminal_decisions")
             == row.get("recovery_partial_terminal_decisions"),
             f"dynamic R19 mixed-lot decision mismatch for sold-marker recovery {key}",
+            errors,
+        )
+        _require(
+            row.get("dynamic_dormant_ladder_decision")
+            == row.get("recovery_dormant_ladder_decision"),
+            f"dynamic dormant ladder decision mismatch for sold-marker recovery {key}",
             errors,
         )
         if row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW":
@@ -2010,7 +3116,6 @@ def validate_dynamic_against_sold_marker_recovery(
         if state.startswith("REPAIR_REQUIRED"):
             _require(
                 row.get("dynamic_buyback_coverage_state") == "REPAIR_REQUIRED"
-                and row.get("dynamic_low_exposure_decision") == "REPAIR_REQUIRED"
                 and (
                     dynamic_schema >= 5
                     or row.get("dynamic_protection_classification") == "REPAIR_REQUIRED"
@@ -2023,6 +3128,32 @@ def validate_dynamic_against_sold_marker_recovery(
                 f"repair target does not preserve exact open sold quantity for {key}",
                 errors,
             )
+            if row.get("recovery_dormant_ladder_decision") is not None:
+                for gap in _independent_dormant_ladder_decision_gaps(
+                    row.get("recovery_dormant_ladder_decision"),
+                    tenant_session_id=row.get("tenant_session_id"),
+                    account_id=row.get("account_id"),
+                    orderbook_id=row.get("orderbook_id"),
+                    recovery_cycle_id=row.get("recovery_cycle_id"),
+                    exact_open_sale_lot_ids=row.get("open_sale_lot_ids"),
+                    target_rebuild_quantity=row.get("remaining_open_quantity"),
+                    stages_percent_below_sold_marker=row.get(
+                        "recovery_recorded_stage_percentages_below_marker"
+                    ),
+                    stage_quantities=row.get("recovery_recorded_stage_quantities"),
+                ):
+                    errors.append(
+                        f"repair row independent dormant ladder is invalid for {key}: {gap}"
+                    )
+                _require(
+                    row.get("dynamic_low_exposure_decision") == "BUILD_REVIEW"
+                    and row.get("dynamic_stages_percent_below_sold_marker")
+                    == row.get("recovery_recorded_stage_percentages_below_marker")
+                    and row.get("dynamic_stage_quantities")
+                    == row.get("recovery_recorded_stage_quantities"),
+                    f"repair row does not preserve its independent quantified build decision for {key}",
+                    errors,
+                )
         elif state == "MATERIAL_PATH_OPEN_PERCENTAGE_NOT_SET":
             _require(
                 row.get("dynamic_buyback_coverage_state") == "LADDER_GAP",
@@ -2078,7 +3209,6 @@ def validate_dynamic_against_sold_marker_recovery(
         elif state == "EXPLICIT_NO_REENTRY_CURRENT_THESIS":
             _require(
                 row.get("dynamic_buyback_coverage_state") == "LEDGER_ONLY"
-                and row.get("dynamic_low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
                 and row.get("dynamic_sale_attributed_active_buy_quantity") == 0
                 and row.get("dynamic_target_rebuild_quantity") is None
                 and row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
@@ -2279,6 +3409,8 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     crossed_path_count = 0
     missed_path_repair_count = 0
     named_path_review_count = 0
+    small_hold_revalidation_required_rows = 0
+    small_hold_revalidation_status_counts: Counter[str] = Counter()
     vectors_by_instrument: dict[tuple[float, ...], set[str]] = defaultdict(set)
     required_fields = {
         "tenant_session_id",
@@ -2394,30 +3526,176 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
                         errors,
                     )
             if row.get("low_exposure_decision") == "INTENTIONAL_MARKER_OR_CORE_HOLD":
+                independent_protection_repair = (
+                    row.get("current_protection_classification") == "REPAIR_REQUIRED"
+                    and isinstance(resolution, dict)
+                    and resolution.get("source")
+                    == "CURRENT_REVIEWED_CORE_WITH_INDEPENDENT_PROTECTION_REPAIR"
+                )
                 _require(
-                    row.get("buyback_coverage_state") == "LEDGER_ONLY"
-                    and row.get("current_protection_classification")
+                    row.get("current_protection_classification")
                     in {"CORE_HOLD_EXCEPTION", "MARKER_EXCEPTION"}
-                    and row.get("target_rebuild_quantity") is None
-                    and row.get("stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
-                    and row.get("active_buy_volume", 0) == 0
-                    and row.get("sale_attributed_active_buy_quantity", 0) == 0,
-                    f"dynamic intentional hold is contradicted by open recovery work for {key}",
+                    or independent_protection_repair,
+                    f"dynamic intentional hold lacks a reviewed hold protection class for {key}",
                     errors,
                 )
             if row.get("low_exposure_decision") == "BUILD_REVIEW":
+                independent_ladder_gaps = _independent_dormant_ladder_decision_gaps(
+                    row.get("dormant_ladder_decision"),
+                    tenant_session_id=row.get("tenant_session_id"),
+                    account_id=row.get("account_id"),
+                    orderbook_id=row.get("orderbook_id"),
+                    recovery_cycle_id=row.get("recovery_cycle_id"),
+                    exact_open_sale_lot_ids=row.get("open_sale_lot_ids"),
+                    target_rebuild_quantity=row.get("target_rebuild_quantity"),
+                    stages_percent_below_sold_marker=row.get(
+                        "stages_percent_below_sold_marker"
+                    ),
+                    stage_quantities=row.get("stage_quantities"),
+                    allow_legacy=(
+                        row.get("buyback_coverage_state") == "LADDER_DORMANT"
+                        and not (
+                            isinstance(row.get("full_path_evidence"), dict)
+                            and row["full_path_evidence"].get("crossed_8pct_review_alarm")
+                            is True
+                        )
+                    ),
+                )
+                independently_recorded_repair_ladder = (
+                    row.get("buyback_coverage_state") == "REPAIR_REQUIRED"
+                    and not independent_ladder_gaps
+                    and isinstance(row.get("full_path_evidence"), dict)
+                    and row["full_path_evidence"].get("crossed_8pct_review_alarm") is True
+                    and row["full_path_evidence"].get("named_exception") is not True
+                )
                 _require(
-                    row.get("buyback_coverage_state") in {"LADDER_ACTIVE", "LADDER_DORMANT"}
+                    (
+                        row.get("buyback_coverage_state") in {"LADDER_ACTIVE", "LADDER_DORMANT"}
+                        or independently_recorded_repair_ladder
+                    )
                     and isinstance(row.get("stages_percent_below_sold_marker"), list)
                     and isinstance(row.get("stage_quantities"), list),
                     f"dynamic BUILD_REVIEW lacks a quantified stock-specific ladder for {key}",
                     errors,
                 )
+                if row.get("dormant_ladder_decision") is not None:
+                    for gap in independent_ladder_gaps:
+                        errors.append(
+                            f"dynamic independent dormant ladder is invalid for {key}: {gap}"
+                        )
+                    if not independent_ladder_gaps:
+                        for gap in _independent_dormant_ladder_semantic_gaps(row):
+                            errors.append(
+                                f"dynamic independent dormant ladder is invalid for {key}: {gap}"
+                            )
+
+            if schema_version >= 9 and isinstance(resolution, dict):
+                live_holding = row.get("live_holding")
+                market_value = row.get("live_market_value_sek")
+                small_exposure = (
+                    isinstance(live_holding, (int, float))
+                    and not isinstance(live_holding, bool)
+                    and live_holding > 0
+                    and (
+                        live_holding <= 5
+                        or (
+                            isinstance(market_value, (int, float))
+                            and not isinstance(market_value, bool)
+                            and market_value < 20_000
+                        )
+                    )
+                )
+                hold_revalidation_required = (
+                    resolution.get("hold_revalidation_required") is True
+                )
+                if (
+                    small_exposure
+                    and row.get("low_exposure_decision")
+                    == "INTENTIONAL_MARKER_OR_CORE_HOLD"
+                ):
+                    _require(
+                        hold_revalidation_required,
+                        f"dynamic small intentional hold lacks structured revalidation for {key}",
+                        errors,
+                    )
+                if hold_revalidation_required:
+                    small_hold_revalidation_required_rows += 1
+                    status = str(resolution.get("revalidation_status") or "")
+                    small_hold_revalidation_status_counts[status] += 1
+                    _require(
+                        status in SMALL_HOLD_REVALIDATION_STATUSES,
+                        f"dynamic small-hold revalidation status is invalid for {key}",
+                        errors,
+                    )
+                    _require(
+                        resolution.get("revalidation_regular_session_limit")
+                        == SMALL_HOLD_MAX_REGULAR_SESSIONS,
+                        f"dynamic small-hold revalidation session limit is invalid for {key}",
+                        errors,
+                    )
+                    _require(
+                        resolution.get("revalidation_calendar_basis")
+                        == SMALL_HOLD_CALENDAR_BASIS,
+                        f"dynamic small-hold revalidation calendar basis is invalid for {key}",
+                        errors,
+                    )
+                    for field in (
+                        "economic_purpose",
+                        "why_rebuild_is_currently_inferior",
+                        "why_exit_is_currently_inferior",
+                    ):
+                        _require(
+                            len(str(resolution.get(field) or "").strip()) >= 30,
+                            f"dynamic small-hold {field} is not specific for {key}",
+                            errors,
+                        )
+
+                    reviewed_at = _artifact_time(
+                        resolution.get("revalidation_reviewed_at")
+                    )
+                    due_by = _artifact_date(resolution.get("revalidation_due_by"))
+                    if status in {"CURRENT", "EXPIRED"}:
+                        _require(
+                            reviewed_at is not None and reviewed_at.tzinfo is not None,
+                            f"dynamic small-hold reviewed timestamp is invalid for {key}",
+                            errors,
+                        )
+                        _require(
+                            due_by is not None,
+                            f"dynamic small-hold deadline is invalid for {key}",
+                            errors,
+                        )
+                        if reviewed_at is not None and reviewed_at.tzinfo is not None and due_by is not None:
+                            _require(
+                                due_by == _conservative_weekday_deadline(reviewed_at),
+                                f"dynamic small-hold deadline exceeds or contradicts the five-session ceiling for {key}",
+                                errors,
+                            )
+                        if dynamic_reference_time is not None and due_by is not None:
+                            reference_date = dynamic_reference_time.astimezone(STOCKHOLM).date()
+                            _require(
+                                (status == "CURRENT") == (reference_date <= due_by),
+                                f"dynamic small-hold revalidation status contradicts its deadline for {key}",
+                                errors,
+                            )
+                    if status == "CURRENT":
+                        _require(
+                            row.get("low_exposure_decision")
+                            == "INTENTIONAL_MARKER_OR_CORE_HOLD",
+                            f"current small-hold revalidation is not an intentional hold for {key}",
+                            errors,
+                        )
+                    else:
+                        _require(
+                            row.get("low_exposure_decision") == "REPAIR_REQUIRED",
+                            f"stale small-hold revalidation did not fail closed for {key}",
+                            errors,
+                        )
 
         if schema_version >= 7 and isinstance(row.get("mixed_lot_resolution"), dict):
             mixed_resolution = row["mixed_lot_resolution"]
             _require(
-                mixed_resolution.get("schema_version") == 2
+                mixed_resolution.get("schema_version") in {2, 3}
                 and mixed_resolution.get("broker_mutation") is False,
                 f"dynamic R19 mixed-lot authority is invalid for {key}",
                 errors,
@@ -2470,9 +3748,8 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
                 )
                 if crossed and not named:
                     _require(
-                        row.get("buyback_coverage_state") == "REPAIR_REQUIRED"
-                        and row.get("low_exposure_decision") == "REPAIR_REQUIRED",
-                        f"crossed ordinary complete path is not REPAIR_REQUIRED for {key}",
+                        row.get("buyback_coverage_state") == "REPAIR_REQUIRED",
+                        f"crossed ordinary sold cycle is not REPAIR_REQUIRED for {key}",
                         errors,
                     )
                 elif crossed:
@@ -2527,8 +3804,7 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
             for gap in _no_reentry_decision_gaps(identity, decision, dynamic_reference_time):
                 errors.append(f"dynamic no-reentry decision is invalid for {key}: {gap}")
             _require(
-                row.get("low_exposure_decision") == "EXIT_OR_NO_REENTRY_REVIEW"
-                and row.get("buyback_coverage_state") == "LEDGER_ONLY"
+                row.get("buyback_coverage_state") == "LEDGER_ONLY"
                 and row.get("sale_attributed_active_buy_quantity", row.get("active_buy_volume")) == 0
                 and row.get("target_rebuild_quantity") is None
                 and row.get("stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET",
@@ -2638,6 +3914,25 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
         "dynamic low-exposure decision counts mismatch",
         errors,
     )
+    if schema_version >= 9:
+        _require(
+            summary.get("small_hold_revalidation_required_rows")
+            == small_hold_revalidation_required_rows,
+            "dynamic small-hold revalidation required-row count mismatch",
+            errors,
+        )
+        _require(
+            _normalized_state_summary(
+                summary.get("small_hold_revalidation_status_counts"),
+                SMALL_HOLD_REVALIDATION_STATUSES,
+            )
+            == {
+                status: small_hold_revalidation_status_counts.get(status, 0)
+                for status in SMALL_HOLD_REVALIDATION_STATUSES
+            },
+            "dynamic small-hold revalidation status counts mismatch",
+            errors,
+        )
     _require(
         summary.get("percentage_ladders_with_supported_stages") == supported_count,
         "dynamic supported-ladder count mismatch",
@@ -3038,6 +4333,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, default=PLAN_PATH)
     parser.add_argument("--table", type=Path, default=TABLE_PATH)
+    parser.add_argument("--full-history-canonical", type=Path)
+    parser.add_argument("--full-dynamic-mirror", type=Path)
+    parser.add_argument("--official-close", type=Path)
+    parser.add_argument("--raw-boundary", type=Path)
     args = parser.parse_args()
     plan_path = args.plan if args.plan.is_absolute() else ROOT / args.plan
     table_path = args.table if args.table.is_absolute() else ROOT / args.table
@@ -3048,6 +4347,8 @@ def main() -> int:
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     table = table_path.read_text(encoding="utf-8")
     errors = validate_live_refresh(plan, table) if "LIVE_REFRESH" in plan_path.name else validate(plan, table)
+    governed_dormant_ladders = 0
+    full_dynamic_rows = 0
     if table_path == TABLE_PATH or table_path.name == "PORTFOLIO_BUYBACK_LADDER_TABLE_20260806.md":
         daily_path = DAILY_COVERAGE_PATH
         if not daily_path.exists():
@@ -3067,6 +4368,10 @@ def main() -> int:
                 errors.append(f"sold-marker remediation missing for glob: {SOLD_MARKER_REMEDIATION_GLOB}")
             else:
                 remediation_payload = json.loads(remediation_path.read_text(encoding="utf-8"))
+                governed_dormant_ladders = governed_dormant_ladder_count(
+                    dynamic_payload,
+                    remediation_payload,
+                )
                 errors.extend(
                     validate_dynamic_against_sold_marker_recovery(
                         dynamic_payload,
@@ -3113,6 +4418,50 @@ def main() -> int:
                             worklist_payload,
                         )
                     )
+        full_history_path = args.full_history_canonical or latest_full_history_canonical_path()
+        full_dynamic_path = args.full_dynamic_mirror or latest_full_dynamic_governance_mirror_path()
+        official_close_path = args.official_close or latest_official_close_reachability_path()
+        raw_boundary_path = args.raw_boundary or latest_current_raw_boundary_path()
+        required_full_paths = {
+            "full-history canonical": full_history_path,
+            "full dynamic governance mirror": full_dynamic_path,
+            "official-close reachability": official_close_path,
+            "current raw boundary": raw_boundary_path,
+        }
+        for label, path in required_full_paths.items():
+            if path is None or not path.exists():
+                errors.append(f"{label} artifact is missing")
+        if all(path is not None and path.exists() for path in required_full_paths.values()):
+            assert full_history_path is not None
+            assert full_dynamic_path is not None
+            assert official_close_path is not None
+            assert raw_boundary_path is not None
+            full_history_payload = json.loads(
+                full_history_path.read_text(encoding="utf-8")
+            )
+            full_dynamic_payload = json.loads(
+                full_dynamic_path.read_text(encoding="utf-8")
+            )
+            official_close_payload = json.loads(
+                official_close_path.read_text(encoding="utf-8")
+            )
+            raw_boundary_payload = json.loads(
+                raw_boundary_path.read_text(encoding="utf-8")
+            )
+            errors.extend(
+                validate_full_history_canonical(
+                    full_history_payload,
+                    raw_boundary_payload,
+                )
+            )
+            errors.extend(
+                validate_full_dynamic_governance_mirror(
+                    full_dynamic_payload,
+                    full_history_payload,
+                    official_close_payload,
+                )
+            )
+            full_dynamic_rows = len(full_dynamic_payload.get("rows", []))
     if errors:
         for error in errors:
             print(f"[buyback] FAIL: {error}")
@@ -3127,9 +4476,10 @@ def main() -> int:
     if remediation_path is not None:
         remediation_rows = len(json.loads(remediation_path.read_text(encoding="utf-8")).get("rows", []))
     print(
-        f"[buyback] PASS: {len(ladders)} validated ladders; "
+        f"[buyback] PASS: {len(ladders)} executable broker ladders; "
+        f"{governed_dormant_ladders} governed dormant review ladders; "
         f"{dynamic_rows} dynamic live rows; {remediation_rows} sold-marker remediation rows; "
-        "broker inventory remains separately classified"
+        f"{full_dynamic_rows} full-history dynamic rows; broker inventory remains separately classified"
     )
     return 0
 

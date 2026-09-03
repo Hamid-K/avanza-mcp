@@ -1,3 +1,4 @@
+import copy
 import json
 import sys
 
@@ -219,6 +220,59 @@ def current_sold_marker_recovery():
     }
 
 
+def full_history_governance_link(*, repair_required=0):
+    return {
+        "artifact": "PORTFOLIO_FULL_HISTORY_GOVERNANCE_LINK",
+        "schema_version": 1,
+        "canonical": {
+            "artifact": "PORTFOLIO_FULL_HISTORY_CANONICAL",
+            "source": "output/PORTFOLIO_FULL_HISTORY_CANONICAL_20260903_2030.json",
+            "generated_at": "2026-09-03T20:30:00+02:00",
+            "payload_sha256": "a" * 64,
+            "source_identity_count": 4,
+            "effective_lineage_count": 4,
+            "immutable_sale_lot_count": 4,
+            "unique_sale_transaction_id_count": 4,
+            "open_sale_lot_count": 0,
+            "open_sale_quantity_exact": "0",
+        },
+        "dynamic_mirror": {
+            "artifact": "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR",
+            "source": "output/PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_20260903_2030.json",
+            "generated_at": "2026-09-03T20:30:00+02:00",
+            "payload_sha256": "b" * 64,
+            "dynamic_row_count": 4,
+            "mirrored_effective_lineage_count": 4,
+            "mirrored_source_identity_count": 4,
+            "mirrored_immutable_sale_lot_count": 4,
+            "repair_required_row_count": repair_required,
+        },
+        "official_close": {
+            "artifact": "PORTFOLIO_R376_OFFICIAL_CLOSE_REACHABILITY",
+            "source": "output/PORTFOLIO_R376_OFFICIAL_CLOSE_REACHABILITY_20260902_2224.json",
+            "generated_at": "2026-09-02T22:24:00+02:00",
+            "payload_sha256": "c" * 64,
+            "row_count": 2,
+            "state_counts": {"FIRST_STAGE_NOT_REACHED": 2},
+            "later_rebound_erases_crossing": False,
+        },
+        "raw_boundary": {
+            "artifact": "PORTFOLIO_R386_FULL_RAW_BOUNDARY_AFTER_ETH_SETTLEMENT",
+            "source": "output/PORTFOLIO_R386_FULL_RAW_BOUNDARY_20260903_1454.json",
+            "generated_at": "2026-09-03T14:54:00+02:00",
+            "payload_sha256": "d" * 64,
+            "truncation_risk": False,
+        },
+        "validation": {"status": "PASSED", "error_count": 0, "errors": []},
+        "authority": {
+            "trade_authority": False,
+            "broker_mutation": False,
+            "paper_mutation": False,
+        },
+        "objective_complete": False,
+    }
+
+
 def complete_payload():
     return {
         "artifact": "PORTFOLIO_REQUIREMENT_LEVEL_COMPLETION_AUDIT",
@@ -256,9 +310,21 @@ def complete_payload():
             "exact_account_scope_complete": True,
             "generic_recommendation_rows_remaining": 0,
             "current_drift_or_error_rows": "3 holding-drift rows; 0 stop/order error rows",
+            "top_level_stop_recovery_rows": 65,
+            "top_level_review_schedule_rows": 65,
+            "account_semantic_rows": 107,
+            "account_semantic_stop_recovery_rows": 107,
+            "dynamic_identity_contract": {
+                "schema_version": 1,
+                "instrument_count": 65,
+                "account_position_count": 107,
+                "instrument_identity_sha256": "e" * 64,
+                "account_position_identity_sha256": "f" * 64,
+                "objective_audit_identity_parity": True,
+            },
         },
         "portfolio_control_coverage": {
-            "factor": {"artifact": "PORTFOLIO_FACTOR_EXPOSURE", "instrument_rows": 65, "unique_instruments": 65, "account_position_rows": 107, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
+            "factor": {"artifact": "PORTFOLIO_FACTOR_EXPOSURE", "instrument_rows": 65, "unique_instruments": 65, "account_position_rows": 107, "exact_account_scope_rows": 107, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "pending_order": {"artifact": "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION", "active_rows": 54, "unique_stop_ids": 54, "buy_rows": 46, "sell_rows": 8, "generic_implementation_rows": 0, "all_strategy_intents_recorded": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "displacement": {"artifact": "PORTFOLIO_CAPITAL_DISPLACEMENT", "rows": 23, "candidate_before_cancellation_remains_binding": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
             "risk": {"artifact": "PORTFOLIO_RISK_GOVERNANCE", "authorization": "ANALYSIS_AND_POLICY_ONLY", "hard_churn_brake_active": True, "freshness": {"status": "STAMPED_ANALYSIS_SNAPSHOT", "live_state_current": False, "live_refresh_verified": False, "requires_new_scoped_live_refresh_before_action": True}},
@@ -437,6 +503,13 @@ def test_enrichment_refreshes_r19_checkpoint_for_new_dynamic_schema():
     assert "R19 schema-8 dynamic buyback" in checkpoint["source"]
     assert enriched["current_live_audit"].endswith("2026-08-28T13:55:24+02:00")
     assert enriched["current_live_governance_overlay"].endswith("20260828_1348.json")
+    refreshed_r3 = {row["id"]: row for row in enriched["requirements"]}["R3"]
+    assert "1,980 immutable sale lots" in refreshed_r3["evidence"]
+    assert "4 inner remediation rows totaling 271 shares remain open" in refreshed_r3["evidence"]
+    assert "2 missed-path repairs" in refreshed_r3["evidence"]
+    assert "23 unsupported material gaps" in refreshed_r3["evidence"]
+    assert "2 named-exception reviews" in refreshed_r3["evidence"]
+    assert "99,999" not in refreshed_r3["evidence"]
 
 
 def test_schema7_audit_rejects_stale_r4_machine_totals():
@@ -792,6 +865,7 @@ def test_completion_audit_rejects_false_completion_or_authority():
 
 def completed_contract_payload():
     payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
     payload.update({
         "complete": True,
         "overall_status": "COMPLETE",
@@ -800,12 +874,6 @@ def completed_contract_payload():
     payload["current_control_state"].update({
         "live_state_current": True,
         "live_refresh_required_before_action": False,
-    })
-    payload["strategy_coverage"].update({
-        "top_level_stop_recovery_rows": 65,
-        "top_level_review_schedule_rows": 65,
-        "account_semantic_rows": 107,
-        "account_semantic_stop_recovery_rows": 107,
     })
     payload["strategy_audit_coverage"].update({
         "status": "CURRENT_SCOPED_LIVE_REFRESH",
@@ -851,6 +919,16 @@ def completed_contract_payload():
         "INTENTIONAL_MARKER_OR_CORE_HOLD": 57,
         "REPAIR_REQUIRED": 0,
     })
+    payload["current_buyback_coverage"]["schema_version"] = 9
+    payload["current_buyback_coverage"]["summary"].update({
+        "small_hold_revalidation_required_rows": 57,
+        "small_hold_revalidation_status_counts": {
+            "CURRENT": 57,
+            "EXPIRED": 0,
+            "MISSING": 0,
+            "INVALID": 0,
+        },
+    })
     payload["current_sold_marker_recovery"]["status"] = "COMPLETE"
     payload["current_sold_marker_recovery"]["rows"] = []
     payload["current_sold_marker_recovery"]["row_count"] = 0
@@ -860,17 +938,101 @@ def completed_contract_payload():
         "partial_sale_attributed_active_rows": 0,
         "explicit_no_reentry_rows": 0,
         "open_material_rows": 0,
+        "material_path_open_rows": 0,
+        "named_exception_path_review_rows": 0,
         "remaining_open_quantity_across_material_rows": 0,
     })
     payload["current_sold_marker_recovery"]["dynamic_reconciliation"].update({
         "row_count": 0,
         "rows": [],
     })
+    sold_summary = payload["current_sold_marker_recovery"]["summary"]
+    payload["current_live_reconciliation"].update({
+        "source": "Exact-scoped MCP plus the approved R19 schema-9 dynamic buyback and sold-marker artifacts",
+        "dynamic_buyback_schema_version": 9,
+        "sold_marker_summary": {
+            field: sold_summary[field]
+            for field in (
+                "exact_account_rows_with_prior_same_account_sales",
+                "modeled_sale_lots",
+                "open_material_rows",
+                "remaining_open_quantity_across_material_rows",
+                "repair_required_missed_path_rows",
+                "material_path_open_rows",
+                "named_exception_path_review_rows",
+                "explicit_no_reentry_rows",
+            )
+        },
+    })
+    full_history = full_history_governance_link()
+    payload["full_history_governance"] = full_history
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        full_history
+    )
+    requirements = {row["id"]: row for row in payload["requirements"]}
+    requirements["R3"]["governance_revision"] = "R390_DYNAMIC_FULL_HISTORY"
+    requirements["R3"]["evidence"] = (
+        "Approved R19 mixed-lot evidence models 4 source identities, 4 effective lineages, "
+        "and 4 immutable sale lots across 4 dynamic rows; "
+        "0 inner remediation rows totaling 0 shares remain open, with 0 missed-path repairs, "
+        "0 unsupported material gaps, and 0 named-exception reviews."
+    )
+    requirements["R4"]["evidence"] = (
+        "Current exact-account audits retain 0 missed-path repairs and "
+        "0 unsupported material gaps under fail-closed review."
+    )
     payload["completion_blockers"] = []
     for row in payload["requirements"]:
         row["status"] = "COMPLETED"
         row["remaining_proof"] = ""
     return payload
+
+
+def sync_completed_r19_checkpoint(payload):
+    summary = payload["current_sold_marker_recovery"]["summary"]
+    checkpoint = payload["current_live_reconciliation"]
+    checkpoint["sold_marker_summary"] = {
+        field: summary[field]
+        for field in (
+            "exact_account_rows_with_prior_same_account_sales",
+            "modeled_sale_lots",
+            "open_material_rows",
+            "remaining_open_quantity_across_material_rows",
+            "repair_required_missed_path_rows",
+            "material_path_open_rows",
+            "named_exception_path_review_rows",
+            "explicit_no_reentry_rows",
+        )
+    }
+    requirements = {row["id"]: row for row in payload["requirements"]}
+    full_history = payload.get("full_history_governance", {})
+    canonical = full_history.get("canonical", {}) if isinstance(full_history, dict) else {}
+    mirror = full_history.get("dynamic_mirror", {}) if isinstance(full_history, dict) else {}
+    full_prefix = (
+        f"{canonical['source_identity_count']} source identities, "
+        f"{canonical['effective_lineage_count']} effective lineages, and "
+        f"{canonical['immutable_sale_lot_count']} immutable sale lots across "
+        f"{mirror['dynamic_row_count']} dynamic rows"
+        if canonical
+        else f"{summary['modeled_sale_lots']} immutable sale lots"
+    )
+    open_row_label = "inner remediation rows" if canonical else "rows"
+    requirements["R3"]["governance_revision"] = (
+        "R390_DYNAMIC_FULL_HISTORY" if canonical else "R19_MIXED_LOT"
+    )
+    requirements["R3"]["evidence"] = (
+        f"Approved R19 mixed-lot evidence models {full_prefix}; "
+        f"{summary['open_material_rows']} {open_row_label} totaling "
+        f"{summary['remaining_open_quantity_across_material_rows']} shares remain open, with "
+        f"{summary['repair_required_missed_path_rows']} missed-path repairs, "
+        f"{summary['material_path_open_rows']} unsupported material gaps, and "
+        f"{summary['named_exception_path_review_rows']} named-exception reviews."
+    )
+    requirements["R4"]["evidence"] = (
+        f"Current exact-account audits retain {summary['repair_required_missed_path_rows']} "
+        f"missed-path repairs and {summary['material_path_open_rows']} unsupported material gaps "
+        "under fail-closed review."
+    )
 
 
 def add_governed_dormant_sold_marker_ladder(payload):
@@ -917,6 +1079,7 @@ def add_governed_dormant_sold_marker_ladder(payload):
         "remaining_open_quantity_across_material_rows": 158,
     })
     current["dynamic_reconciliation"].update({"rows": [reconciliation], "row_count": 1})
+    sync_completed_r19_checkpoint(payload)
     return recovery, reconciliation
 
 
@@ -972,11 +1135,147 @@ def add_valid_no_reentry_sold_marker_decision(payload, *, decision=None):
         "remaining_open_quantity_across_material_rows": 0,
     })
     current["dynamic_reconciliation"].update({"rows": [reconciliation], "row_count": 1})
+    sync_completed_r19_checkpoint(payload)
     return recovery, reconciliation
 
 
 def test_completion_audit_accepts_a_proven_current_live_contract():
     assert validate(completed_contract_payload()) == []
+
+
+def test_completion_audit_accepts_row_derived_strategy_counts():
+    payload = completed_contract_payload()
+    strategy = payload["strategy_coverage"]
+    strategy.update({
+        "unique_instruments": 66,
+        "account_position_rows": 108,
+        "exact_account_scope_rows": 108,
+        "top_level_stop_recovery_rows": 66,
+        "top_level_review_schedule_rows": 66,
+        "account_semantic_rows": 108,
+        "account_semantic_stop_recovery_rows": 108,
+    })
+    strategy["dynamic_identity_contract"].update({
+        "instrument_count": 66,
+        "account_position_count": 108,
+    })
+    factor = payload["portfolio_control_coverage"]["factor"]
+    factor.update({
+        "instrument_rows": 66,
+        "unique_instruments": 66,
+        "account_position_rows": 108,
+        "exact_account_scope_rows": 108,
+    })
+    payload["transaction_coverage"]["historical_account_position_rows"] = 108
+
+    assert validate(payload) == []
+
+
+def test_completion_audit_rejects_missing_full_history_governance_link():
+    payload = completed_contract_payload()
+    del payload["full_history_governance"]
+
+    errors = validate(payload)
+
+    assert "full-history governance link is missing" in errors
+
+
+def test_completion_audit_rejects_full_history_mirror_count_drift():
+    payload = completed_contract_payload()
+    payload["full_history_governance"]["dynamic_mirror"][
+        "mirrored_immutable_sale_lot_count"
+    ] = 3
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        payload["full_history_governance"]
+    )
+
+    errors = validate(payload)
+
+    assert "full-history mirror sale-lot count mismatch" in errors
+
+
+def test_completion_audit_rejects_truncated_full_history_boundary():
+    payload = completed_contract_payload()
+    payload["full_history_governance"]["raw_boundary"]["truncation_risk"] = True
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        payload["full_history_governance"]
+    )
+
+    errors = validate(payload)
+
+    assert "full-history raw boundary retains truncation risk" in errors
+
+
+def test_completion_audit_rejects_full_history_validation_failure():
+    payload = completed_contract_payload()
+    payload["full_history_governance"]["validation"] = {
+        "status": "FAILED",
+        "error_count": 1,
+        "errors": ["source parity mismatch"],
+    }
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        payload["full_history_governance"]
+    )
+
+    errors = validate(payload)
+
+    assert "full-history canonical or mirror validation did not pass" in errors
+
+
+def test_completion_audit_rejects_full_history_repairs():
+    payload = completed_contract_payload()
+    payload["full_history_governance"]["dynamic_mirror"]["repair_required_row_count"] = 1
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        payload["full_history_governance"]
+    )
+
+    errors = validate(payload)
+
+    assert "completed goal retains full-history REPAIR_REQUIRED rows" in errors
+
+
+def test_incomplete_audit_accepts_valid_full_history_with_open_repairs():
+    payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
+    payload["full_history_governance"] = full_history_governance_link(
+        repair_required=1
+    )
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        payload["full_history_governance"]
+    )
+    sync_completed_r19_checkpoint(payload)
+
+    assert validate(payload) == []
+
+
+def test_incomplete_audit_rejects_present_invalid_full_history_link():
+    payload = complete_payload()
+    _apply_schema7_r19_parity(payload)
+    payload["full_history_governance"] = full_history_governance_link(
+        repair_required=1
+    )
+    payload["full_history_governance"]["canonical"]["payload_sha256"] = "not-a-hash"
+    payload["current_live_reconciliation"]["full_history_governance"] = copy.deepcopy(
+        payload["full_history_governance"]
+    )
+    sync_completed_r19_checkpoint(payload)
+
+    errors = validate(payload)
+
+    assert "full-history canonical payload digest is invalid" in errors
+
+
+def test_completion_audit_rejects_expired_small_hold_revalidation():
+    payload = completed_contract_payload()
+    statuses = payload["current_buyback_coverage"]["summary"][
+        "small_hold_revalidation_status_counts"
+    ]
+    statuses["CURRENT"] = 56
+    statuses["EXPIRED"] = 1
+
+    errors = validate(payload)
+
+    assert "completed goal retains stale or invalid small-hold revalidation rows" in errors
 
 
 def test_completion_audit_accepts_valid_time_bounded_no_reentry_decision():
@@ -1161,6 +1460,20 @@ def test_completion_audit_rejects_rebound_snapshot_that_hides_repair_identity():
     errors = validate(payload)
 
     assert any("missed path is not retained as REPAIR_REQUIRED" in error for error in errors)
+
+
+def test_completion_audit_keeps_sold_cycle_repair_independent_from_current_exposure_intent():
+    payload = complete_payload()
+    row = payload["current_sold_marker_recovery"]["dynamic_reconciliation"]["rows"][0]
+    row.update({
+        "dynamic_buyback_coverage_state": "REPAIR_REQUIRED",
+        "dynamic_low_exposure_decision": "INTENTIONAL_MARKER_OR_CORE_HOLD",
+        "dynamic_protection_classification": "CORE_HOLD_EXCEPTION",
+    })
+
+    errors = validate(payload)
+
+    assert not any("missed path is not retained as REPAIR_REQUIRED" in error for error in errors)
 
 
 def test_completion_audit_rejects_clean_claim_with_partial_uncovered_remainder():

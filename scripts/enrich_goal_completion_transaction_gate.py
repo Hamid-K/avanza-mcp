@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,8 @@ try:
     from scripts.verify_buyback_ladder_artifact import (
         sold_marker_dynamic_reconciliation_rows,
         sold_marker_governance_gap_rows,
+        validate_full_dynamic_governance_mirror,
+        validate_full_history_canonical,
         validate_dynamic_against_sold_marker_recovery,
         validate_dynamic_live_coverage,
         validate_sold_marker_remediation,
@@ -23,6 +27,8 @@ except ModuleNotFoundError:  # Direct script execution resolves sibling modules.
     from verify_buyback_ladder_artifact import (
         sold_marker_dynamic_reconciliation_rows,
         sold_marker_governance_gap_rows,
+        validate_full_dynamic_governance_mirror,
+        validate_full_history_canonical,
         validate_dynamic_against_sold_marker_recovery,
         validate_dynamic_live_coverage,
         validate_sold_marker_remediation,
@@ -40,6 +46,12 @@ BUYBACK = ROOT / "output" / "PORTFOLIO_BUYBACK_DAILY_COVERAGE_20260806.json"
 BUYBACK_REPAIR = ROOT / "output" / "PORTFOLIO_BUYBACK_REPAIR_REFRESH_20260806.json"
 DYNAMIC_BUYBACK_GLOB = "PORTFOLIO_BUYBACK_LIVE_COVERAGE_[0-9]*.json"
 SOLD_MARKER_REMEDIATION_GLOB = "PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_[0-9]*.json"
+FULL_HISTORY_CANONICAL_GLOB = "PORTFOLIO_FULL_HISTORY_CANONICAL_[0-9]*.json"
+FULL_DYNAMIC_GOVERNANCE_MIRROR_GLOB = (
+    "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_[0-9]*.json"
+)
+OFFICIAL_CLOSE_REACHABILITY_GLOB = "PORTFOLIO_R*_OFFICIAL_CLOSE_REACHABILITY_[0-9]*.json"
+CURRENT_RAW_BOUNDARY_GLOB = "PORTFOLIO_R*_FULL_RAW_BOUNDARY_*.json"
 STRATEGY = ROOT / "output" / "PORTFOLIO_INSTRUMENT_STRATEGY_MASTER_20260731.json"
 FACTOR = ROOT / "output" / "PORTFOLIO_FACTOR_EXPOSURE_20260731.json"
 PENDING = ROOT / "output" / "PORTFOLIO_PENDING_ORDER_IMPLEMENTATION_20260731.json"
@@ -77,6 +89,16 @@ def _canonical_text(value: Any) -> str:
 
     text = str(value or "").replace(";;z ", " ")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _payload_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _holding_only_exception_metadata(
@@ -170,6 +192,27 @@ def latest_live_strategy_audit_path() -> Path | None:
 def latest_raw_transaction_recovery_path() -> Path | None:
     paths = sorted((ROOT / "output").glob(RAW_TRANSACTION_RECOVERY_GLOB))
     return paths[-1] if paths else None
+
+
+def _latest_output_path(pattern: str) -> Path | None:
+    paths = sorted((ROOT / "output").glob(pattern))
+    return paths[-1] if paths else None
+
+
+def latest_full_history_canonical_path() -> Path | None:
+    return _latest_output_path(FULL_HISTORY_CANONICAL_GLOB)
+
+
+def latest_full_dynamic_governance_mirror_path() -> Path | None:
+    return _latest_output_path(FULL_DYNAMIC_GOVERNANCE_MIRROR_GLOB)
+
+
+def latest_official_close_reachability_path() -> Path | None:
+    return _latest_output_path(OFFICIAL_CLOSE_REACHABILITY_GLOB)
+
+
+def latest_current_raw_boundary_path() -> Path | None:
+    return _latest_output_path(CURRENT_RAW_BOUNDARY_GLOB)
 
 
 def _raw_transaction_recovery_is_complete(payload: dict[str, Any]) -> bool:
@@ -282,6 +325,110 @@ def _current_sold_marker_recovery_link(
     }
 
 
+def _full_history_governance_link(
+    canonical: dict[str, Any],
+    canonical_source: str,
+    dynamic_mirror: dict[str, Any],
+    dynamic_mirror_source: str,
+    official_close: dict[str, Any],
+    official_close_source: str,
+    raw_boundary: dict[str, Any],
+    raw_boundary_source: str,
+) -> dict[str, Any]:
+    errors = validate_full_history_canonical(canonical, raw_boundary)
+    errors.extend(
+        validate_full_dynamic_governance_mirror(
+            dynamic_mirror,
+            canonical,
+            official_close,
+        )
+    )
+    errors = list(dict.fromkeys(errors))
+    canonical_summary = canonical.get("summary", {})
+    dynamic_summary = dynamic_mirror.get("summary", {})
+    official_rows = [
+        row for row in official_close.get("rows", []) if isinstance(row, dict)
+    ]
+    official_states = Counter(str(row.get("state") or "") for row in official_rows)
+    mirror_rows = [
+        row for row in dynamic_mirror.get("rows", []) if isinstance(row, dict)
+    ]
+    repair_rows = sum(
+        row.get("buyback_coverage_state") == "REPAIR_REQUIRED" for row in mirror_rows
+    )
+    return {
+        "artifact": "PORTFOLIO_FULL_HISTORY_GOVERNANCE_LINK",
+        "schema_version": 1,
+        "canonical": {
+            "artifact": canonical.get("artifact"),
+            "source": canonical_source,
+            "generated_at": canonical.get("generated_at"),
+            "payload_sha256": _payload_sha256(canonical),
+            "source_identity_count": canonical_summary.get("source_identity_count"),
+            "effective_lineage_count": canonical_summary.get(
+                "effective_lineage_count"
+            ),
+            "immutable_sale_lot_count": canonical_summary.get(
+                "immutable_sale_lot_count"
+            ),
+            "unique_sale_transaction_id_count": canonical_summary.get(
+                "unique_sale_transaction_id_count"
+            ),
+            "open_sale_lot_count": canonical_summary.get("open_sale_lot_count"),
+            "open_sale_quantity_exact": canonical_summary.get(
+                "open_sale_quantity_exact"
+            ),
+        },
+        "dynamic_mirror": {
+            "artifact": dynamic_mirror.get("artifact"),
+            "source": dynamic_mirror_source,
+            "generated_at": dynamic_mirror.get("generated_at"),
+            "payload_sha256": _payload_sha256(dynamic_mirror),
+            "dynamic_row_count": dynamic_summary.get("dynamic_row_count"),
+            "mirrored_effective_lineage_count": dynamic_summary.get(
+                "mirrored_effective_lineage_count"
+            ),
+            "mirrored_source_identity_count": dynamic_summary.get(
+                "mirrored_source_identity_count"
+            ),
+            "mirrored_immutable_sale_lot_count": dynamic_summary.get(
+                "mirrored_immutable_sale_lot_count"
+            ),
+            "repair_required_row_count": repair_rows,
+        },
+        "official_close": {
+            "artifact": official_close.get("artifact_id")
+            or official_close.get("artifact"),
+            "source": official_close_source,
+            "generated_at": official_close.get("generated_at"),
+            "payload_sha256": _payload_sha256(official_close),
+            "row_count": len(official_rows),
+            "state_counts": dict(sorted(official_states.items())),
+            "later_rebound_erases_crossing": False,
+        },
+        "raw_boundary": {
+            "artifact": raw_boundary.get("artifact"),
+            "source": raw_boundary_source,
+            "generated_at": raw_boundary.get("generated_at"),
+            "payload_sha256": _payload_sha256(raw_boundary),
+            "truncation_risk": raw_boundary.get("current_boundary", {}).get(
+                "truncation_risk"
+            ),
+        },
+        "validation": {
+            "status": "PASSED" if not errors else "FAILED",
+            "error_count": len(errors),
+            "errors": errors,
+        },
+        "authority": {
+            "trade_authority": False,
+            "broker_mutation": False,
+            "paper_mutation": False,
+        },
+        "objective_complete": False,
+    }
+
+
 def _refresh_r19_live_reconciliation(
     existing: dict[str, Any] | None,
     current_buyback: dict[str, Any],
@@ -367,6 +514,14 @@ def enrich(
     sold_marker_recovery: dict[str, Any] | None = None,
     sold_marker_recovery_source: str | None = None,
     raw_transaction_recovery_source: str | None = None,
+    full_history_canonical: dict[str, Any] | None = None,
+    full_history_canonical_source: str | None = None,
+    full_dynamic_governance_mirror: dict[str, Any] | None = None,
+    full_dynamic_governance_mirror_source: str | None = None,
+    official_close_reachability: dict[str, Any] | None = None,
+    official_close_reachability_source: str | None = None,
+    current_raw_boundary: dict[str, Any] | None = None,
+    current_raw_boundary_source: str | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     # Do not mutate the caller's nested requirement/blocker rows.  The verifier
@@ -519,6 +674,9 @@ def enrich(
         "top_level_review_schedule_rows": top_review_schedule_rows,
         "account_semantic_rows": account_semantic_rows,
         "account_semantic_stop_recovery_rows": account_stop_recovery_rows,
+        "dynamic_identity_contract": copy.deepcopy(
+            strategy_validation.get("dynamic_identity_contract", {})
+        ),
     }
     factor = factor or {}
     factor_validation = factor.get("validation", {})
@@ -688,6 +846,35 @@ def enrich(
             sold_marker_recovery,
             sold_marker_recovery_source or "output/PORTFOLIO_SOLD_MARKER_REMEDIATION_LIVE_LATEST.json",
         )
+    full_governance_inputs = (
+        full_history_canonical,
+        full_dynamic_governance_mirror,
+        official_close_reachability,
+        current_raw_boundary,
+    )
+    if all(isinstance(value, dict) for value in full_governance_inputs):
+        assert full_history_canonical is not None
+        assert full_dynamic_governance_mirror is not None
+        assert official_close_reachability is not None
+        assert current_raw_boundary is not None
+        enriched["full_history_governance"] = _full_history_governance_link(
+            full_history_canonical,
+            full_history_canonical_source
+            or "output/PORTFOLIO_FULL_HISTORY_CANONICAL_LATEST.json",
+            full_dynamic_governance_mirror,
+            full_dynamic_governance_mirror_source
+            or "output/PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_LATEST.json",
+            official_close_reachability,
+            official_close_reachability_source
+            or "output/PORTFOLIO_OFFICIAL_CLOSE_REACHABILITY_LATEST.json",
+            current_raw_boundary,
+            current_raw_boundary_source
+            or "output/PORTFOLIO_FULL_RAW_BOUNDARY_LATEST.json",
+        )
+        checkpoint = enriched.setdefault("current_live_reconciliation", {})
+        checkpoint["full_history_governance"] = copy.deepcopy(
+            enriched["full_history_governance"]
+        )
     live_strategy_audit = live_strategy_audit or {}
     live_scopes = live_strategy_audit.get("scopes", [])
     if live_strategy_audit.get("generated_at"):
@@ -849,6 +1036,25 @@ def enrich(
             }
         )
     enriched["completion_blockers"] = blockers
+    full_history_link = enriched.get("full_history_governance", {})
+    full_history_validation = full_history_link.get("validation", {})
+    if full_history_link and full_history_validation.get("status") != "PASSED":
+        enriched["completion_blockers"].append(
+            {
+                "id": "B9",
+                "type": "FULL_HISTORY_CANONICAL_PARITY_GAP",
+                "item": (
+                    "The linked full-history canonical and dynamic mirror fail "
+                    f"{int(full_history_validation.get('error_count', 0) or 0)} "
+                    "structural validation checks."
+                ),
+                "condition_to_close": (
+                    "Rebuild from the current exact raw boundary and require zero "
+                    "source, lineage, lot, allocation, terminal, mirror, and "
+                    "official-close parity errors."
+                ),
+            }
+        )
     if int(scheduler.get("validation", {}).get("terminal_rows_in_active_section", 0) or 0) > 0:
         enriched["completion_blockers"].append(
             {
@@ -884,6 +1090,9 @@ def enrich(
     sold_marker_summary = sold_marker_link.get("summary", {})
     sold_marker_validation = sold_marker_link.get("dynamic_reconciliation", {})
     sold_marker_reconciliation_rows = sold_marker_validation.get("rows", [])
+    full_canonical_summary = full_history_link.get("canonical", {})
+    full_dynamic_summary = full_history_link.get("dynamic_mirror", {})
+    full_history_valid = full_history_validation.get("status") == "PASSED"
     sold_marker_gap_rows = (
         sold_marker_governance_gap_rows(sold_marker_reconciliation_rows)
         if isinstance(sold_marker_reconciliation_rows, list)
@@ -922,6 +1131,56 @@ def enrich(
             for gap in sold_marker_gap_rows
         )
     ]
+    if sold_marker_link and isinstance(current_buyback, dict):
+        buyback_summary = current_buyback.get("summary", {})
+        buyback_state_counts = buyback_summary.get("buyback_coverage_state_counts", {})
+        state_order = (
+            "REPAIR_REQUIRED",
+            "LADDER_GAP",
+            "LADDER_DORMANT",
+            "LADDER_ACTIVE",
+            "LEDGER_ONLY",
+            "NAMED_EXCEPTION",
+        )
+        state_summary = ", ".join(
+            f"{int(buyback_state_counts.get(state, 0) or 0)} {state}"
+            for state in state_order
+            if int(buyback_state_counts.get(state, 0) or 0) > 0
+        )
+        for requirement in enriched.get("requirements", []):
+            if requirement.get("id") != "R3":
+                continue
+            requirement["status"] = "CURRENT_BUYBACK_COVERAGE_OPEN_OUTCOME"
+            requirement["governance_revision"] = (
+                "R390_DYNAMIC_FULL_HISTORY"
+                if full_history_valid
+                else "R19_MIXED_LOT"
+            )
+            requirement["evidence"] = (
+                f"The current schema-{int(current_buyback.get('schema_version', 0) or 0)} current-position coverage "
+                f"contains {int(buyback_summary.get('exact_account_rows', 0) or 0)} exact rows: {state_summary}. "
+                f"The full-history canonical models "
+                f"{int(full_canonical_summary.get('source_identity_count', sold_marker_summary.get('exact_account_rows_with_prior_same_account_sales', 0)) or 0)} "
+                f"source identities, {int(full_canonical_summary.get('effective_lineage_count', 0) or 0)} effective lineages, and "
+                f"{int(full_canonical_summary.get('immutable_sale_lot_count', sold_marker_summary.get('modeled_sale_lots', 0)) or 0):,} immutable sale lots "
+                f"across {int(full_dynamic_summary.get('dynamic_row_count', buyback_summary.get('exact_account_rows', 0)) or 0)} dynamic rows; "
+                f"{int(sold_marker_summary.get('open_material_rows', 0) or 0)} inner remediation rows totaling "
+                f"{int(sold_marker_summary.get('remaining_open_quantity_across_material_rows', 0) or 0):,} shares remain open, "
+                f"with {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
+                f"{int(sold_marker_summary.get('material_path_open_rows', sold_marker_summary.get('percentage_not_set_open_rows', 0)) or 0)} "
+                f"unsupported material gaps, and "
+                f"{int(sold_marker_summary.get('named_exception_path_review_rows', 0) or 0)} named-exception reviews. "
+                f"R19 and later exact mixed-lot decisions preserve immutable source parity; {len(governed_dormant_rows)} "
+                "fully quantified dormant ladder rows are governed review coverage, never broker authority."
+            )
+            requirement["remaining_proof"] = (
+                f"Resolve the {int(sold_marker_summary.get('repair_required_missed_path_rows', 0) or 0)} missed-path repairs, "
+                f"{int(sold_marker_summary.get('material_path_open_rows', sold_marker_summary.get('percentage_not_set_open_rows', 0)) or 0)} "
+                f"unsupported material gaps, and "
+                f"{int(sold_marker_summary.get('named_exception_path_review_rows', 0) or 0)} named-exception reviews only through "
+                "qualifying exact-lot recovery, a supported stock-specific ladder, or a valid dated terminal decision; "
+                "continue aligned lifecycle observations for fills, missed participation, churn, and higher-price rebuys."
+            )
     percentage_not_set_repair_rows = [
         row for row in repair_gap_rows
         if row.get("dynamic_stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
@@ -981,14 +1240,20 @@ def enrich(
                 ),
             }
         )
+    strategy_unique_instruments = int(
+        strategy_validation.get("unique_instruments", 0) or 0
+    )
+    strategy_account_rows = int(
+        strategy_validation.get("account_position_rows", 0) or 0
+    )
     for row in enriched.get("requirements", []):
         if row.get("id") == "R1":
             if transaction_live or transaction_raw_verified:
                 row["evidence"] = _remove_legacy_clauses(
                     row.get("evidence"),
                     (
-                        "Historical summary transaction coverage is separately reconciled to 107 exact account-position rows, but raw/recent scoped rows remain open.",
-                        "Historical summary transaction coverage is separately reconciled to 107 exact account-position rows, the five exact manual-exit identities are linked, but raw/recent scoped rows remain open.",
+                        f"Historical summary transaction coverage is separately reconciled to {strategy_account_rows} exact account-position rows, but raw/recent scoped rows remain open.",
+                        f"Historical summary transaction coverage is separately reconciled to {strategy_account_rows} exact account-position rows, the five exact manual-exit identities are linked, but raw/recent scoped rows remain open.",
                     ),
                 )
             row["evidence"] = _append_once(
@@ -997,11 +1262,11 @@ def enrich(
                     "Exact-account raw BUY/SELL history is recaptured with verified row shape, complete Personal and DarkCell windows, and all five manual exits matched to uncancelled SELL rows with zero same-day BUY quantity."
                     if transaction_raw_verified
                     else
-                    "Historical summary transaction coverage is reconciled to 107 exact account-position rows, and a current "
+                    f"Historical summary transaction coverage is reconciled to {strategy_account_rows} exact account-position rows, and a current "
                     "scoped live transaction window proves all five manual-exit dates have one SELL and zero related same-day BUY rows; "
                     "the historical raw source remains unavailable."
                     if transaction_live
-                    else "Historical summary transaction coverage is separately reconciled to 107 exact account-position rows, "
+                    else f"Historical summary transaction coverage is separately reconciled to {strategy_account_rows} exact account-position rows, "
                     "the five exact manual-exit identities are linked, but raw/recent scoped rows remain open."
                 ),
             )
@@ -1114,9 +1379,21 @@ def enrich(
     if transaction_live or live_scopes:
         for row in enriched.get("requirements", []):
             if row.get("id") == "R1" and transaction_live:
+                history_clause = (
+                    f"The validated full-history canonical contains {int(full_canonical_summary.get('source_identity_count', 0) or 0)} "
+                    f"source identities, {int(full_canonical_summary.get('effective_lineage_count', 0) or 0)} effective lineages, "
+                    f"and {int(full_canonical_summary.get('immutable_sale_lot_count', 0) or 0):,} unique immutable sale lots."
+                    if full_history_valid
+                    else (
+                        f"Historical summary transaction coverage is reconciled to {strategy_account_rows} exact account-position rows; "
+                        "the historical raw source remains unavailable."
+                    )
+                )
                 row["evidence"] = (
-                    "The strategy master covers 65 unique instruments and 107 exact account-position rows; the latest policy audit reports zero missing business fields, generic recommendations, and generic next gates. "
-                    "Historical summary transaction coverage is reconciled to 107 exact account-position rows, and a current scoped live transaction window proves all five manual-exit dates have one SELL and zero related same-day BUY rows; the historical raw source remains unavailable."
+                    f"The strategy master derives {strategy_unique_instruments} unique instruments and "
+                    f"{strategy_account_rows} exact account-position rows; the latest policy audit reports zero missing "
+                    f"business fields, generic recommendations, and generic next gates. {history_clause} A current scoped "
+                    "live transaction window proves all five manual-exit dates have one SELL and zero related same-day BUY rows."
                 )
                 row["remaining_proof"] = (
                     "Continue dated event and lifecycle review; structural completeness is not a performance claim. "
@@ -1179,6 +1456,42 @@ def main() -> int:
     current_buyback = json.loads(current_buyback_path.read_text(encoding="utf-8"))
     sold_marker_recovery_path = latest_sold_marker_remediation_path()
     sold_marker_recovery = json.loads(sold_marker_recovery_path.read_text(encoding="utf-8"))
+    full_history_canonical_path = latest_full_history_canonical_path()
+    full_dynamic_governance_mirror_path = latest_full_dynamic_governance_mirror_path()
+    official_close_reachability_path = latest_official_close_reachability_path()
+    current_raw_boundary_path = latest_current_raw_boundary_path()
+    required_full_paths = {
+        "full-history canonical": full_history_canonical_path,
+        "full dynamic governance mirror": full_dynamic_governance_mirror_path,
+        "official-close reachability": official_close_reachability_path,
+        "current raw boundary": current_raw_boundary_path,
+    }
+    missing_full_paths = [
+        label
+        for label, path in required_full_paths.items()
+        if path is None or not path.exists()
+    ]
+    if missing_full_paths:
+        raise FileNotFoundError(
+            "missing required full-governance artifacts: "
+            + ", ".join(missing_full_paths)
+        )
+    assert full_history_canonical_path is not None
+    assert full_dynamic_governance_mirror_path is not None
+    assert official_close_reachability_path is not None
+    assert current_raw_boundary_path is not None
+    full_history_canonical = json.loads(
+        full_history_canonical_path.read_text(encoding="utf-8")
+    )
+    full_dynamic_governance_mirror = json.loads(
+        full_dynamic_governance_mirror_path.read_text(encoding="utf-8")
+    )
+    official_close_reachability = json.loads(
+        official_close_reachability_path.read_text(encoding="utf-8")
+    )
+    current_raw_boundary = json.loads(
+        current_raw_boundary_path.read_text(encoding="utf-8")
+    )
     manual_exit_live_reconciliation = json.loads(MANUAL_EXIT_LIVE.read_text(encoding="utf-8")) if MANUAL_EXIT_LIVE.exists() else {}
     raw_transaction_recovery_path = latest_raw_transaction_recovery_path()
     raw_transaction_recovery = (
@@ -1223,6 +1536,20 @@ def main() -> int:
                     if raw_transaction_recovery_path is not None
                     else None
                 ),
+                full_history_canonical=full_history_canonical,
+                full_history_canonical_source=(
+                    f"output/{full_history_canonical_path.name}"
+                ),
+                full_dynamic_governance_mirror=full_dynamic_governance_mirror,
+                full_dynamic_governance_mirror_source=(
+                    f"output/{full_dynamic_governance_mirror_path.name}"
+                ),
+                official_close_reachability=official_close_reachability,
+                official_close_reachability_source=(
+                    f"output/{official_close_reachability_path.name}"
+                ),
+                current_raw_boundary=current_raw_boundary,
+                current_raw_boundary_source=f"output/{current_raw_boundary_path.name}",
             ),
             indent=2,
         )

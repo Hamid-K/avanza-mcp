@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -45,6 +46,11 @@ MARKET_SESSION_STATES = {
     "UNKNOWN",
 }
 ELIGIBLE_SESSION_STATES = {"REGULAR_SESSION", "EARLY_CLOSE"}
+TIMING_ANNOTATION_CLASSES = {
+    "PRESERVED_LATE_FAILED_ATTEMPT",
+    "PRESERVED_OUT_OF_WINDOW_HEARTBEAT",
+    "PRESERVED_SEP3_MORNING_UNAVAILABLE_ATTEMPT",
+}
 
 
 def _require(condition: bool, message: str, errors: list[str]) -> None:
@@ -75,6 +81,111 @@ def _account_scope(accounts: Any) -> set[tuple[str, str]]:
         for row in accounts
         if isinstance(row, dict)
     }
+
+
+def canonical_review_sha256(review: dict[str, Any]) -> str:
+    """Return the immutable canonical hash used by appended annotations."""
+
+    encoded = json.dumps(
+        review,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_timing_annotations(
+    payload: dict[str, Any],
+    reviews: list[dict[str, Any]],
+    errors: list[str],
+) -> dict[int, str]:
+    annotations_value = payload.get("timing_annotations", [])
+    _require(
+        isinstance(annotations_value, list),
+        "timing_annotations must be a list",
+        errors,
+    )
+    annotations = annotations_value if isinstance(annotations_value, list) else []
+    seen_ids: set[str] = set()
+    seen_targets: set[int] = set()
+    validated: dict[int, str] = {}
+
+    for annotation_index, annotation in enumerate(annotations):
+        label = f"timing_annotations[{annotation_index}]"
+        if not isinstance(annotation, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        annotation_id = str(annotation.get("annotation_id") or "").strip()
+        _require(bool(annotation_id), f"{label}.annotation_id is required", errors)
+        _require(
+            annotation_id not in seen_ids,
+            f"{label}.annotation_id is duplicated",
+            errors,
+        )
+        seen_ids.add(annotation_id)
+
+        review_index = annotation.get("review_index")
+        if not isinstance(review_index, int) or isinstance(review_index, bool):
+            errors.append(f"{label}.review_index must be an integer")
+            continue
+        _require(
+            review_index not in seen_targets,
+            f"{label}.review_index already has an annotation",
+            errors,
+        )
+        seen_targets.add(review_index)
+        if review_index < 0 or review_index >= len(reviews):
+            errors.append(f"{label}.review_index does not identify a review")
+            continue
+        review = reviews[review_index]
+        if not isinstance(review, dict):
+            errors.append(f"{label}.review_index does not identify an object review")
+            continue
+
+        classification = str(annotation.get("classification") or "")
+        valid = True
+        if classification not in TIMING_ANNOTATION_CLASSES:
+            errors.append(f"{label}.classification is invalid")
+            valid = False
+        if annotation.get("review_id") != review.get("review_id"):
+            errors.append(f"{label}.review_id does not match its review")
+            valid = False
+        if annotation.get("canonical_sha256") != canonical_review_sha256(review):
+            errors.append(f"{label}.canonical_sha256 does not match its review")
+            valid = False
+        if annotation.get("preserves_eligible_false") is not True:
+            errors.append(f"{label}.preserves_eligible_false must be true")
+            valid = False
+        if review.get("eligible") is not False:
+            errors.append(f"{label} cannot annotate an eligible review")
+            valid = False
+        if not str(annotation.get("reason") or "").strip():
+            errors.append(f"{label}.reason is required")
+            valid = False
+        recorded = _aware_datetime(annotation.get("recorded_at"), f"{label}.recorded_at", errors)
+        completed = _aware_datetime(review.get("completed_at"), f"{label}.review_completed_at", errors)
+        if recorded is not None and completed is not None and recorded < completed:
+            errors.append(f"{label}.recorded_at predates its review")
+            valid = False
+
+        if classification == "PRESERVED_LATE_FAILED_ATTEMPT":
+            scheduled = _aware_datetime(review.get("scheduled_at"), f"{label}.review_scheduled_at", errors)
+            if scheduled is None or completed is None or completed - scheduled <= timedelta(hours=6):
+                errors.append(f"{label} does not identify a late review")
+                valid = False
+        elif classification == "PRESERVED_OUT_OF_WINDOW_HEARTBEAT":
+            if review.get("market_session_state") != "UNKNOWN":
+                errors.append(f"{label} out-of-window review must have UNKNOWN session state")
+                valid = False
+        elif classification == "PRESERVED_SEP3_MORNING_UNAVAILABLE_ATTEMPT":
+            if review.get("market_session_state") not in ELIGIBLE_SESSION_STATES:
+                errors.append(f"{label} unavailable attempt must be an eligible session state")
+                valid = False
+
+        if valid:
+            validated[review_index] = classification
+    return validated
 
 
 def _review_eligible(review: dict[str, Any]) -> bool:
@@ -173,8 +284,9 @@ def validate(
     reviews_value = payload.get("reviews")
     _require(isinstance(reviews_value, list), "reviews must be a list", errors)
     reviews = reviews_value if isinstance(reviews_value, list) else []
+    annotations = _validated_timing_annotations(payload, reviews, errors)
     seen_ids: set[str] = set()
-    seen_windows: set[tuple[str, str]] = set()
+    seen_windows: dict[tuple[str, str], int] = {}
     previous_completed: datetime | None = None
 
     for index, review in enumerate(reviews):
@@ -197,12 +309,20 @@ def validate(
             errors,
         )
         date_window = (session_date, window)
-        _require(
-            date_window not in seen_windows,
-            f"{label} duplicates a market-session review window",
-            errors,
-        )
-        seen_windows.add(date_window)
+        if date_window in seen_windows:
+            prior_index = seen_windows[date_window]
+            duplicate_is_preserved = bool(
+                annotations.get(prior_index) == "PRESERVED_OUT_OF_WINDOW_HEARTBEAT"
+                and annotations.get(index)
+                == "PRESERVED_SEP3_MORNING_UNAVAILABLE_ATTEMPT"
+            )
+            _require(
+                duplicate_is_preserved,
+                f"{label} duplicates a market-session review window",
+                errors,
+            )
+        else:
+            seen_windows[date_window] = index
 
         scheduled = _aware_datetime(review.get("scheduled_at"), f"{label}.scheduled_at", errors)
         completed = _aware_datetime(review.get("completed_at"), f"{label}.completed_at", errors)
@@ -214,8 +334,12 @@ def validate(
             )
         if scheduled is not None and completed is not None:
             _require(completed >= scheduled, f"{label} completed before it was scheduled", errors)
+            late_is_preserved = bool(
+                completed - scheduled > timedelta(hours=6)
+                and annotations.get(index) == "PRESERVED_LATE_FAILED_ATTEMPT"
+            )
             _require(
-                completed - scheduled <= timedelta(hours=6),
+                completed - scheduled <= timedelta(hours=6) or late_is_preserved,
                 f"{label} was recorded more than six hours after its schedule",
                 errors,
             )

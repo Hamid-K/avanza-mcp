@@ -2,7 +2,11 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from scripts.verify_governance_review_streak import REQUIRED_GATES, validate
+from scripts.verify_governance_review_streak import (
+    REQUIRED_GATES,
+    canonical_review_sha256,
+    validate,
+)
 
 
 STOCKHOLM = ZoneInfo("Europe/Stockholm")
@@ -52,6 +56,20 @@ def review(day: int, window: str, *, eligible: bool = True) -> dict:
         "blockers": [] if eligible else ["position_governance_incomplete"],
         "evidence": ["exact scoped MCP review"] if eligible else [],
         "eligible": eligible,
+    }
+
+
+def annotation(row: dict, index: int, classification: str) -> dict:
+    completed = datetime.fromisoformat(row["completed_at"])
+    return {
+        "annotation_id": f"annotation-{index}-{classification.lower()}",
+        "review_index": index,
+        "review_id": row["review_id"],
+        "canonical_sha256": canonical_review_sha256(row),
+        "classification": classification,
+        "recorded_at": (completed + timedelta(minutes=1)).isoformat(),
+        "reason": "Preserve the failed record without editing its evidence.",
+        "preserves_eligible_false": True,
     }
 
 
@@ -130,6 +148,55 @@ def test_streak_rejects_late_retroactive_record():
     assert "recorded more than six hours" in " ".join(validate(payload))
 
 
+def test_hash_bound_annotation_preserves_late_failed_attempt():
+    payload = ledger()
+    row = review(17, "MORNING", eligible=False)
+    row["completed_at"] = (
+        datetime.fromisoformat(row["scheduled_at"]) + timedelta(hours=7)
+    ).isoformat()
+    payload["reviews"] = [row]
+    payload["timing_annotations"] = [
+        annotation(row, 0, "PRESERVED_LATE_FAILED_ATTEMPT")
+    ]
+
+    assert validate(payload) == []
+
+
+def test_timing_annotation_fails_closed_after_review_tampering():
+    payload = ledger()
+    row = review(17, "MORNING", eligible=False)
+    row["completed_at"] = (
+        datetime.fromisoformat(row["scheduled_at"]) + timedelta(hours=7)
+    ).isoformat()
+    payload["reviews"] = [row]
+    payload["timing_annotations"] = [
+        annotation(row, 0, "PRESERVED_LATE_FAILED_ATTEMPT")
+    ]
+    row["blockers"].append("later mutation")
+
+    errors = validate(payload)
+    assert any("canonical_sha256 does not match" in error for error in errors)
+    assert any("recorded more than six hours" in error for error in errors)
+
+
+def test_timing_annotation_cannot_cover_an_eligible_review():
+    payload = ledger()
+    row = review(17, "MORNING")
+    row["completed_at"] = (
+        datetime.fromisoformat(row["scheduled_at"]) + timedelta(hours=7)
+    ).isoformat()
+    payload["reviews"] = [row]
+    payload["current_consecutive_eligible_reviews"] = 1
+    payload["current_regular_session_count"] = 1
+    payload["timing_annotations"] = [
+        annotation(row, 0, "PRESERVED_LATE_FAILED_ATTEMPT")
+    ]
+
+    errors = validate(payload)
+    assert any("cannot annotate an eligible review" in error for error in errors)
+    assert any("recorded more than six hours" in error for error in errors)
+
+
 def test_completion_claim_cannot_be_set_early():
     payload = ledger()
     payload["completion_claim"] = True
@@ -152,3 +219,20 @@ def test_duplicate_session_window_is_rejected():
     assert "duplicates a market-session review window" in " ".join(
         validate(payload)
     )
+
+
+def test_hash_bound_annotations_preserve_out_of_window_duplicate_attempts():
+    payload = ledger()
+    first = review(17, "MORNING", eligible=False)
+    first["scheduled_at"] = datetime(2026, 8, 17, 2, 26, tzinfo=STOCKHOLM).isoformat()
+    first["completed_at"] = datetime(2026, 8, 17, 2, 31, tzinfo=STOCKHOLM).isoformat()
+    first["market_session_state"] = "UNKNOWN"
+    second = review(17, "MORNING", eligible=False)
+    second["review_id"] = "2026-08-17-morning-scheduled"
+    payload["reviews"] = [first, second]
+    payload["timing_annotations"] = [
+        annotation(first, 0, "PRESERVED_OUT_OF_WINDOW_HEARTBEAT"),
+        annotation(second, 1, "PRESERVED_SEP3_MORNING_UNAVAILABLE_ATTEMPT"),
+    ]
+
+    assert validate(payload) == []

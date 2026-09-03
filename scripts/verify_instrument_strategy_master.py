@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,33 @@ def _present(value: Any) -> bool:
     return True
 
 
+def _identity_digest(values: set[tuple[str, ...]] | set[str]) -> str:
+    encoded = json.dumps(sorted(values), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _objective_identity_sets(
+    audit: dict[str, Any],
+) -> tuple[set[str], set[tuple[str, str, str]]]:
+    instruments: set[str] = set()
+    positions: set[tuple[str, str, str]] = set()
+    for row in audit.get("instruments", []):
+        identity = str(row.get("key") or row.get("ticker") or "").strip()
+        if identity:
+            instruments.add(identity)
+        exposure = row.get("intended_exposure")
+        accounts = exposure.get("accounts", []) if isinstance(exposure, dict) else []
+        for account in accounts if isinstance(accounts, list) else []:
+            positions.add(
+                (
+                    str(account.get("tenant_session_id") or ""),
+                    str(account.get("account_id") or ""),
+                    str(account.get("orderbook_id") or ""),
+                )
+            )
+    return instruments, positions
+
+
 def validate(master: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     instruments = master.get("instruments")
@@ -75,12 +103,11 @@ def validate(master: dict[str, Any]) -> list[str]:
         return ["instruments must be a list"]
 
     identities = [str(row.get("key") or row.get("ticker") or "") for row in instruments]
-    if len(instruments) != 65:
-        errors.append(f"expected 65 instruments, found {len(instruments)}")
     if len(set(identities)) != len(identities):
         errors.append("instrument identity keys are not unique")
 
     account_rows = 0
+    account_identities: set[tuple[str, str, str]] = set()
     for index, row in enumerate(instruments):
         identity = str(row.get("key") or "")
         label = row.get("ticker") or row.get("instrument") or f"row {index}"
@@ -126,6 +153,14 @@ def validate(master: dict[str, Any]) -> list[str]:
                 errors.append(f"{prefix}: exact orderbook_ids source is not single-valued")
             elif str(account.get("orderbook_id")) != str(orderbook_ids[0]):
                 errors.append(f"{prefix}: orderbook_id does not match instrument source")
+            identity_tuple = (
+                str(account.get("tenant_session_id") or ""),
+                str(account.get("account_id") or ""),
+                str(account.get("orderbook_id") or ""),
+            )
+            if identity_tuple in account_identities:
+                errors.append(f"{prefix}: duplicate exact account-position identity")
+            account_identities.add(identity_tuple)
             if "holding" not in account:
                 errors.append(f"{prefix}: missing holding")
             plan = account.get("semantic_plan")
@@ -148,20 +183,17 @@ def validate(master: dict[str, Any]) -> list[str]:
             if str(plan.get("next_gate", "")).strip().lower() in GENERIC_RECOMMENDATIONS:
                 errors.append(f"{prefix}: generic next_gate is not allowed")
 
-    if account_rows != 107:
-        errors.append(f"expected 107 account-position rows, found {account_rows}")
-
     validation = master.get("validation", {})
-    if validation.get("unique_instruments") != 65:
-        errors.append("embedded validation does not report 65 instruments")
-    if validation.get("account_position_rows") != 107:
-        errors.append("embedded validation does not report 107 account rows")
+    if validation.get("unique_instruments") != len(instruments):
+        errors.append("embedded validation instrument count does not match the instrument identities")
+    if validation.get("account_position_rows") != account_rows:
+        errors.append("embedded validation account-row count does not match the account identities")
     if validation.get("thin_strategy_fields") != []:
         errors.append("embedded validation reports thin strategy fields")
     if validation.get("generic_recommendation_rows_remaining") != 0:
         errors.append("embedded validation reports generic recommendation rows")
-    if validation.get("exact_account_scope_rows") != 107:
-        errors.append("embedded validation does not report 107 exact account scopes")
+    if validation.get("exact_account_scope_rows") != len(account_identities):
+        errors.append("embedded validation exact-scope count does not match the account identities")
     if validation.get("exact_account_scope_complete") is not True:
         errors.append("embedded validation does not report complete exact account scope")
     if validation.get("exact_account_scope") != [
@@ -169,6 +201,19 @@ def validate(master: dict[str, Any]) -> list[str]:
         {"tenant_session_id": "darkcell", "account_id": "7616265"},
     ]:
         errors.append("embedded validation does not report both exact tenant/account scopes")
+    contract = validation.get("dynamic_identity_contract", {})
+    if contract:
+        expected_instruments = {value for value in identities if value}
+        if contract.get("schema_version") != 1:
+            errors.append("dynamic identity contract schema is invalid")
+        if contract.get("instrument_count") != len(expected_instruments):
+            errors.append("dynamic identity contract instrument count mismatch")
+        if contract.get("account_position_count") != len(account_identities):
+            errors.append("dynamic identity contract account-position count mismatch")
+        if contract.get("instrument_identity_sha256") != _identity_digest(expected_instruments):
+            errors.append("dynamic identity contract instrument digest mismatch")
+        if contract.get("account_position_identity_sha256") != _identity_digest(account_identities):
+            errors.append("dynamic identity contract account-position digest mismatch")
 
     return errors
 
@@ -181,12 +226,8 @@ def validate_objective_audit(audit: dict[str, Any]) -> list[str]:
     validation = audit.get("validation", {})
     if not isinstance(rows, list):
         return ["objective audit instruments must be a list"]
-    if len(rows) != 65:
-        errors.append(f"objective audit expected 65 instruments, found {len(rows)}")
-    if validation.get("unique_instruments") != 65:
-        errors.append("objective audit embedded instrument count is not 65")
-    if validation.get("exact_account_position_rows") != 107:
-        errors.append("objective audit embedded account-row count is not 107")
+    if validation.get("unique_instruments") != len(rows):
+        errors.append("objective audit embedded instrument count does not match its identities")
     if validation.get("deficient_fields") != []:
         errors.append("objective audit reports deficient fields")
     if validation.get("invalid_review_dates") != []:
@@ -221,8 +262,36 @@ def validate_objective_audit(audit: dict[str, Any]) -> list[str]:
                     errors.append(f"{label}: intended_exposure account identity/exposure fields incomplete")
     if len(set(identities)) != len(identities):
         errors.append("objective audit instrument identity keys are not unique")
-    if account_rows != 107:
-        errors.append(f"objective audit expected 107 intended-exposure rows, found {account_rows}")
+    if validation.get("exact_account_position_rows") != account_rows:
+        errors.append("objective audit embedded account-row count does not match its identities")
+    return errors
+
+
+def validate_identity_parity(
+    master: dict[str, Any],
+    objective_audit: dict[str, Any],
+) -> list[str]:
+    """Require exact instrument and account-position identity parity."""
+
+    errors: list[str] = []
+    master_instruments = {
+        str(row.get("key") or row.get("ticker") or "").strip()
+        for row in master.get("instruments", [])
+    }
+    master_positions = {
+        (
+            str(account.get("tenant_session_id") or ""),
+            str(account.get("account_id") or ""),
+            str(account.get("orderbook_id") or ""),
+        )
+        for row in master.get("instruments", [])
+        for account in row.get("accounts", [])
+    }
+    audit_instruments, audit_positions = _objective_identity_sets(objective_audit)
+    if master_instruments != audit_instruments:
+        errors.append("strategy master and objective audit instrument identities do not match")
+    if master_positions != audit_positions:
+        errors.append("strategy master and objective audit account-position identities do not match")
     return errors
 
 
@@ -235,11 +304,17 @@ def main() -> int:
     objective_audit = json.loads(args.objective_audit.read_text(encoding="utf-8"))
     errors = validate(master)
     errors.extend(validate_objective_audit(objective_audit))
+    errors.extend(validate_identity_parity(master, objective_audit))
     if errors:
         for error in errors:
             print(f"[strategy-master] FAIL: {error}")
         return 1
-    print("[strategy-master] PASS: 65 instruments, 107 account-position rows, complete semantic and objective plans")
+    print(
+        "[strategy-master] PASS: "
+        f"{len(master['instruments'])} instruments, "
+        f"{sum(len(row.get('accounts', [])) for row in master['instruments'])} "
+        "account-position identities, complete semantic and objective plans"
+    )
     return 0
 
 

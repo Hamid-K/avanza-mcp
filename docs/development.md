@@ -20,8 +20,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv run scripts/verify.sh
 ```
 
-The verification script includes read-only checks for the 65-instrument/107
-account-position strategy master, the buy-back freshness/authority contract,
+The verification script includes read-only checks for the dynamic
+instrument/account-position strategy identity contract, the buy-back
+freshness/authority contract,
 and the authoritative factor/order/displacement/risk overlays. The fixed
 August 6 buy-back ledger is validated only as a historical snapshot. Current
 coverage comes from the latest dated `PORTFOLIO_BUYBACK_LIVE_COVERAGE` artifact,
@@ -68,6 +69,38 @@ links the latest independently validated dynamic coverage separately. Fixed
 44/18/26 candidate counts are never treated as current broker truth. Structural
 strategy-master and portfolio-control links are not a substitute for current
 scoped broker evidence.
+
+The current R390 full-history gate uses ignored local artifacts rather than a
+fixed checkpoint count. Rebuild the canonical and its dynamic mirror with:
+
+```bash
+python3 scripts/enrich_r17_economic_classification.py \
+  --build-full-governance \
+  --full-history-base <structural-canonical.json> \
+  --posted-sales <posted-sales.json> \
+  --raw-boundary <current-raw-boundary.json> \
+  --corporate-action-resolution <corporate-action-resolution.json> \
+  --readiness <readiness.json> \
+  --remediation-input <sold-marker-remediation.json> \
+  --full-history-output <PORTFOLIO_FULL_HISTORY_CANONICAL_timestamp.json> \
+  --dynamic-projection <dynamic-projection.json> \
+  --official-close <official-close-reachability.json> \
+  --eth-plan <eth-plan.json> \
+  --full-dynamic-output <PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_timestamp.json>
+```
+
+`verify_buyback_ladder_artifact.py` requires the latest canonical, mirror,
+official-close, and raw-boundary files on its default path. It validates every
+source, lineage, lot, fill allocation, active-recovery allocation, terminal
+closure, residual, and mirror membership. The goal audit carries canonical
+payload hashes and matching row-derived counts; `--require-complete` still
+fails while any genuine repair or completion blocker remains.
+
+Governance-streak timing repairs are append-only `timing_annotations` bound to
+the target review's index, ID, and canonical SHA-256 hash. They preserve
+historical failed attempts and cannot alter eligibility or backfill a review.
+Runtime changes under `avanza_mcp/` require restarting the active TUI or Web UI
+before the MCP bridge serves the new behavior.
 
 ## Mandatory Quality Gates
 

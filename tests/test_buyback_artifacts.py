@@ -23,13 +23,17 @@ from scripts.verify_buyback_ladder_artifact import (
     SOLD_MARKER_REMEDIATION_GLOB,
     PLAN_PATH,
     TABLE_PATH,
+    _canonical_json_sha256,
     latest_dynamic_coverage_path,
     latest_sold_marker_remediation_path,
+    governed_dormant_ladder_count,
     sold_marker_dynamic_reconciliation_rows,
     sold_marker_governance_gap_rows,
     validate_candidate_rows,
     validate_dynamic_against_sold_marker_recovery,
     validate_dynamic_live_coverage,
+    validate_full_dynamic_governance_mirror,
+    validate_full_history_canonical,
     validate_r17_open_path_evidence,
     validate_r17_path_links,
     validate_sold_marker_remediation,
@@ -315,13 +319,26 @@ def schema5_inputs(*, named_crossing=False):
                     "1002": {
                         "instrument": "Example Beta",
                         "strategy_class": "CORE_COMPOUNDER",
-                        "thesis": "Current exposure is intentional.",
+                        "thesis": (
+                            "The current quality-core exposure remains economically intentional "
+                            "while its operating thesis is intact."
+                        ),
                         "audit_status": "VALID_CURRENT_PLAN",
                         "bucket": "CORE_HOLD",
-                        "stance": "Hold the current core.",
+                        "stance": (
+                            "Retain the current quality core because exiting would discard intact "
+                            "long-term participation without a thesis break."
+                        ),
                         "protection_classification": "CORE_HOLD_EXCEPTION",
-                        "protection_reason": "The reviewed core intentionally has no active SELL.",
-                        "next_gate": "Review at earnings or a thesis-changing event.",
+                        "protection_reason": (
+                            "The reviewed core intentionally has no active SELL while its quality "
+                            "thesis and long-term participation remain intact."
+                        ),
+                        "next_gate": (
+                            "Revalidate at earnings or sooner after a thesis-changing event, and "
+                            "rebuild only after risk, capacity, and friction gates pass."
+                        ),
+                        "updated_at": "2026-08-26T17:20:00+02:00",
                     }
                 }
             }
@@ -684,7 +701,7 @@ def promote_soundhound_to_governed_dormant_ladder(dynamic, remediation):
         "target_rebuild_quantity": 158,
         "stages_percent_below_sold_marker": [8.2, 15.3],
         "stage_quantities": [79, 79],
-        "coverage_reason": "The remaining same-sale slice has a stock-specific dormant two-stage review ladder.",
+        "coverage_reason": "SoundHound AI: the remaining same-sale slice has a stock-specific dormant two-stage review ladder.",
     })
     dynamic["summary"].update({
         "buyback_coverage_state_counts": dict(Counter(row["buyback_coverage_state"] for row in dynamic["rows"])),
@@ -747,7 +764,7 @@ def test_dynamic_buyback_validator_accepts_variable_size_live_universe():
     assert validate_dynamic_live_coverage(payload) == []
 
 
-def test_schema4_dynamic_buyback_requires_economic_resolution_consistency():
+def test_schema4_dynamic_buyback_keeps_current_hold_orthogonal_to_recovery_gap():
     payload = dynamic_buyback_payload()
     payload["schema_version"] = 4
     payload["rows"] = payload["rows"][:2]
@@ -784,9 +801,12 @@ def test_schema4_dynamic_buyback_requires_economic_resolution_consistency():
         "LADDER_ACTIVE": 1,
         "LADDER_GAP": 1,
     }
+    assert validate_dynamic_live_coverage(payload) == []
+
+    payload["rows"][1]["current_protection_classification"] = "REPAIR_REQUIRED"
     errors = validate_dynamic_live_coverage(payload)
 
-    assert any("intentional hold is contradicted by open recovery work" in error for error in errors)
+    assert any("intentional hold lacks a reviewed hold protection class" in error for error in errors)
 
 
 def test_r17_economic_enrichment_resolves_only_completed_reviewed_holds():
@@ -799,13 +819,26 @@ def test_r17_economic_enrichment_resolves_only_completed_reviewed_holds():
                     "1002": {
                         "instrument": "Example Beta",
                         "strategy_class": "CORE_COMPOUNDER",
-                        "thesis": "Current exposure is intentional.",
+                        "thesis": (
+                            "The current quality-core exposure remains economically intentional "
+                            "while its operating thesis is intact."
+                        ),
                         "audit_status": "VALID_CURRENT_PLAN",
                         "bucket": "CORE_HOLD",
-                        "stance": "Hold the current core.",
+                        "stance": (
+                            "Retain the current quality core because exiting would discard intact "
+                            "long-term participation without a thesis break."
+                        ),
                         "protection_classification": "CORE_HOLD_EXCEPTION",
-                        "protection_reason": "The reviewed core intentionally has no active SELL.",
-                        "next_gate": "Review at earnings or a thesis-changing event.",
+                        "protection_reason": (
+                            "The reviewed core intentionally has no active SELL while its quality "
+                            "thesis and long-term participation remain intact."
+                        ),
+                        "next_gate": (
+                            "Revalidate at earnings or sooner after a thesis-changing event, and "
+                            "rebuild only after risk, capacity, and friction gates pass."
+                        ),
+                        "updated_at": "2026-08-26T17:20:00+02:00",
                     }
                 }
             }
@@ -820,12 +853,167 @@ def test_r17_economic_enrichment_resolves_only_completed_reviewed_holds():
     )
 
     rows = {row["orderbook_id"]: row for row in result["rows"]}
-    assert result["schema_version"] == 4
+    assert result["schema_version"] == 9
     assert rows["1002"]["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
-    assert rows["1001"]["low_exposure_decision"] == "REPAIR_REQUIRED"
+    assert rows["1002"]["economic_resolution"]["revalidation_status"] == "CURRENT"
+    assert rows["1002"]["economic_resolution"]["revalidation_due_by"] == "2026-09-02"
+    assert rows["1001"]["low_exposure_decision"] == "BUILD_REVIEW"
     assert rows["1003"]["low_exposure_decision"] == "REPAIR_REQUIRED"
-    assert result["summary"]["economically_resolved_rows"] == 1
-    assert result["summary"]["economically_unresolved_rows"] == 2
+    assert rows["1003"]["economic_resolution"]["reason"].startswith("Example Gamma")
+    assert result["summary"]["economically_resolved_rows"] == 2
+    assert result["summary"]["economically_unresolved_rows"] == 1
+
+
+def test_r17_economic_intent_remains_resolved_during_independent_protection_repair():
+    payload, registry, path = schema5_inputs()
+    registry["updated_at"] = "2026-08-28T19:54:00+02:00"
+    position = registry["accounts"]["5227886"]["positions"]["1002"]
+    position.update({
+        "strategy_class": "SPECULATIVE",
+        "thesis": (
+            "The bounded position preserves meaningful upside optionality while "
+            "the current tactical slice receives separate profit protection."
+        ),
+        "audit_status": "PROFIT_PROTECTION_REPAIR_REQUIRED",
+        "bucket": "SPECULATIVE_PROFIT_PROTECTION_REPAIR",
+        "stance": (
+            "Retain five shares as the reviewed speculative core while repairing "
+            "protection only on the separate tactical slice."
+        ),
+        "protection_classification": "REPAIR_REQUIRED",
+        "protection_reason": (
+            "The profitable tactical slice lacks its calibrated stop, while the "
+            "reviewed core remains economically intentional."
+        ),
+        "next_gate": (
+            "Revalidate the exact tactical stop after a live support and spread "
+            "check; do not rebuild or exit the reviewed core without a thesis break."
+        ),
+        "recommendation": (
+            "Retain the reviewed core and repair only the exact tactical protection gap."
+        ),
+        "proposed_correction": (
+            "Preserve the core while keeping the missing tactical stop explicitly open."
+        ),
+        "updated_at": "2026-08-28T19:54:00+02:00",
+    })
+
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-28T20:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_test.json",
+    )
+    row = next(row for row in result["rows"] if row["orderbook_id"] == "1002")
+
+    assert row["current_protection_classification"] == "REPAIR_REQUIRED"
+    assert row["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
+    assert row["economic_resolution"]["source"] == (
+        "CURRENT_REVIEWED_CORE_WITH_INDEPENDENT_PROTECTION_REPAIR"
+    )
+    assert row["economic_resolution"]["revalidation_status"] == "CURRENT"
+    assert validate_dynamic_live_coverage(result) == []
+
+    unstructured = copy.deepcopy(registry)
+    unstructured_position = unstructured["accounts"]["5227886"]["positions"]["1002"]
+    unstructured_position["stance"] = "Protection remains unresolved without an economic holding decision."
+    unstructured_position["recommendation"] = "Recalculate the missing protection."
+    unstructured_position["proposed_correction"] = "Repair the stop."
+    fail_closed = enrich_payload(
+        payload,
+        unstructured,
+        generated_at="2026-08-28T20:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_test.json",
+    )
+    fail_closed_row = next(
+        row for row in fail_closed["rows"] if row["orderbook_id"] == "1002"
+    )
+    assert fail_closed_row["low_exposure_decision"] == "REPAIR_REQUIRED"
+    assert fail_closed["summary"]["economically_unresolved_rows"] == (
+        result["summary"]["economically_unresolved_rows"] + 1
+    )
+
+
+def test_r17_small_hold_revalidation_expires_and_fails_closed():
+    payload, registry, path = schema5_inputs()
+    position = registry["accounts"]["5227886"]["positions"]["1002"]
+    position.update({
+        "thesis": "Example Beta remains an intentional quality-core exposure.",
+        "stance": "Retain the reviewed core while its thesis remains intact.",
+        "protection_reason": (
+            "Example Beta remains deliberately held because a generic exit would discard "
+            "the intact quality-core exposure without a thesis break."
+        ),
+        "next_gate": (
+            "Rebuild only after earnings and a support reclaim clear risk, capacity, "
+            "duplicate, and full-friction gates."
+        ),
+        "updated_at": "2026-08-14T17:20:00+02:00",
+    })
+
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-28T19:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_test.json",
+    )
+
+    row = next(row for row in result["rows"] if row["orderbook_id"] == "1002")
+    resolution = row["economic_resolution"]
+    assert row["low_exposure_decision"] == "REPAIR_REQUIRED"
+    assert resolution["revalidation_status"] == "EXPIRED"
+    assert resolution["revalidation_due_by"] == "2026-08-21"
+    assert result["summary"]["small_hold_revalidation_status_counts"] == {
+        "CURRENT": 0,
+        "EXPIRED": 1,
+        "MISSING": 0,
+        "INVALID": 0,
+    }
+    assert validate_dynamic_live_coverage(result) == []
+
+
+def test_r17_economic_enrichment_uses_registry_protection_without_erasing_sold_cycle_repair():
+    payload, registry, path = schema5_inputs()
+    alpha = payload["rows"][0]
+    alpha["current_protection_classification"] = "REPAIR_REQUIRED"
+    registry["accounts"]["5227886"]["positions"]["1001"] = {
+        "instrument": "Example Alpha",
+        "strategy_class": "OBSERVATION_MARKER",
+        "thesis": "The current one-share marker is intentional.",
+        "audit_status": "VALID_CURRENT_PLAN",
+        "bucket": "MARKER_HOLD",
+        "stance": "Retain the marker while the sold cycle remains separately open.",
+        "protection_classification": "MARKER_EXCEPTION",
+        "protection_reason": "The current one-share marker is economically indivisible.",
+        "next_gate": "Review the marker only after a thesis-changing event.",
+        "updated_at": "2026-08-28T18:45:00+02:00",
+    }
+
+    result = enrich_payload(
+        payload,
+        registry,
+        generated_at="2026-08-28T19:00:00+02:00",
+        source_path="output/input.json",
+        path_evidence=path,
+        path_source_path="output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_20260828_1843.json",
+    )
+
+    alpha = next(row for row in result["rows"] if row["orderbook_id"] == "1001")
+    assert alpha["current_protection_classification"] == "MARKER_EXCEPTION"
+    assert alpha["current_protection_source"] == "CURRENT_POSITION_STRATEGY_REGISTRY"
+    assert alpha["superseded_embedded_protection_classification"] == "REPAIR_REQUIRED"
+    assert alpha["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
+    assert alpha["buyback_coverage_state"] == "REPAIR_REQUIRED"
+    assert alpha["full_path_evidence"]["crossed_8pct_review_alarm"] is True
+    assert result["summary"]["economically_unresolved_rows"] == 1
+    assert result["summary"]["repair_required_missed_path_rows"] == 1
+    assert validate_dynamic_live_coverage(result) == []
 
 
 def test_schema5_enrichment_binds_complete_path_and_preserves_missed_crossing():
@@ -842,7 +1030,7 @@ def test_schema5_enrichment_binds_complete_path_and_preserves_missed_crossing():
     )
 
     rows = {row["orderbook_id"]: row for row in result["rows"]}
-    assert result["schema_version"] == 6
+    assert result["schema_version"] == 9
     assert rows["1001"]["buyback_coverage_state"] == "REPAIR_REQUIRED"
     assert rows["1001"]["low_exposure_decision"] == "REPAIR_REQUIRED"
     assert rows["1001"]["current_protection_classification"] == "MARKER_EXCEPTION"
@@ -888,6 +1076,274 @@ def test_schema5_enrichment_binds_complete_path_and_preserves_missed_crossing():
     )
     assert enriched_remediation["schema_version"] == 4
     assert validate_r17_path_links(result, enriched_remediation, path) == []
+
+
+def test_complete_path_enrichment_is_repeatable_and_suffix_is_canonical():
+    payload, registry, path = schema5_inputs()
+    kwargs = {
+        "generated_at": "2026-08-26T18:00:00+02:00",
+        "source_path": "output/input.json",
+        "path_evidence": path,
+        "path_source_path": "output/PORTFOLIO_R17_OPEN_SALE_PATH_EVIDENCE_test.json",
+    }
+
+    first = enrich_payload(payload, registry, **kwargs)
+    second = enrich_payload(copy.deepcopy(first), registry, **kwargs)
+    first_alpha = next(row for row in first["rows"] if row["orderbook_id"] == "1001")
+    second_alpha = next(row for row in second["rows"] if row["orderbook_id"] == "1001")
+
+    assert second == first
+    assert second_alpha["coverage_reason"] == first_alpha["coverage_reason"]
+    assert second_alpha["coverage_reason"].count(
+        " Complete authenticated path evidence records a maximum "
+    ) == 1
+    assert validate_dynamic_live_coverage(second) == []
+
+
+def test_non_crossed_dormant_ladder_survives_dynamic_and_remediation_enrichment():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    promote_soundhound_to_governed_dormant_ladder(dynamic, remediation)
+    dynamic["rows"] = [row for row in dynamic["rows"] if row["orderbook_id"] == "1393460"]
+    remediation["rows"] = [
+        row for row in remediation["rows"] if row["orderbook_id"] == "1393460"
+    ]
+    path = r17_path_payload([
+        r17_path_row(
+            tenant_session_id="personal",
+            account_id="5227886",
+            orderbook_id="1393460",
+            instrument="SoundHound AI",
+            quantity=158,
+            crossed=False,
+        )
+    ])
+
+    enriched_remediation = enrich_remediation_payload(
+        remediation,
+        path,
+        generated_at="2026-08-26T18:10:00+02:00",
+        source_path="output/remediation-input.json",
+        path_source_path="output/path-input.json",
+    )
+    enriched_dynamic = enrich_payload(
+        dynamic,
+        {"updated_at": "2026-08-26T18:09:00+02:00", "accounts": {}},
+        generated_at="2026-08-26T18:10:00+02:00",
+        source_path="output/dynamic-input.json",
+        path_evidence=path,
+        path_source_path="output/path-input.json",
+        remediation_payload=enriched_remediation,
+    )
+    dynamic_row = enriched_dynamic["rows"][0]
+    remediation_row = enriched_remediation["rows"][0]
+
+    assert dynamic_row["buyback_coverage_state"] == "LADDER_DORMANT"
+    assert dynamic_row["low_exposure_decision"] == "BUILD_REVIEW"
+    assert dynamic_row["stages_percent_below_sold_marker"] == [8.2, 15.3]
+    assert remediation_row["state"] == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+    assert enriched_remediation["summary"]["dormant_stock_specific_review_ladder_rows"] == 1
+    assert governed_dormant_ladder_count(enriched_dynamic, enriched_remediation) == 1
+
+
+def test_non_crossed_independent_dormant_ladder_replaces_stale_remediation_gate():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    promote_soundhound_to_governed_dormant_ladder(dynamic, remediation)
+    remediation["rows"] = [
+        row for row in remediation["rows"] if row["orderbook_id"] == "1393460"
+    ]
+    recovery = remediation["rows"][0]
+    open_lot_ids = [
+        lot["sale_lot_id"]
+        for lot in recovery["sale_lots"]
+        if lot["remaining_open_quantity"] > 0
+    ]
+    next_review = "Review after a regular-session higher low and support reclaim."
+    recovery.update({
+        "next_gate": "All shares remain PERCENTAGE_NOT_SET pending review.",
+        "dormant_ladder_decision": {
+            "authority": "LOCAL_REVIEW_ONLY",
+            "broker_mutation": False,
+            "trade_authority": False,
+            "state": "LADDER_DORMANT",
+            "economic_state": "BUILD_REVIEW",
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "1393460",
+            "recovery_cycle_id": recovery["recovery_cycle_id"],
+            "decision_id": "personal-soun-r43-independent-dormant-build",
+            "exact_open_sale_lot_ids": open_lot_ids,
+            "target_rebuild_quantity": 158,
+            "stages_percent_below_sold_marker": [8.2, 15.3],
+            "stage_quantities": [79, 79],
+            "calibration_evidence": "The stages are calibrated to the exact sold marker and volatility.",
+            "promotion_evidence": "Require a regular-session higher low and support reclaim.",
+            "rejection_evidence": "Reject on thesis break, failed support, or excessive friction.",
+            "next_review": next_review,
+            "expires_at": "2026-09-04T22:00:00+02:00",
+        },
+    })
+    path = r17_path_payload([
+        r17_path_row(
+            tenant_session_id="personal",
+            account_id="5227886",
+            orderbook_id="1393460",
+            instrument="SoundHound AI",
+            quantity=158,
+            crossed=False,
+        )
+    ])
+
+    enriched = enrich_remediation_payload(
+        remediation,
+        path,
+        generated_at="2026-08-28T20:20:00+02:00",
+        source_path="output/remediation-input.json",
+        path_source_path="output/path-input.json",
+    )
+    row = enriched["rows"][0]
+
+    assert row["state"] == "DORMANT_STOCK_SPECIFIC_REVIEW_LADDER_DEFINED"
+    assert row["next_gate"] == next_review
+    assert "PERCENTAGE_NOT_SET" not in row["next_gate"]
+    errors = validate_sold_marker_remediation(enriched)
+    assert not any("dormant ladder next gate" in error for error in errors)
+
+    stale = copy.deepcopy(enriched)
+    stale["rows"][0]["next_gate"] = "All shares remain PERCENTAGE_NOT_SET pending review."
+    stale_errors = validate_sold_marker_remediation(stale)
+    assert any("dormant ladder next gate is stale" in error for error in stale_errors)
+    assert any("contradicts quantified coverage" in error for error in stale_errors)
+
+
+def test_crossed_path_keeps_independent_dormant_build_intent_and_historical_repair():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    promote_soundhound_to_governed_dormant_ladder(dynamic, remediation)
+    dynamic["rows"] = [row for row in dynamic["rows"] if row["orderbook_id"] == "1393460"]
+    remediation["rows"] = [
+        row for row in remediation["rows"] if row["orderbook_id"] == "1393460"
+    ]
+    recovery = remediation["rows"][0]
+    open_lot_ids = [
+        lot["sale_lot_id"]
+        for lot in recovery["sale_lots"]
+        if lot["remaining_open_quantity"] > 0
+    ]
+    recovery["dormant_ladder_decision"] = {
+        "authority": "LOCAL_REVIEW_ONLY",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "state": "LADDER_DORMANT",
+        "economic_state": "BUILD_REVIEW",
+        "tenant_session_id": "personal",
+        "account_id": "5227886",
+        "orderbook_id": "1393460",
+        "recovery_cycle_id": recovery["recovery_cycle_id"],
+        "decision_id": "personal-soun-r33-independent-dormant-build",
+        "exact_open_sale_lot_ids": open_lot_ids,
+        "target_rebuild_quantity": 158,
+        "stages_percent_below_sold_marker": [8.2, 15.3],
+        "stage_quantities": [79, 79],
+        "calibration_evidence": "The two stages are calibrated to the exact sold marker and current volatility.",
+        "promotion_evidence": "Require a regular-session higher low and support reclaim before promotion.",
+        "rejection_evidence": "Reject on thesis break, failed support, factor breach, or excessive friction.",
+        "next_review": "Review at the next regular session or after material issuer evidence.",
+        "expires_at": "2026-09-04T22:00:00+02:00",
+    }
+    source_row = dynamic["rows"][0]
+    source_row.update({
+        "low_exposure_decision": "INTENTIONAL_MARKER_OR_CORE_HOLD",
+        "buyback_coverage_state": "LADDER_GAP",
+        "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+        "stage_quantities": None,
+    })
+    registry = {
+        "updated_at": "2026-08-28T20:19:00+02:00",
+        "accounts": {
+            "5227886": {
+                "positions": {
+                    "1393460": {
+                        "instrument": "SoundHound AI",
+                        "strategy_class": "HIGH_BETA_GROWTH",
+                        "thesis": "The current marker preserves exposure while the sold slice awaits a governed rebuild.",
+                        "audit_status": "WAITING_REVERSAL",
+                        "bucket": "MARKER_HOLD",
+                        "stance": "Retain the current marker until the exact rebuild gate is met.",
+                        "protection_classification": "CORE_HOLD_EXCEPTION",
+                        "protection_reason": "The small current holding remains intentional while a stock-specific rebuild is reviewed.",
+                        "next_gate": "Review after a regular-session higher low and support reclaim with risk and friction clearance.",
+                        "updated_at": "2026-08-28T20:19:00+02:00",
+                    }
+                }
+            }
+        },
+    }
+    path = r17_path_payload([
+        r17_path_row(
+            tenant_session_id="personal",
+            account_id="5227886",
+            orderbook_id="1393460",
+            instrument="SoundHound AI",
+            quantity=158,
+            crossed=True,
+        )
+    ])
+
+    enriched_remediation = enrich_remediation_payload(
+        remediation,
+        path,
+        generated_at="2026-08-28T20:20:00+02:00",
+        source_path="output/remediation-input.json",
+        path_source_path="output/path-input.json",
+    )
+    enriched_dynamic = enrich_payload(
+        dynamic,
+        registry,
+        generated_at="2026-08-28T20:20:00+02:00",
+        source_path="output/dynamic-input.json",
+        path_evidence=path,
+        path_source_path="output/path-input.json",
+        remediation_payload=enriched_remediation,
+    )
+    dynamic_row = enriched_dynamic["rows"][0]
+    remediation_row = enriched_remediation["rows"][0]
+
+    assert remediation_row["state"] == "REPAIR_REQUIRED_MISSED_PATH"
+    assert remediation_row["recorded_stage_percentages_below_marker"] == [8.2, 15.3]
+    assert dynamic_row["buyback_coverage_state"] == "REPAIR_REQUIRED"
+    assert dynamic_row["low_exposure_decision"] == "BUILD_REVIEW"
+    assert dynamic_row["stages_percent_below_sold_marker"] == [8.2, 15.3]
+    assert dynamic_row["dormant_ladder_decision"] == remediation_row["dormant_ladder_decision"]
+    assert dynamic_row["open_sale_lot_ids"] == open_lot_ids
+    expected_reason = (
+        "SoundHound AI: The two stages are calibrated to the exact sold marker and current volatility."
+    )
+    assert dynamic_row["instrument_specific_path_context"]["coverage_reason"] == expected_reason
+    assert dynamic_row["coverage_reason"].startswith(expected_reason)
+    assert dynamic_row["economic_resolution"]["reason"] == expected_reason
+    assert dynamic_row["economic_resolution"]["next_review"] == recovery[
+        "dormant_ladder_decision"
+    ]["next_review"]
+    assert "hold_revalidation_required" not in dynamic_row["economic_resolution"]
+    assert "revalidation_status" not in dynamic_row["economic_resolution"]
+    assert "why_exit_is_currently_inferior" not in dynamic_row["economic_resolution"]
+    assert "no supported" not in dynamic_row["coverage_reason"].lower()
+    remediation_errors = validate_sold_marker_remediation(enriched_remediation)
+    dynamic_errors = validate_dynamic_live_coverage(enriched_dynamic)
+    reconciliation_errors = validate_dynamic_against_sold_marker_recovery(
+        enriched_dynamic,
+        enriched_remediation,
+    )
+    assert not any("independent dormant ladder" in error for error in remediation_errors)
+    assert not any(
+        "BUILD_REVIEW lacks" in error or "independent dormant ladder" in error
+        for error in dynamic_errors
+    )
+    assert not any(
+        "dormant ladder decision mismatch" in error
+        or "repair row does not preserve" in error
+        or "repair row independent dormant ladder" in error
+        for error in reconciliation_errors
+    )
 
 
 def test_schema5_enrichment_rejects_missing_or_quantity_mismatched_path_row():
@@ -1090,7 +1546,7 @@ def test_terminal_decision_closes_only_multi_sale_residuals_after_prior_fills():
 
     apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
     assert dynamic_row["target_rebuild_quantity"] is None
-    assert dynamic_row["low_exposure_decision"] == "EXIT_OR_NO_REENTRY_REVIEW"
+    assert dynamic_row["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
     assert dynamic_row["no_reentry_decision"] == decided_row["no_reentry_decision"]
 
     path_rows = []
@@ -1141,6 +1597,273 @@ def test_terminal_decision_closes_only_multi_sale_residuals_after_prior_fills():
     assert "sold-marker remediation conclusion contradicts still-open shares" in validate_sold_marker_remediation(
         stale
     )
+
+
+def test_terminal_sold_cycle_allows_unrelated_active_inventory_and_preserves_core_intent():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1393460")
+    dynamic_row = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
+    lot = recovery["sale_lots"][0]
+    recovery["pre_sale_active_buy_quantity"] = 2
+    recovery["pre_sale_active_buy_inventory"] = [
+        {"stop_loss_id": "unrelated-core-buy", "quantity": 2, "evidence": "Predates the sale."}
+    ]
+    dynamic_row.update({
+        "active_buy_volume": 2,
+        "pre_sale_active_buy_quantity": 2,
+        "unattributed_active_buy_quantity": 0,
+        "sale_attributed_active_buy_quantity": 0,
+    })
+    decisions = {
+        "artifact": "PORTFOLIO_R17_TERMINAL_DECISIONS",
+        "schema_version": 1,
+        "authority": "LOCAL_REVIEW_ONLY",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "rows": [{
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "1393460",
+            "instrument": "SoundHound AI",
+            "recovery_cycle_id": recovery["recovery_cycle_id"],
+            "decision_id": "terminal-sold-cycle-unrelated-core",
+            "decision_at": "2026-08-27T18:00:00+02:00",
+            "last_revalidated_at": "2026-08-27T18:05:00+02:00",
+            "expires_at": "2026-09-09T18:05:00+02:00",
+            "decision_basis": "Close only the exact unresolved sold-cycle quantity.",
+            "thesis_evidence": "The current core remains independently intentional.",
+            "event_evidence": "Current issuer evidence was reviewed.",
+            "technical_evidence": "The sold-cycle recovery gate remains rejected.",
+            "path_evidence": "The complete authenticated sold-cycle path was reviewed.",
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "current_holding": dynamic_row["live_holding"],
+            "sale_lot_closures": [{
+                "sale_lot_id": lot["sale_lot_id"],
+                "sale_transaction_id": lot["sale_transaction_id"],
+                "sale_timestamp": lot["sale_timestamp"],
+                "remaining_open_quantity_to_close": lot["remaining_open_quantity"],
+            }],
+        }],
+    }
+
+    decided = apply_terminal_decisions_to_remediation(
+        remediation,
+        decisions,
+        generated_at="2026-08-27T18:06:00+02:00",
+        decision_source_path="output/terminal-unrelated-core.json",
+    )
+    apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
+
+    assert dynamic_row["buyback_coverage_state"] == "LEDGER_ONLY"
+    assert dynamic_row["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
+    assert dynamic_row["active_buy_volume"] == 2
+    assert dynamic_row["pre_sale_active_buy_quantity"] == 2
+    assert dynamic_row["sale_attributed_active_buy_quantity"] == 0
+
+    contradicted = copy.deepcopy(decided)
+    contradicted_row = next(
+        row for row in contradicted["rows"] if row["orderbook_id"] == "1393460"
+    )
+    contradicted_row["sale_attributed_active_buy_quantity"] = 1
+    contradicted_dynamic = copy.deepcopy(dynamic["rows"])
+    next(
+        row for row in contradicted_dynamic if row["orderbook_id"] == "1393460"
+    )["active_buy_volume"] = 3
+    with pytest.raises(ValueError, match="contradictory same-sale BUY inventory"):
+        apply_terminal_decisions_to_dynamic_rows(contradicted_dynamic, contradicted)
+
+
+def test_r19_partial_terminal_decision_reports_cumulative_closure_count():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1393460")
+    dynamic_row = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
+    open_lot = recovery["sale_lots"][0]
+    prior_lot_id = "personal-5227886-1393460-2026-08-15-prior-closed"
+    prior_transaction_id = "raw-sell-personal-5227886-1393460-2026-08-15-prior-closed"
+    prior_decision = {
+        "decision_id": "r19-prior-closure",
+        "parent_decision_id": "r19-prior-parent",
+        "tenant_session_id": "personal",
+        "account_id": "5227886",
+        "orderbook_id": "1393460",
+        "sale_date": "2026-08-15",
+        "sale_lot_id": prior_lot_id,
+        "sale_transaction_id": prior_transaction_id,
+        "sale_timestamp": "2026-08-15T00:00:00+02:00",
+        "original_sold_quantity": 10,
+        "recovered_before_decision_quantity": 0,
+        "sold_quantity": 10,
+        "closed_quantity": 10,
+        "remaining_after_decision_quantity": 0,
+        "decision_at": "2026-08-20T18:00:00+02:00",
+        "last_revalidated_at": "2026-08-20T18:00:00+02:00",
+        "expires_at": "2026-09-02T18:00:00+02:00",
+        "decision_basis": "A prior exact lot was closed under a dated review.",
+        "thesis_evidence": "The prior lot was independently reviewed.",
+        "event_evidence": "Current issuer evidence was reviewed.",
+        "technical_evidence": "The prior lot did not pass its re-entry gate.",
+        "path_evidence": "The authenticated path for the prior lot was reviewed.",
+        "newer_evidence_reviewed": True,
+        "contradiction_status": "NONE",
+    }
+    recovery["sale_lots"].append({
+        "sale_lot_id": prior_lot_id,
+        "sale_transaction_id": prior_transaction_id,
+        "sale_timestamp": "2026-08-15T00:00:00+02:00",
+        "sold_quantity": 10,
+        "qualifying_filled_quantity": 0,
+        "active_recovery_quantity": 0,
+        "closed_no_reentry_quantity": 10,
+        "remaining_open_quantity": 0,
+        "state": "EXPLICIT_NO_REENTRY_CURRENT_THESIS",
+        "terminal_closure_decisions": [prior_decision],
+    })
+    recovery.update({
+        "sale_date": "2026-08-15",
+        "sold_quantity": 326,
+        "raw_sale_transaction_count": 2,
+        "raw_sale_quantity_total": 326,
+        "closed_no_reentry_quantity": 10,
+    })
+    decisions = {
+        "artifact": "PORTFOLIO_R17_TERMINAL_DECISIONS",
+        "schema_version": 2,
+        "authority": "LOCAL_REVIEW_ONLY",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "rows": [{
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "1393460",
+            "instrument": "SoundHound AI",
+            "recovery_cycle_id": recovery["recovery_cycle_id"],
+            "decision_id": "r19-current-partial-closure",
+            "decision_at": "2026-08-28T21:00:00+02:00",
+            "last_revalidated_at": "2026-08-28T21:00:00+02:00",
+            "expires_at": "2026-09-10T21:00:00+02:00",
+            "decision_basis": "Close only half of the untouched open lot.",
+            "thesis_evidence": "Current exposure remains independently governed.",
+            "event_evidence": "Current issuer evidence was reviewed.",
+            "technical_evidence": "The old recovery obligation is not promoted.",
+            "path_evidence": "The complete authenticated path was reviewed.",
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "current_holding": dynamic_row["live_holding"],
+            "qualifying_fill_reallocations": [],
+            "active_recovery_allocations": [],
+            "sale_lot_closures": [{
+                "closure_id": "r19-current-partial-lot-closure",
+                "sale_lot_id": open_lot["sale_lot_id"],
+                "sale_transaction_id": open_lot["sale_transaction_id"],
+                "sale_timestamp": open_lot["sale_timestamp"],
+                "remaining_open_quantity_to_close": 79,
+            }],
+        }],
+    }
+
+    decided = apply_terminal_decisions_to_remediation(
+        remediation,
+        decisions,
+        generated_at="2026-08-28T21:01:00+02:00",
+        decision_source_path="output/r19-current-partial-closure.json",
+    )
+    decided_row = next(row for row in decided["rows"] if row["orderbook_id"] == "1393460")
+    cumulative_count = sum(
+        len(lot.get("terminal_closure_decisions", []))
+        for lot in decided_row["sale_lots"]
+    )
+
+    assert decided_row["remaining_open_quantity"] == 79
+    assert cumulative_count == 2
+    assert decided_row["mixed_lot_resolution"]["terminal_closure_count"] == cumulative_count
+
+    apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
+    assert dynamic_row["mixed_lot_resolution"] == decided_row["mixed_lot_resolution"]
+
+    follow_up = copy.deepcopy(decisions)
+    follow_up_row = follow_up["rows"][0]
+    follow_up_row.update({
+        "decision_id": "r19-follow-up-same-lot-closure",
+        "decision_at": "2026-08-28T21:02:00+02:00",
+        "last_revalidated_at": "2026-08-28T21:02:00+02:00",
+        "decision_basis": "Close the exact remaining half after a fresh, separately identified review.",
+    })
+    follow_up_row["sale_lot_closures"] = [{
+        "closure_id": "r19-follow-up-same-lot-closure-id",
+        "sale_lot_id": open_lot["sale_lot_id"],
+        "sale_transaction_id": open_lot["sale_transaction_id"],
+        "sale_timestamp": open_lot["sale_timestamp"],
+        "remaining_open_quantity_to_close": 79,
+    }]
+
+    fully_decided = apply_terminal_decisions_to_remediation(
+        decided,
+        follow_up,
+        generated_at="2026-08-28T21:03:00+02:00",
+        decision_source_path="output/r19-follow-up-same-lot-closure.json",
+    )
+    fully_decided_row = next(
+        row for row in fully_decided["rows"] if row["orderbook_id"] == "1393460"
+    )
+    decided_open_lot = next(
+        lot
+        for lot in fully_decided_row["sale_lots"]
+        if lot["sale_lot_id"] == open_lot["sale_lot_id"]
+    )
+    all_closure_ids = [
+        closure["decision_id"]
+        for lot in fully_decided_row["sale_lots"]
+        for closure in lot.get("terminal_closure_decisions", [])
+    ]
+
+    assert fully_decided_row["remaining_open_quantity"] == 0
+    assert fully_decided_row["state"] == "EXPLICIT_NO_REENTRY_CURRENT_THESIS"
+    assert decided_open_lot["closed_no_reentry_quantity"] == 158
+    assert len(decided_open_lot["terminal_closure_decisions"]) == 2
+    assert fully_decided_row.get("partial_terminal_decisions", []) == []
+    assert fully_decided_row["no_reentry_decision"]["sale_lot_decision_ids"] == all_closure_ids
+    assert fully_decided_row["mixed_lot_resolution"]["terminal_closure_count"] == 3
+    validation_errors = validate_sold_marker_remediation(fully_decided)
+    assert not any("requires one exact terminal closure" in error for error in validation_errors)
+    sequential_parity_errors = [
+        error
+        for error in validation_errors
+        if any(
+            marker in error
+            for marker in (
+                "recovered-before-decision quantity does not match prior allocations",
+                "terminal decision remaining quantity does not reconcile",
+                "terminal decision residual differs from the current sale lot",
+            )
+        )
+    ]
+    assert sequential_parity_errors == []
+
+    invalid_sequence = copy.deepcopy(fully_decided)
+    invalid_lot = next(
+        lot
+        for row in invalid_sequence["rows"]
+        if row["orderbook_id"] == "1393460"
+        for lot in row["sale_lots"]
+        if lot["sale_lot_id"] == open_lot["sale_lot_id"]
+    )
+    invalid_lot["terminal_closure_decisions"][1][
+        "recovered_before_decision_quantity"
+    ] -= 79
+    invalid_errors = validate_sold_marker_remediation(invalid_sequence)
+    assert any(
+        "recovered-before-decision quantity does not match prior allocations" in error
+        for error in invalid_errors
+    )
+
+    repeated = apply_terminal_decisions_to_remediation(
+        fully_decided,
+        follow_up,
+        generated_at="2026-08-28T21:03:00+02:00",
+        decision_source_path="output/r19-follow-up-same-lot-closure.json",
+    )
+    assert repeated == fully_decided
 
 
 def test_r19_reallocates_fill_attributes_full_stop_and_preserves_exact_residual():
@@ -1388,7 +2111,7 @@ def test_r19_reallocates_fill_attributes_full_stop_and_preserves_exact_residual(
     enriched_soundhound = next(
         row for row in enriched["rows"] if row["orderbook_id"] == "1393460"
     )
-    assert enriched["schema_version"] == 8
+    assert enriched["schema_version"] == 9
     assert enriched_soundhound["full_path_evidence"]["crossed_8pct_review_alarm"] is False
     assert "instrument_specific_path_context" not in enriched_soundhound
     assert "instrument_specific_path_context" not in enriched_soundhound["economic_resolution"]
@@ -1402,6 +2125,215 @@ def test_r19_reallocates_fill_attributes_full_stop_and_preserves_exact_residual(
     errors = validate_dynamic_live_coverage(stale)
     assert any("noncrossed complete path retains stale" in error for error in errors)
     assert any("noncrossed economic resolution retains stale" in error for error in errors)
+
+
+def test_r31_merges_into_existing_target_allocation_and_is_idempotent():
+    _, remediation = sold_marker_reconciled_payloads()
+    recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1393460")
+    first_lot = recovery["sale_lots"][0]
+    second_lot = {
+        "sale_lot_id": "personal-5227886-1393460-2026-08-15-lot-2",
+        "sale_transaction_id": "raw-sell-personal-5227886-1393460-2026-08-15-2",
+        "sale_timestamp": "2026-08-15T00:00:00+02:00",
+        "sold_quantity": 20,
+        "qualifying_filled_quantity": 3,
+        "active_recovery_quantity": 0,
+        "closed_no_reentry_quantity": 0,
+        "remaining_open_quantity": 17,
+        "state": "PARTIALLY_RECOVERED_OPEN",
+    }
+    recovery["sale_lots"].append(second_lot)
+    source = recovery["qualifying_fill_allocations"][0]
+    source.update({
+        "source_quantity": 161,
+        "buy_timestamp": "2026-08-16T12:00:00+02:00",
+    })
+    target = copy.deepcopy(source)
+    target.update({
+        "allocation_id": "existing-target-allocation",
+        "sale_lot_id": second_lot["sale_lot_id"],
+        "quantity": 3,
+    })
+    recovery["qualifying_fill_allocations"].append(target)
+    recovery.update({
+        "sale_date": "2026-08-15",
+        "sold_quantity": 336,
+        "raw_sale_transaction_count": 2,
+        "raw_sale_quantity_total": 336,
+        "later_filled_quantity": 161,
+        "remaining_open_quantity": 175,
+    })
+    first_lot.update({
+        "qualifying_filled_quantity": 158,
+        "remaining_open_quantity": 158,
+    })
+    decisions = {
+        "artifact": "PORTFOLIO_R17_TERMINAL_DECISIONS",
+        "schema_version": 3,
+        "authority": "LOCAL_REVIEW_ONLY",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "rows": [{
+            "tenant_session_id": "personal",
+            "account_id": "5227886",
+            "orderbook_id": "1393460",
+            "instrument": "SoundHound AI",
+            "recovery_cycle_id": recovery["recovery_cycle_id"],
+            "decision_id": "r31-existing-target-merge",
+            "decision_at": "2026-08-28T18:00:00+02:00",
+            "last_revalidated_at": "2026-08-28T18:05:00+02:00",
+            "expires_at": "2026-09-10T18:05:00+02:00",
+            "decision_basis": "Merge exact fill quantity into its existing later-lot allocation.",
+            "thesis_evidence": "The current exposure intent remains independent.",
+            "event_evidence": "Current issuer evidence was reviewed.",
+            "technical_evidence": "The exact lot chronology controls attribution.",
+            "path_evidence": "The complete authenticated multi-sale path was reviewed.",
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "current_holding": 1,
+            "qualifying_fill_reallocations": [{
+                "reallocation_id": "r31-merge-six",
+                "buy_transaction_id": source["buy_transaction_id"],
+                "source_allocation_id": source["allocation_id"],
+                "source_sale_lot_id": first_lot["sale_lot_id"],
+                "target_sale_lot_id": second_lot["sale_lot_id"],
+                "target_allocation_id": target["allocation_id"],
+                "target_quantity_before": 3,
+                "target_quantity_after": 9,
+                "quantity": 6,
+            }],
+            "active_recovery_allocations": [],
+            "sale_lot_closures": [],
+        }],
+    }
+
+    decided = apply_terminal_decisions_to_remediation(
+        remediation,
+        decisions,
+        generated_at="2026-08-28T18:06:00+02:00",
+        decision_source_path="output/r31-existing-target.json",
+    )
+    decided_row = next(row for row in decided["rows"] if row["orderbook_id"] == "1393460")
+    allocations = decided_row["qualifying_fill_allocations"]
+    decided_source = next(row for row in allocations if row["allocation_id"] == source["allocation_id"])
+    decided_target = next(row for row in allocations if row["allocation_id"] == target["allocation_id"])
+
+    assert decided_source["quantity"] == 152
+    assert decided_target["quantity"] == 9
+    assert decided_target["reviewed_reallocation_ids"] == ["r31-merge-six"]
+    assert decided_row["remaining_open_quantity"] == 175
+    assert decided_row["mixed_lot_resolution"]["schema_version"] == 3
+    assert len({
+        (row["buy_transaction_id"], row["sale_lot_id"])
+        for row in allocations
+    }) == len(allocations)
+
+    repeated = apply_terminal_decisions_to_remediation(
+        decided,
+        decisions,
+        generated_at="2026-08-28T18:06:00+02:00",
+        decision_source_path="output/r31-existing-target.json",
+    )
+    assert repeated == decided
+
+    tampered = copy.deepcopy(decided)
+    tampered_row = next(row for row in tampered["rows"] if row["orderbook_id"] == "1393460")
+    next(
+        row
+        for row in tampered_row["qualifying_fill_allocations"]
+        if row["allocation_id"] == target["allocation_id"]
+    )["quantity"] = 8
+    with pytest.raises(ValueError, match="only partially applied"):
+        apply_terminal_decisions_to_remediation(
+            tampered,
+            decisions,
+            generated_at="2026-08-28T18:06:00+02:00",
+            decision_source_path="output/r31-existing-target.json",
+        )
+
+
+def test_r31_terminal_decision_renewal_is_exact_and_idempotent():
+    dynamic, remediation = sold_marker_reconciled_payloads()
+    recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1211627")
+    dynamic_row = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1211627")
+    prior = recovery["no_reentry_decision"]
+    lot_decision = recovery["sale_lots"][0]["no_reentry_decision"]
+    decisions = {
+        "artifact": "PORTFOLIO_R17_TERMINAL_DECISIONS",
+        "schema_version": 3,
+        "authority": "LOCAL_REVIEW_ONLY",
+        "broker_mutation": False,
+        "trade_authority": False,
+        "rows": [{
+            "tenant_session_id": "darkcell",
+            "account_id": "7616265",
+            "orderbook_id": "1211627",
+            "instrument": "Coinbase",
+            "recovery_cycle_id": recovery["recovery_cycle_id"],
+            "decision_id": "darkcell-coinbase-r31-renewed-no-reentry",
+            "decision_at": "2026-08-28T18:30:00+02:00",
+            "last_revalidated_at": "2026-08-28T18:30:00+02:00",
+            "expires_at": "2026-09-10T18:30:00+02:00",
+            "decision_basis": "Fresh evidence revalidates the exact already-closed sold slice.",
+            "thesis_evidence": "The current marker exposure remains intentional and independent.",
+            "event_evidence": "No newer event evidence reverses the reviewed terminal decision.",
+            "technical_evidence": "Current technical evidence does not promote a rebuild.",
+            "path_evidence": "The complete authenticated path and every exact closed lot were rechecked.",
+            "newer_evidence_reviewed": True,
+            "contradiction_status": "NONE",
+            "current_holding": dynamic_row["live_holding"],
+            "qualifying_fill_reallocations": [],
+            "active_recovery_allocations": [],
+            "sale_lot_closures": [],
+            "terminal_decision_renewal": {
+                "renewal_id": "darkcell-coinbase-r31-renewal-20260828",
+                "prior_decision_id": prior["decision_id"],
+                "closed_quantity": recovery["closed_no_reentry_quantity"],
+                "sale_lot_decision_ids": [lot_decision["decision_id"]],
+            },
+        }],
+    }
+
+    decided = apply_terminal_decisions_to_remediation(
+        remediation,
+        decisions,
+        generated_at="2026-08-28T18:31:00+02:00",
+        decision_source_path="output/r31-terminal-renewal.json",
+    )
+    decided_row = next(row for row in decided["rows"] if row["orderbook_id"] == "1211627")
+    renewed_lot = decided_row["sale_lots"][0]["no_reentry_decision"]
+
+    assert decided_row["remaining_open_quantity"] == 0
+    assert decided_row["closed_no_reentry_quantity"] == 16
+    assert decided_row["no_reentry_decision"]["decision_id"] == decisions["rows"][0]["decision_id"]
+    assert renewed_lot["decision_id"] == lot_decision["decision_id"]
+    assert renewed_lot["parent_decision_id"] == decisions["rows"][0]["decision_id"]
+    assert renewed_lot["expires_at"] == "2026-09-10T18:30:00+02:00"
+
+    apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
+    assert dynamic_row["no_reentry_decision"] == decided_row["no_reentry_decision"]
+    assert dynamic_row["mixed_lot_resolution"] == decided_row["mixed_lot_resolution"]
+
+    repeated = apply_terminal_decisions_to_remediation(
+        decided,
+        decisions,
+        generated_at="2026-08-28T18:31:00+02:00",
+        decision_source_path="output/r31-terminal-renewal.json",
+    )
+    assert repeated == decided
+
+    tampered = copy.deepcopy(decided)
+    tampered_row = next(row for row in tampered["rows"] if row["orderbook_id"] == "1211627")
+    tampered_row["sale_lots"][0]["no_reentry_decision"]["expires_at"] = (
+        "2026-09-09T18:30:00+02:00"
+    )
+    with pytest.raises(ValueError, match="only partially applied"):
+        apply_terminal_decisions_to_remediation(
+            tampered,
+            decisions,
+            generated_at="2026-08-28T18:31:00+02:00",
+            decision_source_path="output/r31-terminal-renewal.json",
+        )
 
 
 def test_r19_active_only_attribution_canonicalizes_empty_partial_decisions():
@@ -1471,10 +2403,10 @@ def test_r19_active_only_attribution_canonicalizes_empty_partial_decisions():
     apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
     assert dynamic_row["partial_terminal_decisions"] == []
     assert dynamic_row["target_rebuild_quantity"] == 3
-    assert dynamic_row["low_exposure_decision"] == "REPAIR_REQUIRED"
+    assert dynamic_row["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
 
 
-def test_r19_full_active_recovery_coverage_remains_economically_unresolved():
+def test_r19_full_active_recovery_coverage_does_not_overwrite_current_exposure_intent():
     dynamic, remediation = sold_marker_reconciled_payloads()
     recovery = next(row for row in remediation["rows"] if row["orderbook_id"] == "1393460")
     dynamic_row = next(row for row in dynamic["rows"] if row["orderbook_id"] == "1393460")
@@ -1490,6 +2422,9 @@ def test_r19_full_active_recovery_coverage_remains_economically_unresolved():
         "active_buy_volume": remaining,
         "sale_attributed_active_buy_quantity": 0,
         "unattributed_active_buy_quantity": remaining,
+        "economic_resolution": {
+            "next_review": "Revalidate the current position after the active recovery row fills."
+        },
     })
     decisions = {
         "artifact": "PORTFOLIO_R17_TERMINAL_DECISIONS",
@@ -1543,12 +2478,12 @@ def test_r19_full_active_recovery_coverage_remains_economically_unresolved():
 
     apply_terminal_decisions_to_dynamic_rows(dynamic["rows"], decided)
     assert dynamic_row["buyback_coverage_state"] == "LEDGER_ONLY"
-    assert dynamic_row["low_exposure_decision"] == "REPAIR_REQUIRED"
+    assert dynamic_row["low_exposure_decision"] == "INTENTIONAL_MARKER_OR_CORE_HOLD"
     assert dynamic_row["target_rebuild_quantity"] is None
     assert dynamic_row["partial_terminal_decisions"] == []
-    assert dynamic_row["economic_resolution"]["state"] == "REPAIR_REQUIRED"
-    assert dynamic_row["economic_resolution"]["source"] == "R19_FULL_ACTIVE_RECOVERY_COVERAGE"
-    assert "SoundHound AI" in dynamic_row["economic_resolution"]["reason"]
+    assert "no sold-slice remainder is open" in dynamic_row["coverage_reason"]
+    assert "unresolved" not in dynamic_row["coverage_reason"]
+    assert dynamic_row["exact_next_gate"] == dynamic_row["economic_resolution"]["next_review"]
 
     reconciliation = sold_marker_dynamic_reconciliation_rows(dynamic, decided)
     exact = next(row for row in reconciliation if row["orderbook_id"] == "1393460")
@@ -1648,7 +2583,7 @@ def test_schema5_validator_rejects_erased_crossing_and_summary_drift():
 
     errors = validate_dynamic_live_coverage(result)
 
-    assert any("crossed ordinary complete path is not REPAIR_REQUIRED" in error for error in errors)
+    assert any("crossed ordinary sold cycle is not REPAIR_REQUIRED" in error for error in errors)
     assert "dynamic missed-path repair count mismatch" in errors
 
 
@@ -2318,3 +3253,431 @@ def test_daily_ledger_requires_explicit_promotion_and_rejection_evidence():
 
     assert any(error.startswith("candidate promotion evidence missing") for error in errors)
     assert any(error.startswith("candidate rejection evidence missing") for error in errors)
+
+
+def _rehash_full_history(payload):
+    boundary = payload["raw_boundary"]
+    mappings = payload["source_identity_to_lineage_map"]
+    lineages = payload["effective_lineages"]
+    lots = payload["immutable_sale_lots"]
+    sale_transaction_ids = [row["sale_transaction_id"] for row in lots]
+    lot_ids = [row["sale_lot_id"] for row in lots]
+    source_ids = [row["source_identity_id"] for row in mappings]
+    lineage_ids = [row["effective_lineage_id"] for row in lineages]
+    boundary.update(
+        {
+            "source_identity_count": len(source_ids),
+            "effective_lineage_count": len(lineage_ids),
+            "immutable_sale_lot_count": len(lot_ids),
+            "unique_sale_transaction_id_count": len(set(sale_transaction_ids)),
+            "duplicate_sale_transaction_id_count": len(sale_transaction_ids)
+            - len(set(sale_transaction_ids)),
+            "missing_sale_transaction_id_count": sum(
+                not value for value in sale_transaction_ids
+            ),
+            "source_identity_set_sha256": _canonical_json_sha256(
+                sorted(source_ids)
+            ),
+            "source_identity_to_lineage_map_sha256": _canonical_json_sha256(
+                mappings
+            ),
+            "effective_lineage_set_sha256": _canonical_json_sha256(
+                sorted(lineage_ids)
+            ),
+            "effective_lineage_content_sha256": _canonical_json_sha256(lineages),
+            "sale_transaction_id_set_sha256": _canonical_json_sha256(
+                sorted(sale_transaction_ids)
+            ),
+            "sale_lot_id_set_sha256": _canonical_json_sha256(sorted(lot_ids)),
+            "immutable_sale_lot_content_sha256": _canonical_json_sha256(lots),
+            "allocation_content_sha256": _canonical_json_sha256(
+                payload["qualifying_fill_allocations"]
+            ),
+            "active_recovery_source_content_sha256": _canonical_json_sha256(
+                payload["active_recovery_sources"]
+            ),
+            "active_recovery_allocation_content_sha256": _canonical_json_sha256(
+                payload["active_recovery_allocations"]
+            ),
+            "terminal_closure_content_sha256": _canonical_json_sha256(
+                payload["terminal_closures"]
+            ),
+        }
+    )
+
+
+def full_history_payload():
+    payload = {
+        "artifact": "PORTFOLIO_FULL_HISTORY_CANONICAL",
+        "schema_version": 2,
+        "generated_at": "2026-09-03T18:00:00+02:00",
+        "authority": {
+            "trade_authority": False,
+            "broker_mutation": False,
+            "paper_mutation": False,
+        },
+        "raw_boundary": {
+            "truncation_risk": False,
+            "live_raw_vs_canonical_sale_transaction_id_set_parity": True,
+        },
+        "source_identity_to_lineage_map": [
+            {
+                "source_identity_id": "personal/5227886/orderbook-1001",
+                "effective_lineage_id": "lineage-1",
+            }
+        ],
+        "effective_lineages": [
+            {
+                "effective_lineage_id": "lineage-1",
+                "source_identity_ids": ["personal/5227886/orderbook-1001"],
+                "sale_lot_ids": ["lot-1"],
+            }
+        ],
+        "immutable_sale_lots": [
+            {
+                "sale_lot_id": "lot-1",
+                "sale_transaction_id": "sell-1",
+                "effective_lineage_id": "lineage-1",
+                "source_identity_id": "personal/5227886/orderbook-1001",
+                "sale_timestamp": "2026-08-01T14:00:00+02:00",
+                "raw_sold_quantity_exact": "10",
+                "quantity_normalization_factor_exact": "1",
+                "normalized_sold_quantity_exact": "10",
+                "qualifying_filled_quantity_exact": "4",
+                "active_recovery_quantity_exact": "0",
+                "terminal_closure_quantity_exact": "0",
+                "remaining_open_quantity_exact": "6",
+                "terminal_closure_ids": [],
+                "parity_delta_exact": "0",
+            }
+        ],
+        "buy_sources": [
+            {
+                "buy_transaction_id": "buy-1",
+                "effective_lineage_id": "lineage-1",
+                "source_quantity_exact": "4",
+                "allocated_recovery_quantity_exact": "4",
+                "non_recovery_quantity_exact": "0",
+                "unattributed_quantity_exact": "0",
+            }
+        ],
+        "qualifying_fill_allocations": [
+            {
+                "allocation_id": "fill-1",
+                "buy_transaction_id": "buy-1",
+                "effective_lineage_id": "lineage-1",
+                "sale_lot_id": "lot-1",
+                "quantity_exact": "4",
+            }
+        ],
+        "active_recovery_sources": [],
+        "active_recovery_allocations": [],
+        "terminal_closures": [],
+        "dynamic_mirror_projection": [],
+    }
+    _rehash_full_history(payload)
+    return payload
+
+
+def full_history_raw_boundary(payload):
+    boundary = payload["raw_boundary"]
+    return {
+        "artifact": "PORTFOLIO_R386_FULL_RAW_BOUNDARY_AFTER_ETH_SETTLEMENT",
+        "current_boundary": {
+            "source_identity_count": boundary["source_identity_count"],
+            "effective_lineage_count_from_unchanged_corporate_action_map": boundary[
+                "effective_lineage_count"
+            ],
+            "immutable_sale_lot_count": boundary["immutable_sale_lot_count"],
+            "unique_sale_transaction_id_count": boundary[
+                "unique_sale_transaction_id_count"
+            ],
+            "duplicate_sale_transaction_id_count": boundary[
+                "duplicate_sale_transaction_id_count"
+            ],
+            "missing_sale_transaction_id_count": boundary[
+                "missing_sale_transaction_id_count"
+            ],
+            "truncation_risk": False,
+        },
+        "parity": {
+            "new_sale_transaction_ids": ["sell-1"],
+            "prior_sale_transaction_id_omissions": [],
+        },
+    }
+
+
+def full_dynamic_mirror(canonical, official=None):
+    official = official or {"rows": []}
+    lot = canonical["immutable_sale_lots"][0]
+    active_ids = [
+        row["active_recovery_source_id"]
+        for row in canonical["active_recovery_sources"]
+    ]
+    closure_ids = [row["closure_id"] for row in canonical["terminal_closures"]]
+    row = {
+        "r390_dynamic_row_id": "lineage::lineage-1",
+        "tenant_session_id": "personal",
+        "account_id": "5227886",
+        "orderbook_id": "1001",
+        "r137_canonical_lineage_ids": ["lineage-1"],
+        "buyback_coverage_state": "LADDER_GAP",
+        "r390_full_history": {
+            "effective_lineage_ids": ["lineage-1"],
+            "source_identity_ids": ["personal/5227886/orderbook-1001"],
+            "sale_lot_ids": ["lot-1"],
+            "open_sale_lot_ids": (
+                ["lot-1"]
+                if float(lot["remaining_open_quantity_exact"]) > 0
+                else []
+            ),
+            "active_recovery_source_ids": active_ids,
+            "terminal_closure_ids": closure_ids,
+            "normalized_sold_quantity_exact": lot[
+                "normalized_sold_quantity_exact"
+            ],
+            "qualifying_filled_quantity_exact": lot[
+                "qualifying_filled_quantity_exact"
+            ],
+            "active_recovery_quantity_exact": lot[
+                "active_recovery_quantity_exact"
+            ],
+            "terminal_closure_quantity_exact": lot[
+                "terminal_closure_quantity_exact"
+            ],
+            "remaining_open_quantity_exact": lot["remaining_open_quantity_exact"],
+        },
+    }
+    official_rows = official.get("rows", [])
+    if official_rows:
+        row["r390_official_close_reachability"] = copy.deepcopy(official_rows[0])
+    return {
+        "artifact": "PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR",
+        "schema_version": 2,
+        "authority": {
+            "authoritative_dynamic_ledger": True,
+            "trade_authority": False,
+            "broker_mutation": False,
+        },
+        "objective_complete": False,
+        "canonical_contract": {
+            "payload_sha256": _canonical_json_sha256(canonical),
+        },
+        "official_close_contract": {
+            "payload_sha256": _canonical_json_sha256(official),
+            "later_rebound_erases_crossing": False,
+            "row_identity_set_sha256": _canonical_json_sha256(
+                sorted(
+                    [
+                        [
+                            str(value.get("tenant_session_id") or ""),
+                            str(value.get("account_id") or ""),
+                            str(value.get("orderbook_id") or ""),
+                        ]
+                        for value in official_rows
+                    ]
+                )
+            ),
+        },
+        "rows": [row],
+        "summary": {
+            "dynamic_row_count": 1,
+            "mirrored_effective_lineage_count": 1,
+            "mirrored_source_identity_count": 1,
+            "mirrored_immutable_sale_lot_count": 1,
+            "official_close_row_count": len(official_rows),
+        },
+    }
+
+
+def _add_current_terminal_closure(payload):
+    lot = payload["immutable_sale_lots"][0]
+    lot.update(
+        {
+            "terminal_closure_quantity_exact": "1",
+            "remaining_open_quantity_exact": "5",
+            "terminal_closure_ids": ["closure-1"],
+        }
+    )
+    payload["terminal_closures"] = [
+        {
+            "closure_id": "closure-1",
+            "sale_lot_id": "lot-1",
+            "sale_transaction_id": "sell-1",
+            "canonical_terminal_closure_antal_exact": "1",
+            "decision_time": "2026-09-01T10:00:00+02:00",
+            "expires_at": "2026-09-10T10:00:00+02:00",
+            "contradiction_status": "NONE",
+        }
+    ]
+    _rehash_full_history(payload)
+
+
+def test_full_history_and_dynamic_mirror_positive_contract():
+    canonical = full_history_payload()
+    official = {"rows": []}
+    mirror = full_dynamic_mirror(canonical, official)
+
+    assert validate_full_history_canonical(
+        canonical, full_history_raw_boundary(canonical)
+    ) == []
+    assert validate_full_dynamic_governance_mirror(
+        mirror, canonical, official
+    ) == []
+
+
+def test_full_history_rejects_source_identity_omission():
+    payload = full_history_payload()
+    payload["source_identity_to_lineage_map"] = []
+
+    errors = validate_full_history_canonical(payload)
+
+    assert any("lot source identity is unknown" in error for error in errors)
+
+
+def test_full_history_rejects_duplicate_sale_transaction_id():
+    payload = full_history_payload()
+    duplicate = copy.deepcopy(payload["immutable_sale_lots"][0])
+    duplicate["sale_lot_id"] = "lot-2"
+    payload["immutable_sale_lots"].append(duplicate)
+    payload["effective_lineages"][0]["sale_lot_ids"].append("lot-2")
+
+    errors = validate_full_history_canonical(payload)
+
+    assert "full-history sale transaction id is duplicated" in errors
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "raw_sold_quantity_exact",
+            "11",
+            "full-history lot normalization parity failed",
+        ),
+        ("sale_timestamp", "not-a-time", "full-history sale timestamp is invalid"),
+    ],
+)
+def test_full_history_rejects_lot_quantity_or_timestamp_mutation(
+    field, value, message
+):
+    payload = full_history_payload()
+    payload["immutable_sale_lots"][0][field] = value
+
+    errors = validate_full_history_canonical(payload)
+
+    assert any(message in error for error in errors)
+
+
+def test_full_history_rejects_source_identity_mapped_twice():
+    payload = full_history_payload()
+    payload["source_identity_to_lineage_map"].append(
+        {
+            "source_identity_id": "personal/5227886/orderbook-1001",
+            "effective_lineage_id": "lineage-2",
+        }
+    )
+
+    errors = validate_full_history_canonical(payload)
+
+    assert "full-history source identity id is duplicated" in errors
+
+
+def test_full_history_rejects_buy_source_overallocation():
+    payload = full_history_payload()
+    payload["qualifying_fill_allocations"][0]["quantity_exact"] = "5"
+
+    errors = validate_full_history_canonical(payload)
+
+    assert any("buy source allocation parity failed" in error for error in errors)
+
+
+def test_full_history_rejects_source_as_both_filled_and_active():
+    payload = full_history_payload()
+    payload["active_recovery_sources"] = [
+        {
+            "active_recovery_source_id": "buy-1",
+            "effective_lineage_id": "lineage-1",
+            "source_quantity_exact": "1",
+            "allocated_recovery_quantity_exact": "0",
+            "unattributed_quantity_exact": "1",
+        }
+    ]
+
+    errors = validate_full_history_canonical(payload)
+
+    assert "full-history one source is classified as both filled and active" in errors
+
+
+def test_full_history_rejects_expired_terminal_decision():
+    payload = full_history_payload()
+    _add_current_terminal_closure(payload)
+    payload["terminal_closures"][0]["expires_at"] = "2026-09-02T10:00:00+02:00"
+    _rehash_full_history(payload)
+
+    errors = validate_full_history_canonical(payload)
+
+    assert any("terminal closure is expired" in error for error in errors)
+
+
+def test_full_history_rejects_current_raw_boundary_drift():
+    payload = full_history_payload()
+    boundary = full_history_raw_boundary(payload)
+    boundary["current_boundary"]["immutable_sale_lot_count"] = 2
+
+    errors = validate_full_history_canonical(payload, boundary)
+
+    assert "full-history canonical does not match current raw boundary" in errors
+
+
+def test_full_dynamic_mirror_rejects_omitted_lineage():
+    canonical = full_history_payload()
+    official = {"rows": []}
+    mirror = full_dynamic_mirror(canonical, official)
+    mirror["rows"][0]["r390_full_history"]["effective_lineage_ids"] = []
+
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+
+    assert "full dynamic lineage parity mismatch" in errors
+
+
+def test_full_dynamic_mirror_rejects_sale_lot_membership_change():
+    canonical = full_history_payload()
+    official = {"rows": []}
+    mirror = full_dynamic_mirror(canonical, official)
+    mirror["rows"][0]["r390_full_history"]["sale_lot_ids"] = []
+
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+
+    assert any("sale-lot order or membership mismatch" in error for error in errors)
+
+
+def test_full_dynamic_mirror_rejects_rebound_clearing_repair():
+    canonical = full_history_payload()
+    official = {
+        "rows": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": "5227886",
+                "orderbook_id": "1001",
+                "state": "HISTORICAL_STAGE_REACHED_REBOUNDED_REPAIR",
+            }
+        ]
+    }
+    mirror = full_dynamic_mirror(canonical, official)
+
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+
+    assert any("missed crossing was cleared" in error for error in errors)
+
+
+def test_full_dynamic_mirror_rejects_unmirrored_terminal_decision():
+    canonical = full_history_payload()
+    _add_current_terminal_closure(canonical)
+    official = {"rows": []}
+    mirror = full_dynamic_mirror(canonical, official)
+    mirror["rows"][0]["r390_full_history"]["terminal_closure_ids"] = []
+
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+
+    assert any("terminal-closure membership mismatch" in error for error in errors)

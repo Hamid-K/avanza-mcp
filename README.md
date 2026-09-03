@@ -94,8 +94,11 @@ scripts/verify.sh
 ```
 
 The quality gate also validates the private review artifacts without granting
-trade authority: the instrument strategy master must cover 65 instruments and
-107 account-position rows. Buy-back governance has two separate evidence
+trade authority. The instrument strategy master derives its current instrument
+and exact account-position counts from row identities, binds them with SHA-256
+identity digests, and requires matching objective, factor, and portfolio-control
+scope. No historical instrument or position count is completion authority.
+Buy-back governance has two separate evidence
 layers: the August 6 daily ledger remains a fixed historical snapshot, while
 the latest dated live-coverage artifact is rebuilt from the current dynamic
 universe and has no fixed candidate count. The live validator derives account,
@@ -123,6 +126,14 @@ rejection/hold evidence and is never presented as current coverage.
 Transaction history is audited independently: historical summary coverage,
 manual sold slices, raw-source availability, and same-day BUY attribution are
 kept separate, with missing recent/raw evidence failing closed.
+The latest ignored `PORTFOLIO_FULL_HISTORY_CANONICAL_*` and
+`PORTFOLIO_FULL_DYNAMIC_GOVERNANCE_MIRROR_*` artifacts additionally preserve
+every current source identity, effective lineage, immutable sale lot, recovery
+allocation, terminal closure, and official-close reachability row. Their
+validator checks current raw-boundary parity and rejects omissions, duplicate
+or mutated transaction identities, over-allocation, mixed attributed/unattributed
+sources, stale terminal decisions, and rebounds that conceal an unserved
+crossing. These files are audit evidence only and never authorize an order.
 The scheduler ledger is separately checked for its 18-row Approval C queue,
 non-terminal check windows, and explicit active/archive gaps.
 Catalyst coverage separately prevents estimated dates or stale scanner labels
@@ -481,7 +492,11 @@ python3 scripts/verify_governance_review_streak.py
 
 The verifier rejects duplicate windows, missing account or gate evidence,
 late backfills, false eligibility flags, premature completion claims, and any
-review whose exact-account authorization state is not explicitly off. Goal
+review whose exact-account authorization state is not explicitly off. An
+existing malformed historical attempt may be preserved only by appending a
+current annotation bound to its immutable review ID, index, and canonical
+SHA-256 hash; annotations cannot change an attempt to eligible or rewrite the
+review. Goal
 completion additionally requires ten eligible morning/evening reviews across
 five regular market sessions; use `--require-complete` only when asserting that
 terminal condition.
@@ -525,9 +540,7 @@ avanza-strategy-audit \
   --clean-sheet output/PORTFOLIO_CLEAN_SHEET_POST_MINI_20260731.json \
   --registry .avanza_position_strategy.json \
   --account-map Personal=5227886 \
-  --account-map DarkCell=7616265 \
-  --expected-instruments 65 \
-  --expected-positions 107
+  --account-map DarkCell=7616265
 ```
 
 ### SEC EDGAR access identity

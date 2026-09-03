@@ -1884,7 +1884,7 @@ def test_sold_slice_recovery_stop_attribution_rejects_preexisting_generic_buy():
     assert sold_slice_recovery_stop_attribution(
         dated_recovery,
         target_date=trade_date,
-    ) == (True, "RECOVERY_REASON_NAMES_TRADE_DATE")
+    ) == (True, "RECOVERY_REASON_NAMES_EXACT_SOLD_SLICE")
 
     stale_recovery = {
         **dated_recovery,
@@ -1893,7 +1893,68 @@ def test_sold_slice_recovery_stop_attribution_rejects_preexisting_generic_buy():
     assert sold_slice_recovery_stop_attribution(
         stale_recovery,
         target_date=trade_date,
-    ) == (False, "RECOVERY_METADATA_PREDATES_OR_DOES_NOT_NAME_TRADE_DATE")
+    ) == (False, "RECOVERY_REASON_DOES_NOT_NAME_EXACT_SOLD_SLICE")
+
+
+def test_sold_slice_recovery_attribution_rejects_metadata_date_and_negative_reason():
+    from avanza_mcp.core.snapshots import sold_slice_recovery_stop_attribution
+
+    target_date = date(2026, 9, 2)
+    older_sale_only = {
+        "strategy_metadata_status": "RECORDED",
+        "strategy_intent": "TACTICAL_RECOVERY",
+        "strategy_reason": (
+            "This stop is attributed only to exact 2026-08-31 sold slice and receives "
+            "zero recovery credit for every later sale."
+        ),
+        "strategy_recorded_at": "2026-08-31T12:00:00+00:00",
+        "strategy_updated_at": "2026-09-02T12:00:00+00:00",
+    }
+
+    assert sold_slice_recovery_stop_attribution(
+        older_sale_only,
+        target_date=target_date,
+    ) == (False, "RECOVERY_REASON_EXPLICITLY_DENIES_TRADE_DATE")
+
+    metadata_date_only = {
+        **older_sale_only,
+        "strategy_reason": "Restore an earlier reviewed sold slice.",
+    }
+    assert sold_slice_recovery_stop_attribution(
+        metadata_date_only,
+        target_date=target_date,
+    ) == (False, "RECOVERY_REASON_DOES_NOT_NAME_EXACT_SOLD_SLICE")
+
+    explicit_negative = {
+        **older_sale_only,
+        "strategy_reason": (
+            "This stop has no recovery attribution to the 2026-09-02 sold slice."
+        ),
+    }
+    assert sold_slice_recovery_stop_attribution(
+        explicit_negative,
+        target_date=target_date,
+    ) == (False, "RECOVERY_REASON_EXPLICITLY_DENIES_TRADE_DATE")
+
+
+def test_sold_slice_recovery_attribution_accepts_exact_positive_sale_lot_wording():
+    from avanza_mcp.core.snapshots import sold_slice_recovery_stop_attribution
+
+    row = {
+        "strategy_metadata_status": "RECORDED",
+        "strategy_intent": "PARTIAL_PARTICIPATION",
+        "strategy_reason": (
+            "2026-09-02 Personal ETH recovery is attributed only to the exact sale lot; "
+            "existing August 31 rows receive no September 2 credit."
+        ),
+        "strategy_recorded_at": "2026-09-02T12:00:00+00:00",
+        "strategy_updated_at": "2026-09-02T12:00:00+00:00",
+    }
+
+    assert sold_slice_recovery_stop_attribution(
+        row,
+        target_date=date(2026, 9, 2),
+    ) == (True, "RECOVERY_REASON_NAMES_EXACT_SOLD_SLICE")
 
 
 def test_protection_gaps_require_explicit_strategy_target_for_core_holdings():
