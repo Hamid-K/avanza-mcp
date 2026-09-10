@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Added an operator-run, preview-by-default reviewed-order manifest runner using
+  the existing keychain-backed MCP bridge. It preserves canonical order/stop
+  semantics, scoped authorization, exact state guards, durable no-retry
+  submission journals, post-readback and authorization revocation. Colored
+  terminal output separates executable actions from unresolved review rows;
+  no server launch, extra login or automatic strategy decisions are added.
+  Explicit reviewed local-registry repairs and post-order plans now preserve
+  sequential account audits without masking unrelated drift. Recovery source
+  parity, exact sale discounts, capital floors and immutable action journaling
+  are checked before user-operated submissions.
+  Full-universe decision accounting distinguishes prepared actions, justified
+  no-action decisions and evidence blockers. Optional exact portfolio guards
+  stop on unrelated holding/order changes or exceeded factor stress before
+  submission; only verified scoped changes advance their in-memory state.
+  Profit-harvest proposals can require an exact current position-profit floor;
+  unresolved or insufficient profit blocks the proposal before submission.
+  Quote age and execution expiry are checked at readback after slow MCP calls.
+
 - Resolved the Starlette security alerts by requiring the patched 1.3.1 lock,
   refreshed supported FastAPI, Textual, HTTPX, pytest, and setuptools floors,
   and updated the GitHub Actions dependency set. The TUI now accepts both the
