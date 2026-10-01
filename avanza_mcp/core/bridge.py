@@ -5,7 +5,7 @@ import threading
 import webbrowser
 
 from avanza.entities import StopLossOrderEvent, StopLossTrigger
-from avanza_mcp import avanza_ext, config, utils
+from avanza_mcp import avanza_ext, config, courtage, utils
 from avanza_mcp.avanza_ext import estimate_avanza_fee
 from avanza_mcp.config import (
     APP_VERSION,
@@ -109,6 +109,9 @@ from avanza_mcp.utils import (
 )
 from datetime import date, datetime, timezone
 from typing import Any
+
+
+COURTAGE_MUTATION_LOCK = threading.RLock()
 
 
 class CoreBridgeMixin:
@@ -319,6 +322,14 @@ class CoreBridgeMixin:
             _ = self.tenant_session_by_id(requested_session_id)
             return requested_session_id
         if requested_account_id:
+            if tool in {"avanza_courtage_class_get", "avanza_courtage_class_set"}:
+                matching_sessions = [
+                    context.session_id
+                    for context in self.tenant_sessions.values()
+                    if any(str(account.get("id")) == requested_account_id for account in context.accounts)
+                ]
+                if len(matching_sessions) > 1:
+                    raise ValueError("Account appears in multiple sessions; supply tenant_session_id explicitly.")
             match = self.tenant_session_for_account(requested_account_id)
             if match is not None:
                 return match.session_id
@@ -519,6 +530,37 @@ class CoreBridgeMixin:
             raise PermissionError(
                 "TUI MCP mode is read-only. Enable R/W to change local strategy metadata."
             )
+
+    def courtage_class_snapshot(self, avanza: Any, account_id: str) -> dict[str, Any]:
+        if not account_id:
+            raise ValueError("account_id is required.")
+        overview = avanza.get_overview()
+        if not isinstance(overview, dict):
+            raise ValueError("Avanza account overview is unavailable.")
+        account = next(
+            (item for item in account_rows_from_overview(overview) if str(item.get("id")) == account_id),
+            None,
+        )
+        if account is None:
+            raise ValueError(f"Account {account_id} is not visible in the selected tenant session.")
+        snapshot = courtage.read_courtage_class(avanza)
+        account_class = str(account.get("courtageClass") or "").strip().upper() or None
+        snapshot.update(
+            {
+                "tenant_session_id": self.active_session_id,
+                "account_id": account_id,
+                "account_name": account_display_name(account),
+                "account_class": account_class,
+                "account_class_verified": account_class == snapshot["current_class"] if account_class else False,
+                "jointly_owned": account.get("jointlyOwned") is True,
+            }
+        )
+        if snapshot["jointly_owned"] or (account_class and account_class != snapshot["current_class"]):
+            snapshot["warning"] = (
+                "This account may not use the logged-in holder's courtage class. "
+                "Joint or delegated accounts are excluded from holder-wide changes."
+            )
+        return snapshot
 
     def position_strategy_live_snapshot(
         self,
@@ -760,6 +802,103 @@ class CoreBridgeMixin:
                 "status": str(account.get("status", "") or ""),
                 "capabilities": self.mcp_status_payload(),
             }
+
+        if tool == "avanza_courtage_class_get":
+            return self.courtage_class_snapshot(avanza, str(arguments.get("account_id") or "").strip())
+
+        if tool == "avanza_courtage_class_set":
+            requested_account_id = str(arguments.get("account_id") or "").strip()
+            target_class = str(arguments.get("target_class") or "").strip().upper()
+            if not target_class:
+                raise ValueError("target_class is required.")
+            confirmed = arguments.get("confirm") is True
+            with COURTAGE_MUTATION_LOCK:
+                before = self.courtage_class_snapshot(avanza, requested_account_id)
+                available_codes = {item["code"] for item in before["available_classes"]}
+                if not before["available_classes_verified"]:
+                    raise ValueError("Available courtage classes could not be verified for this customer group.")
+                if target_class not in available_codes:
+                    raise ValueError(f"{target_class} is not an available courtage class for this account holder.")
+                if before["jointly_owned"] or (
+                    before["account_class"] and not before["account_class_verified"]
+                ):
+                    raise PermissionError("Cannot change the holder class for a joint or differently priced account.")
+                preview = {
+                    "account_id": requested_account_id,
+                    "account_name": before["account_name"],
+                    "tenant_session_id": before["tenant_session_id"],
+                    "current_class": before["current_class"],
+                    "target_class": target_class,
+                    "scope": before["scope"],
+                    "effective_for": before["effective_for"],
+                    "derivative_order_exists": before["derivative_order_exists"],
+                    "would_change": before["current_class"] != target_class,
+                }
+                if not confirmed:
+                    return {"ok": True, "dry_run": True, **preview}
+
+                self.require_mcp_write(True)
+                if self.paper_mode_enabled:
+                    raise PermissionError("Disable paper mode before changing a live Avanza courtage class.")
+                if before["derivative_order_exists"]:
+                    raise PermissionError("Avanza reports a pending or same-day filled derivative order; class change is blocked.")
+                if before["current_class"] == "START" and target_class != "START" and arguments.get("acknowledge_start_exit") is not True:
+                    raise PermissionError("Leaving Start may be irreversible. Set acknowledge_start_exit=true to proceed.")
+                if before["current_class"] == target_class:
+                    return {"ok": True, "dry_run": False, "changed": False, "verified": True, **preview}
+
+                try:
+                    courtage.submit_courtage_class_change(avanza, target_class)
+                except Exception as exc:
+                    try:
+                        after = self.courtage_class_snapshot(avanza, requested_account_id)
+                    except Exception as readback_exc:
+                        return {
+                            "ok": False,
+                            "dry_run": False,
+                            "mutation_submitted": True,
+                            "outcome_unknown": True,
+                            "error": str(exc),
+                            "readback_error": str(readback_exc),
+                            **preview,
+                        }
+                    verified = after["current_class"] == target_class and (
+                        not after["account_class"] or after["account_class_verified"]
+                    )
+                    return {
+                        "ok": verified,
+                        "dry_run": False,
+                        "mutation_submitted": True,
+                        "verified": verified,
+                        "current_class_after": after["current_class"],
+                        "account_class_after": after["account_class"],
+                        "error": str(exc),
+                        **preview,
+                    }
+
+                try:
+                    after = self.courtage_class_snapshot(avanza, requested_account_id)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "dry_run": False,
+                        "mutation_submitted": True,
+                        "outcome_unknown": True,
+                        "readback_error": str(exc),
+                        **preview,
+                    }
+                verified = after["current_class"] == target_class and (
+                    not after["account_class"] or after["account_class_verified"]
+                )
+                return {
+                    "ok": verified,
+                    "dry_run": False,
+                    "mutation_submitted": True,
+                    "verified": verified,
+                    "current_class_after": after["current_class"],
+                    "account_class_after": after["account_class"],
+                    **preview,
+                }
 
         if tool == "avanza_account_performance":
             requested_period = arguments.get("period", "SINCE_START")

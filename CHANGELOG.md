@@ -51,6 +51,14 @@
   or manufacturing eligibility. All R390 controls remain review-only and grant
   no broker or paper mutation authority.
 
+## 0.2.43 - 2026-10-01
+
+- Added tenant-scoped MCP courtage-class read and preview/confirm switch tools.
+  Confirmed changes require live authorization and paper mode off, reject
+  unsupported classes and derivative-order blocks, and read back Avanza's
+  account-holder-wide class without placing an order. Leaving Start requires
+  an additional acknowledgement; uncertain submissions are never retried.
+
 ## 0.2.42 - 2026-08-28
 
 - Refresh the requirement-level live-reconciliation checkpoint from the exact

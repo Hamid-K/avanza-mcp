@@ -259,6 +259,35 @@ MCP_TOOLS = [
         },
     },
     {
+        "name": "avanza_courtage_class_get",
+        "description": "Read the selected account holder's current Avanza courtage class and available choices. The class applies to all accounts owned by that holder.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+            },
+            "required": ["account_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "avanza_courtage_class_set",
+        "description": "Preview or change the selected account holder's courtage class. A confirmed change affects all owned accounts; requires MCP R/W, live-session authorization, and paper mode off.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tenant_session_id": {"type": "string"},
+                "account_id": {"type": "string"},
+                "target_class": {"type": "string"},
+                "confirm": {"type": "boolean", "default": False},
+                "acknowledge_start_exit": {"type": "boolean", "default": False},
+            },
+            "required": ["account_id", "target_class"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "avanza_account_performance",
         "description": "Read Avanza account performance/development for the selected or supplied account_id over a chosen period.",
         "inputSchema": {
@@ -1585,6 +1614,8 @@ TENANT_SESSION_SCOPED_TOOLS = {
     "avanza_live_session_revoke",
     "avanza_accounts",
     "avanza_select_account",
+    "avanza_courtage_class_get",
+    "avanza_courtage_class_set",
     "avanza_account_performance",
     "avanza_instrument_chart",
     "avanza_account_cost_attribution",

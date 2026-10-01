@@ -363,6 +363,8 @@ For multi-session setups:
 | `avanza_sessions` | List loaded authenticated Avanza tenant sessions in the running TUI. |
 | `avanza_select_session` | Switch active MCP/TUI tenant session context. |
 | `avanza_select_account` | Safely switch MCP or TUI selected account context. |
+| `avanza_courtage_class_get` | Read the logged-in account holder's current courtage class and available choices for an explicit account. |
+| `avanza_courtage_class_set` | Preview or explicitly confirm an account-holder-wide courtage-class change, with post-change readback. |
 | `avanza_account_performance` | Read Avanza account performance/development for the selected or supplied account_id over a chosen period. |
 | `avanza_instrument_chart` | Read authenticated daily or intraday Avanza OHLC history for one order book; read-only analysis input. |
 | `avanza_account_cost_attribution` | Replay cash-flow-adjusted account return with posted commission and modeled FX removed; read-only and fail-closed on truncated history. |

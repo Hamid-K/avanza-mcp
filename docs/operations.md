@@ -253,6 +253,8 @@ Multi-session MCP behavior:
 | `avanza_sessions` | List loaded authenticated Avanza tenant sessions in the running TUI. |
 | `avanza_select_session` | Switch active MCP/TUI tenant session context. |
 | `avanza_select_account` | Safely switch MCP or TUI selected account context. |
+| `avanza_courtage_class_get` | Read the logged-in account holder's current courtage class and available choices for an explicit account. |
+| `avanza_courtage_class_set` | Preview or explicitly confirm an account-holder-wide courtage-class change, with post-change readback. |
 | `avanza_account_performance` | Read Avanza account performance/development for the selected or supplied account_id over a chosen period. |
 | `avanza_instrument_chart` | Read authenticated daily or intraday Avanza OHLC history for one order book; read-only analysis input. |
 | `avanza_account_cost_attribution` | Replay cash-flow-adjusted account return with posted commission and modeled FX removed; read-only and fail-closed on truncated history. |
@@ -331,6 +333,35 @@ Multi-session MCP behavior:
 Canonical naming note:
 - use `avanza_open_orders`
 - use `avanza_stoplosses`
+
+### Courtage class
+
+`avanza_courtage_class_get` requires `account_id` and accepts optional
+`tenant_session_id`. It returns the logged-in holder's current class, eligible
+choices derived from Avanza's current web-client customer-group mapping, and
+whether a derivative order blocks switching. An account ID selects and verifies
+the tenant; courtage is **not** independently configurable per account. Avanza
+states a change affects all accounts owned by that holder, excluding joint and
+power-of-attorney accounts. If the same account is visible in multiple sessions,
+pass `tenant_session_id` explicitly. A joint or differently priced account is
+not eligible for the mutation tool.
+
+`avanza_courtage_class_set` requires `account_id` and `target_class` (use a
+`code` returned by the read tool). Without `confirm: true` it only previews the
+holder-wide change. A confirmed request requires MCP R/W, live authorization
+for the selected tenant, and paper mode off. Leaving Start also requires
+`acknowledge_start_exit: true`; Avanza says Start cannot be reselected after
+leaving it. The tool posts once, then reads the class back; if the response or
+readback is ambiguous, do **not** blindly retry. Avanza can block changes when
+there is a pending derivative order or a derivative fill that day. Changes
+apply immediately to **new** orders; previously placed orders retain their
+original class. The setting persists until changed again and is not
+automatically restored after a trade. This uses Avanza's undocumented web
+endpoints, so a frontend/API change must fail closed until revalidated.
+
+Avanza's [courtage-class guidance](https://blogg.avanza.se/sa-enkelt-kan-du-vaxla-mellan-olika-courtageklasser/)
+documents immediate effect, order-level class retention, and derivative
+restrictions.
 
 The private `.avanza_stoploss_strategy.json` registry persists the strategy
 intent that Avanza does not retain. It is written atomically with mode `0600`,
