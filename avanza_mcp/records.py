@@ -33,6 +33,7 @@ from avanza_mcp.rendering import (
     render_message,
     render_table,
     side_badge,
+    stop_loss_monetary_currency,
     stop_loss_row,
 )
 from avanza_mcp.utils import nested_value, value_number
@@ -809,6 +810,7 @@ def stop_loss_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
     order_price = order.get("price", "")
     order_price_type = str(order.get("priceType", "") or "")
     valid_until = str(trigger.get("validUntil", "") or "")
+    currency = stop_loss_monetary_currency(item)
     return {
         "Stop Loss ID": str(item.get("id", "") or ""),
         "Status": str(item.get("status", "") or ""),
@@ -816,8 +818,8 @@ def stop_loss_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
         "Account ID": account_id,
         "Stock": stock,
         "Order Book ID": orderbook_id,
-        "Trigger": f"{trigger_type} {formatted_typed_value(trigger_value, trigger_value_type)}".strip(),
-        "Order": f"{str(order.get('type', '') or '')} {order.get('volume', '')} @ {formatted_typed_value(order_price, order_price_type)}".strip(),
+        "Trigger": f"{trigger_type} {formatted_typed_value(trigger_value, trigger_value_type, currency or 'UNKNOWN')}".strip(),
+        "Order": f"{str(order.get('type', '') or '')} {order.get('volume', '')} @ {formatted_typed_value(order_price, order_price_type, currency or 'UNKNOWN')}".strip(),
         "Valid Until": valid_until,
         "stop_loss_id": str(item.get("id", "") or ""),
         "status": str(item.get("status", "") or ""),
@@ -825,6 +827,8 @@ def stop_loss_mcp_dict(item: dict[str, Any]) -> dict[str, Any]:
         "account_name": account_name,
         "stock": stock,
         "orderbook_id": orderbook_id,
+        "currency": currency,
+        "currency_status": "EXPLICIT_NATIVE_UNIT" if currency else "UNKNOWN_OR_CONFLICTING",
         "side": side,
         "volume": stop_loss_volume(item),
         "trigger_type": trigger_type,

@@ -86,6 +86,23 @@ def formatted_typed_value(
     return f"{value} {label}".strip()
 
 
+def stop_loss_monetary_currency(item: dict[str, Any]) -> str | None:
+    """Use explicit native units only; unknown/conflicting units are not SEK."""
+    candidates = [
+        nested_value(item, "orderbook", "currency"),
+        nested_value(item, "instrument", "currency"),
+        item.get("currency"),
+    ]
+    for section, value_key, type_key in (("trigger", "value", "valueType"), ("order", "price", "priceType")):
+        if str(nested_value(item, section, type_key) or "").upper() == "MONETARY":
+            candidates.append(nested_value(item, section, value_key, "unit"))
+    units = {str(value).strip().upper() for value in candidates if value is not None and str(value).strip()}
+    if len(units) != 1:
+        return None
+    unit = units.pop()
+    return unit if re.fullmatch(r"[A-Z]{3}", unit) else None
+
+
 def plain_cell_value(value: Any) -> str:
     if isinstance(value, Text):
         return value.plain
@@ -1248,13 +1265,14 @@ def stop_loss_row(item: dict[str, Any]) -> tuple[str, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
     order = item.get("order") or {}
+    currency = stop_loss_monetary_currency(item) or "UNKNOWN"
 
     return (
         str(item.get("status", "")),
         str(account.get("name", "")),
         str(orderbook.get("name", "")),
-        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
-        f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''))}",
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''), currency)}",
+        f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''), currency)}",
         str(trigger.get("validUntil", "")),
     )
 
@@ -1264,14 +1282,15 @@ def stop_loss_mcp_row(item: dict[str, Any]) -> tuple[str, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
     order = item.get("order") or {}
+    currency = stop_loss_monetary_currency(item) or "UNKNOWN"
     return (
         str(item.get("id", "")),
         str(item.get("status", "")),
         str(account.get("name", "")),
         str(orderbook.get("name", "")),
         str(orderbook.get("id", "")),
-        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
-        f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''))}",
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''), currency)}",
+        f"{order.get('type', '')} {order.get('volume', '')} @ {formatted_typed_value(order.get('price', ''), order.get('priceType', ''), currency)}",
         str(trigger.get("validUntil", "")),
     )
 
@@ -1280,15 +1299,16 @@ def stop_loss_activity_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
     order = item.get("order") or {}
+    currency = stop_loss_monetary_currency(item) or "UNKNOWN"
 
     return (
         "Stop-loss",
         str(item.get("status", "")),
         str(orderbook.get("name", "")),
-        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''), currency)}",
         side_badge(order.get("type", "")),
         str(order.get("volume", "")),
-        formatted_typed_value(order.get("price", ""), order.get("priceType", "")),
+        formatted_typed_value(order.get("price", ""), order.get("priceType", ""), currency),
         str(trigger.get("validUntil", "")),
         cancel_badge(),
     )
@@ -1298,13 +1318,14 @@ def active_stop_loss_row(item: dict[str, Any]) -> tuple[Any, ...]:
     orderbook = item.get("orderbook") or {}
     trigger = item.get("trigger") or {}
     order = item.get("order") or {}
+    currency = stop_loss_monetary_currency(item) or "UNKNOWN"
     return (
         "Live",
         "Stop-loss",
         str(orderbook.get("name", "")),
         side_badge(order.get("type", "")),
         str(order.get("volume", "")),
-        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''))}",
+        f"{trigger.get('type', '')} {formatted_typed_value(trigger.get('value', ''), trigger.get('valueType', ''), currency)}",
         str(trigger.get("validUntil", "")),
         str(item.get("status", "")),
         cancel_badge(),

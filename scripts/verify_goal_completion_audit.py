@@ -433,7 +433,14 @@ def _validate_full_history_governance_link(
         "full-history open sale-lot count is invalid",
         errors,
     )
-    _require(_is_nonnegative_decimal(open_quantity), "full-history open quantity is invalid", errors)
+    no_cross_instrument_total = canonical.get(
+        "cross_instrument_antal_total_not_economic_metric"
+    ) is True
+    _require(
+        open_quantity is None if no_cross_instrument_total else _is_nonnegative_decimal(open_quantity),
+        "full-history open quantity is invalid",
+        errors,
+    )
 
     dynamic_count = mirror.get("dynamic_row_count")
     repair_count = mirror.get("repair_required_row_count")

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Corrected frozen-holdings attribution currency and inventory horizons:
+  require explicit native units, dated historical FX and history through the
+  current inventory date; suppress incomplete benchmark figures. Added mocked
+  source, price, scope and reconciliation regression coverage and documented
+  the unavailable native historical-FX feed and dividend-model limitation.
+  Stop readbacks now expose native/unknown currency instead of assuming SEK.
+  Preserved hash-bound cross-midnight failed reviews remain ineligible history.
+  Goal audit links accept explicitly omitted cross-instrument share totals
+  without manufacturing an economic aggregate or weakening completion gates.
+
 - Added an operator-run, preview-by-default reviewed-order manifest runner using
   the existing keychain-backed MCP bridge. It preserves canonical order/stop
   semantics, scoped authorization, exact state guards, durable no-retry

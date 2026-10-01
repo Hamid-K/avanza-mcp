@@ -8,7 +8,10 @@ from datetime import date
 
 from avanza.constants import TransactionsDetailsType
 from avanza_mcp import avanza_ext, utils
-from avanza_mcp.frozen_holdings_attribution import build_frozen_holdings_attribution
+from avanza_mcp.frozen_holdings_attribution import (
+    build_frozen_holdings_attribution,
+    suppress_frozen_benchmark,
+)
 from avanza_mcp.config import (
     ACCOUNT_READ_CACHE_SECONDS,
     KNOWN_ORDERBOOK_METADATA,
@@ -29,6 +32,7 @@ from avanza_mcp.external.tradingview_data import (
     unique_strings,
 )
 from avanza_mcp.market_data import (
+    STOCKHOLM_TIMEZONE,
     account_performance_summary_from_payload,
     display_symbol,
     infer_country_from_metadata,
@@ -411,24 +415,27 @@ class CoreSnapshotsMixin:
         ]
         if len(candidate_points) < 2:
             raise ValueError("At least two account-performance points are required for frozen attribution.")
+        if requested_account_id and account_id != str(requested_account_id):
+            raise ValueError("Frozen attribution account scope does not match the requested account.")
         effective_start = date.fromisoformat(str(candidate_points[0]["date"]))
-        effective_end = date.fromisoformat(str(candidate_points[-1]["date"]))
+        inventory_as_of = datetime.now(STOCKHOLM_TIMEZONE).date()
         portfolio = self.portfolio_snapshot(avanza, account_id, compact=False, refresh=True)
         transactions = self.transactions_snapshot(
             avanza,
             account_id,
             transactions_from=effective_start,
-            transactions_to=effective_end,
+            transactions_to=inventory_as_of,
             types=[TransactionsDetailsType.BUY, TransactionsDetailsType.SELL],
             max_elements=20_000,
             executed_only=True,
             compact=False,
+            include_raw=True,
         )
         cash_events = self.transactions_snapshot(
             avanza,
             account_id,
             transactions_from=effective_start,
-            transactions_to=effective_end,
+            transactions_to=inventory_as_of,
             types=[
                 TransactionsDetailsType.DIVIDEND,
                 TransactionsDetailsType.WITHDRAW,
@@ -438,9 +445,39 @@ class CoreSnapshotsMixin:
             max_elements=20_000,
             executed_only=False,
             compact=False,
+            include_raw=True,
         )
         if transactions.get("truncation_risk") or cash_events.get("truncation_risk"):
             raise RuntimeError("Transaction history reached the 20,000-row safety cap; frozen attribution is incomplete.")
+
+        # Normalized history may match an account name; attribution requires
+        # exact broker account IDs, retained by the include_raw scope contract.
+        scoped_rows: list[list[dict[str, Any]]] = []
+        scope_errors: list[dict[str, Any]] = []
+        for history in (transactions, cash_events):
+            scope = history.get("raw_scope", {})
+            if scope.get("exact_account_scope") is not True or str(scope.get("account_id")) != account_id:
+                scope_errors.append({"issue": "transaction_account_scope_not_verified"})
+            if scope.get("unidentified_rows_filtered"):
+                scope_errors.append({"issue": "unidentified_transaction_account"})
+            raw_items, _ = transactions_items(history.get("raw_payload", {}))
+            rows = []
+            seen_ids: set[str] = set()
+            for item in raw_items:
+                if transaction_account_id(item) != account_id:
+                    scope_errors.append({"issue": "transaction_account_mismatch"})
+                    continue
+                identifier = str(item.get("transactionId") or item.get("id") or "")
+                if identifier and identifier in seen_ids:
+                    scope_errors.append({"issue": "duplicate_transaction_id"})
+                    continue
+                if identifier:
+                    seen_ids.add(identifier)
+                row = transaction_history_dict_row(item)
+                row["volumeFactor"] = utils.scalar_number(item.get("volumeFactor")) or 0
+                rows.append(row)
+            scoped_rows.append(rows)
+        transaction_rows, cash_event_rows = scoped_rows
 
         orderbook_ids = {
             str(row.get("orderbook_id") or "").strip()
@@ -449,13 +486,17 @@ class CoreSnapshotsMixin:
         }
         orderbook_ids.update(
             str(row.get("Order Book ID") or row.get("orderbook_id") or "").strip()
-            for row in transactions.get("transactions", [])
+            for row in transaction_rows
             if str(row.get("Order Book ID") or row.get("orderbook_id") or "").strip()
         )
         period_label, period_enum = map_account_performance_period(requested_period)
         resolution_label, resolution_enum = map_instrument_chart_resolution("DAY")
         chart_points_by_orderbook: dict[str, list[dict[str, Any]]] = {}
-        chart_errors: list[dict[str, Any]] = []
+        price_currency_by_orderbook: dict[str, str] = {}
+        chart_errors: list[dict[str, Any]] = scope_errors
+        for history in (transactions, cash_events):
+            if history.get("unparseable_date_rows_filtered"):
+                chart_errors.append({"issue": "unparseable_transaction_dates"})
         for orderbook_id in sorted(orderbook_ids):
             try:
                 payload = avanza.get_chart_data(orderbook_id, period_enum, resolution_enum)
@@ -466,22 +507,49 @@ class CoreSnapshotsMixin:
                     resolution=resolution_label,
                 )
                 chart_points_by_orderbook[orderbook_id] = chart.get("points", [])
+                quote = payload_to_json_safe(avanza.get_market_data(orderbook_id))
+                currency = market_quote_first_text(
+                    quote,
+                    (("quote", "currency"), ("currency",), ("orderbook", "currency")),
+                )
+                if currency:
+                    price_currency_by_orderbook[orderbook_id] = currency
             except Exception as exc:
-                chart_errors.append({"orderbook_id": orderbook_id, "error": str(exc)})
+                chart_errors.append({"orderbook_id": orderbook_id, "issue": "chart_or_currency_source_error", "error": str(exc)})
+
+        # A fresh inventory with yesterday's transaction horizon is not a valid
+        # opening inventory. Detect account movement during this multi-call read.
+        final_portfolio = self.portfolio_snapshot(avanza, account_id, compact=False, refresh=True)
+
+        def inventory_signature(snapshot: dict[str, Any]) -> list[tuple[str, float]]:
+            return sorted(
+                (str(row.get("orderbook_id") or ""), float(row.get("volume") or 0))
+                for row in snapshot.get("positions", [])
+            )
+
+        if portfolio.get("account_id") != account_id or final_portfolio.get("account_id") != account_id:
+            chart_errors.append({"issue": "portfolio_account_scope_mismatch"})
+        if inventory_signature(final_portfolio) != inventory_signature(portfolio):
+            chart_errors.append({"issue": "portfolio_changed_during_reconstruction"})
+        if datetime.now(STOCKHOLM_TIMEZONE).date() != inventory_as_of:
+            chart_errors.append({"issue": "inventory_date_changed_during_reconstruction"})
 
         result = build_frozen_holdings_attribution(
             account_id=account_id,
             start_date=effective_start,
             performance_points=performance.get("chart_points", []),
             portfolio_rows=portfolio.get("positions", []),
-            transaction_rows=transactions.get("transactions", []),
-            cash_event_rows=cash_events.get("transactions", []),
+            transaction_rows=transaction_rows,
+            cash_event_rows=cash_event_rows,
             chart_points_by_orderbook=chart_points_by_orderbook,
             include_daily=include_daily,
+            portfolio_as_of=inventory_as_of,
+            transaction_history_through=inventory_as_of,
+            price_currency_by_orderbook=price_currency_by_orderbook,
         )
         if chart_errors:
-            result["status"] = "BLOCKED_INCOMPLETE_HISTORY"
             result.setdefault("issues", []).extend(chart_errors)
+            suppress_frozen_benchmark(result)
         result["period"] = performance["period"]
         result["lineage"] = {
             "performance_tool": "avanza_account_performance",
@@ -489,6 +557,9 @@ class CoreSnapshotsMixin:
             "transaction_tool": "avanza_transactions",
             "chart_source": "authenticated_avanza_get_chart_data",
             "chart_resolution": "DAY",
+            "currency_source": "authenticated_avanza_get_market_data_explicit_currency",
+            "historical_fx_source": None,
+            "inventory_history_through": inventory_as_of.isoformat(),
         }
         return result
 

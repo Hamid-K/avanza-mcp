@@ -344,7 +344,8 @@ def validate(
                 errors,
             )
             _require(
-                completed.astimezone(STOCKHOLM).date().isoformat() == session_date,
+                completed.astimezone(STOCKHOLM).date().isoformat() == session_date
+                or late_is_preserved,
                 f"{label}.market_session_date does not match completed_at",
                 errors,
             )

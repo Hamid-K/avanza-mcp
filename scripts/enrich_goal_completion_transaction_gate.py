@@ -378,6 +378,9 @@ def _full_history_governance_link(
             "open_sale_quantity_exact": canonical_summary.get(
                 "open_sale_quantity_exact"
             ),
+            "cross_instrument_antal_total_not_economic_metric": canonical_summary.get(
+                "cross_instrument_antal_total_not_economic_metric"
+            ) is True,
         },
         "dynamic_mirror": {
             "artifact": dynamic_mirror.get("artifact"),

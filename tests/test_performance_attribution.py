@@ -186,6 +186,9 @@ def test_frozen_holdings_reconstructs_start_volume_and_cash_flow_adjusted_path()
             ]
         },
         include_daily=True,
+        portfolio_as_of=date(2026, 5, 8),
+        transaction_history_through=date(2026, 5, 8),
+        price_currency_by_orderbook={"1": "SEK"},
     )
 
     assert result["status"] == "COMPLETE"
@@ -207,7 +210,114 @@ def test_frozen_holdings_fails_closed_on_unknown_cash_event_and_missing_chart():
         cash_event_rows=[{"Trade Date": "2026-05-07", "Type": "UNKNOWN", "Amount": "10 SEK"}],
         chart_points_by_orderbook={},
         include_daily=False,
+        portfolio_as_of=date(2026, 5, 7),
+        transaction_history_through=date(2026, 5, 7),
+        price_currency_by_orderbook={"1": "SEK"},
     )
 
     assert result["status"] == "BLOCKED_INCOMPLETE_HISTORY"
     assert {item["issue"] for item in result["issues"]} == {"missing_chart_history", "Unsupported non-zero cash event type: UNKNOWN"}
+    assert result["returns"]["frozen_starting_holdings_percent"] is None
+    assert result["reconstruction"]["start_cash_residual_sek"] is None
+
+
+def frozen_inputs():
+    return {
+        "account_id": "fixture-account",
+        "start_date": date(2026, 5, 6),
+        "performance_points": [point("2026-05-06", 0, 1000), point("2026-05-08", 10, 1100)],
+        "portfolio_rows": [{"orderbook_id": "1", "volume": 10}],
+        "transaction_rows": [],
+        "cash_event_rows": [],
+        "chart_points_by_orderbook": {"1": [{"date": "2026-05-06", "close": 100}, {"date": "2026-05-08", "close": 110}]},
+        "include_daily": True,
+        "portfolio_as_of": date(2026, 5, 8),
+        "transaction_history_through": date(2026, 5, 8),
+        "price_currency_by_orderbook": {"1": "SEK"},
+    }
+
+
+def test_frozen_holdings_converts_native_prices_with_dated_fx():
+    inputs = frozen_inputs()
+    inputs["portfolio_rows"][0]["volume"] = 100
+    inputs["performance_points"] = [point("2026-05-06", 0, 100000), point("2026-05-08", 9, 109000)]
+    inputs["price_currency_by_orderbook"] = {"1": "USD"}
+    inputs["fx_history_by_currency"] = {"USD": [{"date": "2026-05-06", "close": 9}, {"date": "2026-05-08", "close": 9}]}
+    result = build_frozen_holdings_attribution(**inputs)
+    assert result["status"] == "COMPLETE"
+    assert result["reconstruction"]["start_cash_residual_sek"] == pytest.approx(10000)
+    assert result["returns"]["frozen_starting_holdings_percent"] == pytest.approx(9)
+    inputs["fx_history_by_currency"]["USD"][1]["close"] = 10
+    result = build_frozen_holdings_attribution(**inputs)
+    assert result["returns"]["frozen_starting_holdings_percent"] == pytest.approx(20)
+
+
+def test_frozen_inventory_bridges_trades_after_performance_end():
+    inputs = frozen_inputs()
+    inputs["portfolio_rows"][0]["volume"] = 7
+    inputs["portfolio_as_of"] = inputs["transaction_history_through"] = date(2026, 5, 9)
+    inputs["transaction_rows"] = [{"Trade Date": "2026-05-09", "Type": "SELL", "Volume": 3, "Order Book ID": "1"}]
+    result = build_frozen_holdings_attribution(**inputs)
+    assert result["status"] == "COMPLETE"
+    assert result["reconstruction"]["start_holdings_value_sek"] == pytest.approx(1000)
+    assert result["returns"]["frozen_starting_holdings_percent"] == pytest.approx(10)
+
+
+@pytest.mark.parametrize("change,issue", [
+    ({"portfolio_as_of": None}, "missing_or_invalid_inventory_as_of"),
+    ({"transaction_history_through": date(2026, 5, 7)}, "inventory_history_horizon_not_verified"),
+    ({"price_currency_by_orderbook": {}}, "missing_price_currency"),
+    ({"price_currency_by_orderbook": {"1": "USD"}}, "missing_historical_fx"),
+    ({"fx_history_by_currency": {"USD": [{"date": "2026-05-06", "close": float("inf")}]}, "price_currency_by_orderbook": {"1": "USD"}}, "invalid_historical_fx"),
+])
+def test_frozen_missing_contract_suppresses_all_benchmark_values(change, issue):
+    inputs = frozen_inputs()
+    inputs.update(change)
+    result = build_frozen_holdings_attribution(**inputs)
+    assert result["status"] == "BLOCKED_INCOMPLETE_HISTORY"
+    assert issue in {item["issue"] for item in result["issues"]}
+    assert result["returns"]["frozen_starting_holdings_percent"] is None
+    assert result["returns"]["frozen_minus_actual_percentage_points"] is None
+    assert result["reconstruction"]["start_holdings_value_sek"] is None
+    assert result["daily"] == []
+
+
+@pytest.mark.parametrize("bad_point", [
+    {"date": "2026-05-06", "close": float("nan")},
+    {"date": "2026-05-06", "close": 0},
+    {"date": "2026-05-06", "close": 100, "high": 90},
+    {"date": "2026-05-06", "close": 100, "low": 110},
+    {"date": "not-a-date", "close": 100},
+    {"date": "2026-05-06"},
+])
+def test_frozen_invalid_chart_is_not_certified(bad_point):
+    inputs = frozen_inputs()
+    inputs["chart_points_by_orderbook"]["1"][0] = bad_point
+    result = build_frozen_holdings_attribution(**inputs)
+    assert "invalid_chart_history" in {item["issue"] for item in result["issues"]}
+    assert result["returns"]["frozen_starting_holdings_percent"] is None
+
+
+def test_frozen_cash_events_between_performance_points_are_not_lost():
+    inputs = frozen_inputs()
+    inputs["cash_event_rows"] = [{"Trade Date": "2026-05-07", "Type": "DEPOSIT", "Amount": "50 SEK"}]
+    result = build_frozen_holdings_attribution(**inputs)
+    assert result["daily"][0]["external_flow_sek"] == 50
+    assert result["returns"]["frozen_starting_holdings_percent"] == pytest.approx(10)
+
+
+def test_frozen_unsupported_corporate_event_after_window_blocks_inventory():
+    inputs = frozen_inputs()
+    inputs["portfolio_as_of"] = inputs["transaction_history_through"] = date(2026, 5, 9)
+    inputs["cash_event_rows"] = [{"Trade Date": "2026-05-09", "Type": "UNKNOWN", "Volume": 2, "Amount": "0 SEK"}]
+    result = build_frozen_holdings_attribution(**inputs)
+    assert "unsupported_inventory_event" in {item["issue"] for item in result["issues"]}
+    assert result["daily"] == []
+
+
+def test_frozen_account_value_requires_sek_units():
+    inputs = frozen_inputs()
+    inputs["performance_points"][1]["account_value"]["unit"] = "USD"
+    result = build_frozen_holdings_attribution(**inputs)
+    assert "account_value_currency_not_verified_sek" in {item["issue"] for item in result["issues"]}
+    assert result["returns"]["frozen_starting_holdings_percent"] is None
