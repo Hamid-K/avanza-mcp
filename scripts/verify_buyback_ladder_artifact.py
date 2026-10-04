@@ -54,6 +54,63 @@ DYNAMIC_LOW_EXPOSURE_STATES = {
     "NON_STOP_ELIGIBLE",
     "REPAIR_REQUIRED",
 }
+DYNAMIC_NON_STOP_ELIGIBLE_PROTECTION_CLASSES = {
+    "NON_STOP_ELIGIBLE",
+    "NON_STOP_ELIGIBLE_FUND",
+    "NON_STOP_ELIGIBLE_FULL_EXIT",
+}
+BROKER_SELL_ASSESSMENT_STATUSES = {"ASSESSED", "NOT_ASSESSED"}
+BROKER_SELL_COVERAGE_STATUSES = {
+    "BROKER_SELL_PROTECTION_PRESENT",
+    "BROKER_SELL_PROTECTION_PARTIAL",
+    "BROKER_SELL_PROTECTION_ABSENT",
+    "NOT_APPLICABLE",
+    "NOT_ASSESSED",
+}
+BROKER_SELL_REVIEW_STATUSES = {
+    "CURRENT",
+    "PROTECTION_REVIEW_REQUIRED",
+    "NOT_ASSESSED",
+}
+STRATEGY_TARGET_COVERAGE_STATUSES = {
+    "MATCHED",
+    "UNDERCOVERED",
+    "OVERCOVERED",
+    "MISSING",
+    "NOT_APPLICABLE",
+}
+STRATEGY_TARGET_MISMATCH_STATUSES = {
+    "UNDERCOVERED",
+    "OVERCOVERED",
+    "MISSING",
+}
+NO_STOP_EVIDENCE_STATUSES = {
+    "CURRENT",
+    "MISSING",
+    "INVALID",
+    "EXPIRED",
+    "NOT_APPLICABLE",
+}
+NO_STOP_PROTECTION_CHOICES = {
+    "TACTICAL_PROFIT_SLICE",
+    "WIDER_CALIBRATED_CORE_ROW",
+    "DELIBERATELY_UNPROTECTED_CORE",
+}
+NO_STOP_EVIDENCE_FIELDS = {
+    "decision_at",
+    "evidence_as_of",
+    "next_review_at",
+    "valid_until",
+    "gap_risk_statement",
+    "evidence_source_ids",
+    "protection_choice",
+}
+NON_STOP_ELIGIBLE_EVIDENCE_FIELDS = {
+    "evidence_as_of",
+    "valid_until",
+    "capability_statement",
+    "evidence_source_ids",
+}
 EXPECTED_DYNAMIC_SCOPES = {
     ("personal", "5227886"),
     ("darkcell", "7616265"),
@@ -767,6 +824,11 @@ def validate_full_dynamic_governance_mirror(
                     )
 
         components = row.get("r390_recovery_components")
+        _require(
+            "r390_unquantified_repair_components" not in row,
+            f"full dynamic unvalidated recovery component field is present for {key}",
+            errors,
+        )
         if components is not None:
             _require(isinstance(components, list) and bool(components), f"full dynamic recovery components are invalid for {key}", errors)
             if isinstance(components, list):
@@ -782,11 +844,10 @@ def validate_full_dynamic_governance_mirror(
                     stages = component.get("stages_percent_below_sold_marker")
                     quantities = component.get("stage_quantities")
                     lots_for_component = component.get("exact_open_sale_lot_ids")
-                    _require(
+                    valid_target = isinstance(target, int) and not isinstance(target, bool) and target > 0
+                    quantified_dormant = (
                         component.get("state") == "LADDER_DORMANT"
-                        and isinstance(target, int)
-                        and not isinstance(target, bool)
-                        and target > 0
+                        and valid_target
                         and isinstance(stages, list)
                         and 1 <= len(stages) <= 3
                         and all(_is_positive_number(value) for value in stages)
@@ -794,16 +855,63 @@ def validate_full_dynamic_governance_mirror(
                         and isinstance(quantities, list)
                         and len(quantities) == len(stages)
                         and all(_is_positive_integer(value) for value in quantities)
-                        and sum(quantities) == target,
-                        f"full dynamic dormant component is not fully quantified for {key}",
+                        and sum(quantities) == target
+                    )
+                    fail_closed_repair = (
+                        component.get("state") == "REPAIR_REQUIRED"
+                        and valid_target
+                        and stages == "PERCENTAGE_NOT_SET"
+                        and quantities is None
+                        and row.get("buyback_coverage_state") == "REPAIR_REQUIRED"
+                        and row.get("stages_percent_below_sold_marker") == "PERCENTAGE_NOT_SET"
+                        and row.get("stage_quantities") is None
+                        and component.get("execution_state") == "NOT_PLACED"
+                        and _exact_decimal(component.get("unfilled_recovery_credit_exact")) == 0
+                        and _exact_decimal(component.get("economic_restoration_credit_sek_exact")) == 0
+                        and isinstance(component.get("sale_date"), str)
+                        and isinstance(component.get("promotion_evidence"), str)
+                        and bool(component["promotion_evidence"].strip())
+                    )
+                    _require(
+                        quantified_dormant or fail_closed_repair,
+                        f"full dynamic recovery component is neither quantified nor fail-closed for {key}",
                         errors,
                     )
+                    if fail_closed_repair:
+                        _require(
+                            isinstance(lots_for_component, list)
+                            and bool(lots_for_component)
+                            and all(str(lot_id) in lot_by_id for lot_id in lots_for_component)
+                            and all(
+                                str(lot_by_id[str(lot_id)].get("sale_timestamp") or "")[:10]
+                                == component["sale_date"]
+                                for lot_id in lots_for_component
+                                if str(lot_id) in lot_by_id
+                            )
+                            and _exact_decimal(target)
+                            == sum(
+                                (
+                                    _exact_decimal(lot_by_id[str(lot_id)].get("remaining_open_quantity_exact"))
+                                    or Decimal("0")
+                                    for lot_id in lots_for_component
+                                    if str(lot_id) in lot_by_id
+                                ),
+                                Decimal("0"),
+                            ),
+                            f"full dynamic dated repair component lot or quantity mismatch for {key}",
+                            errors,
+                        )
                     if isinstance(target, int) and not isinstance(target, bool):
                         component_target += target
                     if isinstance(lots_for_component, list):
                         component_lots.extend(str(value) for value in lots_for_component)
                 _require(all(component_ids) and len(component_ids) == len(set(component_ids)), f"full dynamic recovery component id is missing or duplicated for {key}", errors)
-                _require(component_lots == expected_open_lots, f"full dynamic recovery component lot parity failed for {key}", errors)
+                _require(
+                    component_lots == expected_open_lots
+                    and len(component_lots) == len(set(component_lots)),
+                    f"full dynamic recovery component lot parity failed for {key}",
+                    errors,
+                )
                 _require(
                     Decimal(component_target) == totals["remaining_open_quantity_exact"],
                     f"full dynamic recovery component target parity failed for {key}",
@@ -874,6 +982,17 @@ def _artifact_time(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _artifact_aware_time(value: Any) -> datetime | None:
+    """Parse only explicit string timestamps carrying a UTC offset."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parsed = _artifact_time(value.strip().replace("Z", "+00:00"))
+    if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
 
 
 def _artifact_date(value: Any) -> date | None:
@@ -3337,6 +3456,947 @@ def _normalized_state_summary(value: Any, states: set[str]) -> dict[str, int]:
     return {state: int(source.get(state, 0) or 0) for state in sorted(states)}
 
 
+def _nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _nonnegative_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+    )
+
+
+def _first_present(mapping: dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in mapping:
+            return mapping[name]
+    return None
+
+
+def _broker_sell_protection_block(payload: dict[str, Any]) -> dict[str, Any] | None:
+    block = payload.get("broker_sell_protection")
+    if isinstance(block, dict):
+        return block
+    governance = payload.get("live_governance")
+    if isinstance(governance, dict) and isinstance(
+        governance.get("broker_sell_protection"), dict
+    ):
+        return governance["broker_sell_protection"]
+    return None
+
+
+def _broker_sell_account_rows(value: Any) -> list[dict[str, Any]] | None:
+    if isinstance(value, list) and all(isinstance(row, dict) for row in value):
+        return value
+    if isinstance(value, dict) and all(
+        isinstance(row, dict) for row in value.values()
+    ):
+        rows: list[dict[str, Any]] = []
+        for tenant, source in value.items():
+            row = dict(source)
+            row.setdefault("tenant_session_id", str(tenant))
+            rows.append(row)
+        return rows
+    return None
+
+
+def _broker_sell_per_instrument_rows(value: Any) -> list[dict[str, Any]] | None:
+    if isinstance(value, list) and all(isinstance(row, dict) for row in value):
+        return value
+    if isinstance(value, dict) and all(
+        isinstance(row, dict) for row in value.values()
+    ):
+        rows: list[dict[str, Any]] = []
+        for orderbook_id, source in value.items():
+            row = dict(source)
+            row.setdefault("orderbook_id", str(orderbook_id))
+            rows.append(row)
+        return rows
+    return None
+
+
+def _zero_sell_position_count(value: Any) -> int | None:
+    if _nonnegative_integer(value):
+        return int(value)
+    if isinstance(value, list):
+        return len(value)
+    return None
+
+
+def _valid_evidence_source_ids(value: Any) -> bool:
+    return bool(
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, str) and item.strip() for item in value)
+        and len(value) == len(set(value))
+    )
+
+
+def _validate_dynamic_no_stop_evidence(
+    row: dict[str, Any],
+    *,
+    reference_time: datetime | None,
+    label: str,
+    errors: list[str],
+) -> None:
+    status = str(
+        row.get("no_stop_exception_evidence_status") or ""
+    ).strip().upper()
+    if not status:
+        return
+    _require(
+        status in NO_STOP_EVIDENCE_STATUSES,
+        f"{label}.no_stop_exception_evidence_status is invalid",
+        errors,
+    )
+    _require(
+        row.get("no_stop_exception_decision_current")
+        is (status == "CURRENT"),
+        f"{label} no-stop decision-current flag contradicts evidence status",
+        errors,
+    )
+    if status != "CURRENT":
+        return
+    evidence = row.get("no_stop_exception_evidence")
+    _require(
+        isinstance(evidence, dict),
+        f"{label}.no_stop_exception_evidence must be an object",
+        errors,
+    )
+    if not isinstance(evidence, dict):
+        return
+    _require(
+        set(evidence) == NO_STOP_EVIDENCE_FIELDS,
+        f"{label}.no_stop_exception_evidence must contain the exact closed fields",
+        errors,
+    )
+    choice = str(
+        row.get("no_stop_exception_protection_choice") or ""
+    ).strip().upper()
+    _require(
+        choice in NO_STOP_PROTECTION_CHOICES,
+        f"{label} CURRENT no-stop evidence has invalid protection choice",
+        errors,
+    )
+    _require(
+        isinstance(evidence.get("protection_choice"), str)
+        and evidence["protection_choice"].strip().upper() == choice,
+        f"{label} no-stop protection choice differs from its evidence",
+        errors,
+    )
+    _require(
+        isinstance(evidence.get("gap_risk_statement"), str)
+        and bool(evidence["gap_risk_statement"].strip()),
+        f"{label} CURRENT no-stop evidence requires a gap risk statement",
+        errors,
+    )
+    _require(
+        _valid_evidence_source_ids(evidence.get("evidence_source_ids")),
+        f"{label} CURRENT no-stop evidence requires nonempty unique source IDs",
+        errors,
+    )
+    expected_action_required = choice in {
+        "TACTICAL_PROFIT_SLICE",
+        "WIDER_CALIBRATED_CORE_ROW",
+    }
+    _require(
+        row.get("no_stop_exception_protection_action_required")
+        is expected_action_required,
+        f"{label} no-stop action-required flag contradicts protection choice",
+        errors,
+    )
+    decision_at = _artifact_aware_time(evidence.get("decision_at"))
+    evidence_as_of = _artifact_aware_time(evidence.get("evidence_as_of"))
+    next_review_at = _artifact_aware_time(evidence.get("next_review_at"))
+    valid_until = _artifact_aware_time(evidence.get("valid_until"))
+    _require(
+        None not in (decision_at, evidence_as_of, next_review_at, valid_until),
+        f"{label} CURRENT no-stop evidence timestamps must be timezone-aware",
+        errors,
+    )
+    if evidence_as_of is not None and decision_at is not None:
+        _require(
+            evidence_as_of <= decision_at,
+            f"{label} evidence_as_of must be at or before decision_at",
+            errors,
+        )
+    if decision_at is not None and next_review_at is not None:
+        _require(
+            next_review_at > decision_at,
+            f"{label} next_review_at must be after decision_at",
+            errors,
+        )
+    if next_review_at is not None and valid_until is not None:
+        _require(
+            valid_until >= next_review_at,
+            f"{label} valid_until must be at or after next_review_at",
+            errors,
+        )
+    if reference_time is None:
+        errors.append(f"{label} cannot be CURRENT without an artifact time")
+        return
+    for field, timestamp in (
+        ("evidence_as_of", evidence_as_of),
+        ("decision_at", decision_at),
+    ):
+        if timestamp is not None:
+            _require(
+                timestamp <= reference_time,
+                f"{label} {field} must not be future-dated",
+                errors,
+            )
+    if next_review_at is not None:
+        _require(
+            next_review_at > reference_time,
+            f"{label} next_review_at has elapsed",
+            errors,
+        )
+    if valid_until is not None:
+        _require(
+            valid_until > reference_time,
+            f"{label} valid_until has elapsed",
+            errors,
+        )
+
+
+def _verified_non_stop_eligible_dynamic_row(
+    row: dict[str, Any],
+    *,
+    reference_time: datetime | None,
+) -> bool:
+    classification = str(
+        row.get("current_protection_classification") or ""
+    ).strip().upper()
+    if classification not in DYNAMIC_NON_STOP_ELIGIBLE_PROTECTION_CLASSES:
+        return False
+    evidence = row.get("non_stop_eligible_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    source_ids = evidence.get("evidence_source_ids")
+    evidence_as_of = _artifact_aware_time(evidence.get("evidence_as_of"))
+    valid_until = _artifact_aware_time(evidence.get("valid_until"))
+    if (
+        row.get("non_stop_eligible_verified") is not True
+        or str(row.get("non_stop_eligible_evidence_status") or "").upper()
+        != "CURRENT"
+        or set(evidence) != NON_STOP_ELIGIBLE_EVIDENCE_FIELDS
+        or not isinstance(evidence.get("capability_statement"), str)
+        or not evidence["capability_statement"].strip()
+        or not isinstance(source_ids, list)
+        or not source_ids
+        or not all(isinstance(item, str) and item.strip() for item in source_ids)
+        or len(source_ids) != len(set(source_ids))
+        or evidence_as_of is None
+        or valid_until is None
+        or valid_until <= evidence_as_of
+    ):
+        return False
+    if reference_time is None:
+        return False
+    try:
+        return evidence_as_of <= reference_time < valid_until
+    except TypeError:
+        return False
+
+
+def _material_stop_eligible_dynamic_row(
+    row: dict[str, Any],
+    *,
+    reference_time: datetime | None,
+) -> bool:
+    holding = row.get("live_holding")
+    return bool(
+        _nonnegative_number(holding)
+        and holding > 1
+        and not _verified_non_stop_eligible_dynamic_row(
+            row,
+            reference_time=reference_time,
+        )
+    )
+
+
+def dynamic_broker_sell_protection_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Summarize explicit broker protection without upgrading missing data.
+
+    Coverage is proven with position counts and exact per-orderbook Antal so
+    unlike instruments are never added together.
+    """
+
+    block = _broker_sell_protection_block(payload)
+    if block is None:
+        return {
+            "explicit": False,
+            "assessment_status": "NOT_ASSESSED",
+            "accounts": [],
+        }
+    assessment_status = str(block.get("assessment_status") or "").strip().upper()
+    accounts = _broker_sell_account_rows(block.get("accounts"))
+    return {
+        "explicit": True,
+        "assessment_status": assessment_status,
+        "accounts": accounts,
+    }
+
+
+def _validate_dynamic_broker_sell_protection(
+    payload: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    schema_version: int,
+    errors: list[str],
+) -> dict[str, Any]:
+    state = dynamic_broker_sell_protection_state(payload)
+    if not state["explicit"]:
+        state_counts = payload.get("summary", {}).get(
+            "buyback_coverage_state_counts", {}
+        )
+        legacy_repair_count = (
+            state_counts.get("REPAIR_REQUIRED", 0)
+            if isinstance(state_counts, dict)
+            else 0
+        )
+        legacy_schema9_fail_closed = bool(
+            schema_version == 9
+            and _nonnegative_integer(legacy_repair_count)
+            and legacy_repair_count > 0
+        )
+        if schema_version >= 10 or (
+            schema_version == 9 and not legacy_schema9_fail_closed
+        ):
+            errors.append(
+                "dynamic broker SELL protection is NOT_ASSESSED; schema 9 can remain structurally valid only while REPAIR_REQUIRED rows make completion impossible"
+            )
+        return state
+
+    block = _broker_sell_protection_block(payload)
+    assert block is not None
+    assessment_status = state["assessment_status"]
+    _require(
+        assessment_status in BROKER_SELL_ASSESSMENT_STATUSES,
+        "dynamic broker SELL protection assessment_status is invalid",
+        errors,
+    )
+    if assessment_status == "NOT_ASSESSED":
+        _require(
+            str(block.get("coverage_status") or "NOT_ASSESSED").strip().upper()
+            == "NOT_ASSESSED",
+            "dynamic broker SELL protection NOT_ASSESSED block cannot claim coverage",
+            errors,
+        )
+        _require(
+            str(block.get("review_status") or "NOT_ASSESSED").strip().upper()
+            == "NOT_ASSESSED",
+            "dynamic broker SELL protection NOT_ASSESSED block cannot claim a current review",
+            errors,
+        )
+        return state
+
+    accounts = state.get("accounts")
+    _require(
+        isinstance(accounts, list),
+        "dynamic broker SELL protection accounts must be a list or map",
+        errors,
+    )
+    if not isinstance(accounts, list):
+        return state
+    scopes = {
+        (
+            str(account.get("tenant_session_id") or ""),
+            str(account.get("account_id") or ""),
+        )
+        for account in accounts
+    }
+    _require(
+        scopes == EXPECTED_DYNAMIC_SCOPES,
+        "dynamic broker SELL protection must contain both exact accounts",
+        errors,
+    )
+
+    dynamic_by_scope: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if isinstance(row, dict):
+            dynamic_by_scope[
+                (
+                    str(row.get("tenant_session_id") or ""),
+                    str(row.get("account_id") or ""),
+                )
+            ].append(row)
+    reference_time = _artifact_time(
+        payload.get("live_state_as_of") or payload.get("generated_at")
+    )
+
+    for account_index, account in enumerate(accounts):
+        label = f"dynamic broker SELL protection accounts[{account_index}]"
+        tenant = str(account.get("tenant_session_id") or "")
+        account_id = str(account.get("account_id") or "")
+        scope = (tenant, account_id)
+        account_assessment_status = str(
+            account.get("assessment_status")
+            or (assessment_status if schema_version < 10 else "")
+        ).strip().upper()
+        _require(
+            account_assessment_status == "ASSESSED",
+            f"{label} assessment_status must be ASSESSED",
+            errors,
+        )
+        _require(
+            account.get("coverage_semantics")
+            == "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY",
+            f"{label} coverage_semantics must prohibit cross-instrument Antal coverage",
+            errors,
+        )
+        _require(
+            account.get("cross_instrument_antal_aggregated") is False,
+            f"{label} cross_instrument_antal_aggregated must be false",
+            errors,
+        )
+        if schema_version >= 10:
+            for field in (
+                "active_sell_row_count",
+                "eligible_position_count",
+                "covered_position_count",
+                "zero_sell_material_positions",
+                "per_instrument",
+                "strategy_target_mismatch_position_count",
+                "verified_non_stop_eligible_position_count",
+                "verified_non_stop_eligible_positions",
+            ):
+                _require(
+                    field in account,
+                    f"{label} canonical field {field} is required",
+                    errors,
+                )
+        scope_rows = dynamic_by_scope.get(scope, [])
+        eligible_rows = [
+            row
+            for row in scope_rows
+            if _material_stop_eligible_dynamic_row(
+                row,
+                reference_time=reference_time,
+            )
+        ]
+        eligible_by_orderbook = {
+            str(row.get("orderbook_id") or ""): row for row in eligible_rows
+        }
+
+        coverage_status = str(
+            _first_present(
+                account,
+                "coverage_status",
+                "broker_sell_protection_status",
+            )
+            or ""
+        ).strip().upper()
+        review_status = str(
+            _first_present(
+                account,
+                "review_status",
+                "broker_sell_protection_review_status",
+            )
+            or ""
+        ).strip().upper()
+        active_sell_row_count = _first_present(
+            account,
+            "active_sell_row_count",
+            "active_sell_count",
+        )
+        eligible_position_count = account.get("eligible_position_count")
+        covered_position_count = _first_present(
+            account,
+            "covered_position_count",
+            "positions_with_active_sell_count",
+        )
+        zero_sell_value = _first_present(
+            account,
+            "zero_sell_material_positions",
+            "zero_sell_material_position_count",
+        )
+        zero_sell_count = _zero_sell_position_count(zero_sell_value)
+        per_instrument = _broker_sell_per_instrument_rows(
+            account.get("per_instrument")
+        )
+        reported_target_mismatch_count = account.get(
+            "strategy_target_mismatch_position_count"
+        )
+        verified_non_stop_count = account.get(
+            "verified_non_stop_eligible_position_count"
+        )
+        verified_non_stop_positions = account.get(
+            "verified_non_stop_eligible_positions"
+        )
+
+        _require(
+            coverage_status in BROKER_SELL_COVERAGE_STATUSES,
+            f"{label} coverage_status is invalid",
+            errors,
+        )
+        _require(
+            review_status in BROKER_SELL_REVIEW_STATUSES,
+            f"{label} review_status is invalid",
+            errors,
+        )
+        _require(
+            _nonnegative_integer(active_sell_row_count),
+            f"{label} active_sell_row_count must be a non-negative integer",
+            errors,
+        )
+        _require(
+            _nonnegative_integer(eligible_position_count),
+            f"{label} eligible_position_count must be a non-negative integer",
+            errors,
+        )
+        _require(
+            _nonnegative_integer(covered_position_count),
+            f"{label} covered_position_count must be a non-negative integer",
+            errors,
+        )
+        _require(
+            zero_sell_count is not None,
+            f"{label} zero_sell_material_positions must be a list or non-negative count",
+            errors,
+        )
+        _require(
+            per_instrument is not None,
+            f"{label} per_instrument evidence must be a list or map",
+            errors,
+        )
+        _require(
+            _nonnegative_integer(reported_target_mismatch_count),
+            f"{label} strategy_target_mismatch_position_count must be a non-negative integer",
+            errors,
+        )
+        _require(
+            _nonnegative_integer(verified_non_stop_count),
+            f"{label} verified_non_stop_eligible_position_count must be a non-negative integer",
+            errors,
+        )
+        _require(
+            isinstance(verified_non_stop_positions, list),
+            f"{label} verified_non_stop_eligible_positions must be a list",
+            errors,
+        )
+        expected_verified_non_stop = [
+            row
+            for row in scope_rows
+            if _verified_non_stop_eligible_dynamic_row(
+                row,
+                reference_time=reference_time,
+            )
+        ]
+        if _nonnegative_integer(verified_non_stop_count):
+            _require(
+                verified_non_stop_count == len(expected_verified_non_stop),
+                f"{label} verified non-stop count differs from current sourced capability evidence",
+                errors,
+            )
+        if isinstance(verified_non_stop_positions, list):
+            recorded_verified_ids = {
+                str(row.get("orderbook_id") or "").strip()
+                for row in verified_non_stop_positions
+                if isinstance(row, dict)
+            }
+            expected_verified_ids = {
+                str(row.get("orderbook_id") or "").strip()
+                for row in expected_verified_non_stop
+            }
+            _require(
+                len(recorded_verified_ids) == len(verified_non_stop_positions)
+                and recorded_verified_ids == expected_verified_ids,
+                f"{label} verified non-stop identities differ from current sourced capability evidence",
+                errors,
+            )
+
+        if _nonnegative_integer(eligible_position_count):
+            _require(
+                eligible_position_count == len(eligible_rows),
+                f"{label} eligible_position_count differs from dynamic material stop-eligible rows",
+                errors,
+            )
+        derived_with_sell = 0
+        derived_zero_ids: list[str] = []
+        derived_eligible_active_rows = 0
+        derived_target_mismatches = 0
+        any_partial = False
+        per_instrument_ids: set[str] = set()
+        for row_index, instrument_row in enumerate(per_instrument or []):
+            row_label = f"{label}.per_instrument[{row_index}]"
+            if schema_version >= 10:
+                for field in (
+                    "orderbook_id",
+                    "holding_antal",
+                    "active_sell_row_count",
+                    "active_sell_antal",
+                    "protected_antal",
+                    "active_sell_rows",
+                ):
+                    _require(
+                        field in instrument_row,
+                        f"{row_label}.{field} is required by the canonical schema",
+                        errors,
+                    )
+            orderbook_id = str(instrument_row.get("orderbook_id") or "").strip()
+            dynamic_row = eligible_by_orderbook.get(orderbook_id)
+            _require(
+                bool(orderbook_id) and orderbook_id not in per_instrument_ids,
+                f"{row_label}.orderbook_id is missing or duplicated",
+                errors,
+            )
+            per_instrument_ids.add(orderbook_id)
+            _require(
+                dynamic_row is not None,
+                f"{row_label} is not a current material stop-eligible position",
+                errors,
+            )
+            if dynamic_row is None:
+                continue
+            holding_antal = instrument_row.get(
+                "holding_antal", instrument_row.get("holding")
+            )
+            protected_antal = instrument_row.get("protected_antal")
+            row_active_sell_count = _first_present(
+                instrument_row,
+                "active_sell_row_count",
+                "active_sell_count",
+            )
+            row_active_sell_antal = _first_present(
+                instrument_row,
+                "active_sell_antal",
+                "active_sell_volume",
+            )
+            active_sell_rows = instrument_row.get("active_sell_rows")
+            target_status = str(
+                instrument_row.get("strategy_target_coverage_status") or ""
+            ).strip().upper()
+            protection_target_antal = instrument_row.get(
+                "protection_target_antal"
+            )
+            retained_core_antal = instrument_row.get("retained_core_antal")
+            if "protection_target_antal" in dynamic_row:
+                _require(
+                    protection_target_antal
+                    == dynamic_row.get("protection_target_antal"),
+                    f"{row_label}.protection_target_antal differs from the dynamic row",
+                    errors,
+                )
+            if "retained_core_antal" in dynamic_row:
+                _require(
+                    retained_core_antal == dynamic_row.get("retained_core_antal"),
+                    f"{row_label}.retained_core_antal differs from the dynamic row",
+                    errors,
+                )
+            _require(
+                holding_antal == dynamic_row.get("live_holding"),
+                f"{row_label}.holding_antal differs from the dynamic row",
+                errors,
+            )
+            _require(
+                row_active_sell_antal == dynamic_row.get("active_sell_volume"),
+                f"{row_label}.active_sell_antal differs from the dynamic row",
+                errors,
+            )
+            _require(
+                _nonnegative_integer(row_active_sell_count),
+                f"{row_label}.active_sell_row_count must be a non-negative integer",
+                errors,
+            )
+            _require(
+                _nonnegative_number(protected_antal),
+                f"{row_label}.protected_antal must be a non-negative number",
+                errors,
+            )
+            _require(
+                isinstance(active_sell_rows, list),
+                f"{row_label}.active_sell_rows must be a list",
+                errors,
+            )
+            _validate_dynamic_no_stop_evidence(
+                instrument_row,
+                reference_time=reference_time,
+                label=row_label,
+                errors=errors,
+            )
+            if _nonnegative_integer(row_active_sell_count) and row_active_sell_count > 0:
+                _require(
+                    target_status in STRATEGY_TARGET_COVERAGE_STATUSES,
+                    f"{row_label}.strategy_target_coverage_status is missing or invalid",
+                    errors,
+                )
+                _require(
+                    target_status != "NOT_APPLICABLE",
+                    f"{row_label} active SELL row cannot have NOT_APPLICABLE strategy target coverage",
+                    errors,
+                )
+            if (
+                _nonnegative_integer(row_active_sell_count)
+                and row_active_sell_count > 0
+                and target_status != "MATCHED"
+            ):
+                derived_target_mismatches += 1
+            if (
+                _nonnegative_number(protection_target_antal)
+                and _nonnegative_number(retained_core_antal)
+                and _nonnegative_number(holding_antal)
+            ):
+                _require(
+                    abs(
+                        protection_target_antal
+                        + retained_core_antal
+                        - holding_antal
+                    )
+                    <= 1e-8,
+                    f"{row_label} target plus retained core differs from holding",
+                    errors,
+                )
+            if target_status == "MATCHED":
+                _require(
+                    _nonnegative_number(protection_target_antal)
+                    and protection_target_antal > 0
+                    and _nonnegative_number(retained_core_antal),
+                    f"{row_label} MATCHED target requires positive protection_target_antal and non-negative retained_core_antal",
+                    errors,
+                )
+                if _nonnegative_number(row_active_sell_antal):
+                    _require(
+                        protection_target_antal == row_active_sell_antal,
+                        f"{row_label} MATCHED target differs from active SELL Antal",
+                        errors,
+                    )
+            elif target_status == "UNDERCOVERED" and _nonnegative_number(
+                protection_target_antal
+            ):
+                _require(
+                    _nonnegative_number(row_active_sell_antal)
+                    and row_active_sell_antal < protection_target_antal,
+                    f"{row_label} UNDERCOVERED status contradicts target Antal",
+                    errors,
+                )
+            elif target_status == "OVERCOVERED" and _nonnegative_number(
+                protection_target_antal
+            ):
+                _require(
+                    _nonnegative_number(row_active_sell_antal)
+                    and row_active_sell_antal > protection_target_antal,
+                    f"{row_label} OVERCOVERED status contradicts target Antal",
+                    errors,
+                )
+            active_row_ids: list[str] = []
+            active_row_antal: list[float] = []
+            for active_index, active_row in enumerate(active_sell_rows or []):
+                active_label = f"{row_label}.active_sell_rows[{active_index}]"
+                if not isinstance(active_row, dict):
+                    errors.append(f"{active_label} must be an object")
+                    continue
+                if schema_version >= 10:
+                    _require(
+                        "antal" in active_row,
+                        f"{active_label}.antal is required by the canonical schema",
+                        errors,
+                    )
+                antal = _first_present(active_row, "antal", "volume")
+                _require(
+                    _nonnegative_number(antal) and antal > 0,
+                    f"{active_label}.antal must be a positive number",
+                    errors,
+                )
+                if _nonnegative_number(antal):
+                    active_row_antal.append(float(antal))
+                row_id = str(
+                    _first_present(
+                        active_row,
+                        "stop_loss_id",
+                        "order_id",
+                        "id",
+                    )
+                    or ""
+                ).strip()
+                if row_id:
+                    active_row_ids.append(row_id)
+            _require(
+                len(active_row_ids) == len(set(active_row_ids)),
+                f"{row_label}.active_sell_rows contains duplicate broker IDs",
+                errors,
+            )
+            if _nonnegative_integer(row_active_sell_count) and _nonnegative_number(
+                row_active_sell_antal
+            ):
+                _require(
+                    (row_active_sell_count == 0) == (row_active_sell_antal == 0),
+                    f"{row_label} active SELL row count/Antal are inconsistent",
+                    errors,
+                )
+                if isinstance(active_sell_rows, list):
+                    _require(
+                        len(active_sell_rows) == row_active_sell_count,
+                        f"{row_label}.active_sell_rows count differs from active_sell_row_count",
+                        errors,
+                    )
+                    _require(
+                        abs(sum(active_row_antal) - float(row_active_sell_antal))
+                        <= 1e-8,
+                        f"{row_label}.active_sell_rows Antal does not sum to the per-orderbook active SELL Antal",
+                        errors,
+                    )
+                derived_eligible_active_rows += row_active_sell_count
+                if row_active_sell_count > 0:
+                    derived_with_sell += 1
+                else:
+                    derived_zero_ids.append(orderbook_id)
+            if _nonnegative_number(protected_antal):
+                _require(
+                    protected_antal <= dynamic_row.get("live_holding", 0),
+                    f"{row_label}.protected_antal exceeds holding_antal",
+                    errors,
+                )
+                _require(
+                    protected_antal <= dynamic_row.get("active_sell_volume", 0),
+                    f"{row_label}.protected_antal exceeds active SELL Antal",
+                    errors,
+                )
+                _require(
+                    protected_antal
+                    == min(
+                        dynamic_row.get("live_holding", 0),
+                        dynamic_row.get("active_sell_volume", 0),
+                    ),
+                    f"{row_label}.protected_antal does not match per-orderbook broker SELL coverage",
+                    errors,
+                )
+                if dynamic_row.get("active_sell_volume", 0) > 0:
+                    _require(
+                        protected_antal > 0,
+                        f"{row_label} active SELL row has zero actual protected Antal",
+                        errors,
+                    )
+                any_partial = any_partial or (
+                    0 < protected_antal < dynamic_row.get("live_holding", 0)
+                )
+
+        _require(
+            per_instrument_ids == set(eligible_by_orderbook),
+            f"{label} per_instrument identities differ from dynamic material stop-eligible rows",
+            errors,
+        )
+        if _nonnegative_integer(covered_position_count):
+            _require(
+                covered_position_count == derived_with_sell,
+                f"{label} covered_position_count differs from per_instrument evidence",
+                errors,
+            )
+        if _nonnegative_integer(active_sell_row_count):
+            _require(
+                active_sell_row_count >= derived_eligible_active_rows,
+                f"{label} active_sell_row_count is below the eligible per_instrument row count",
+                errors,
+            )
+        if _nonnegative_integer(reported_target_mismatch_count):
+            _require(
+                reported_target_mismatch_count == derived_target_mismatches,
+                f"{label} strategy target mismatch count differs from per-instrument evidence",
+                errors,
+            )
+        if zero_sell_count is not None:
+            _require(
+                zero_sell_count == len(derived_zero_ids),
+                f"{label} zero_sell_material_positions differs from per_instrument evidence",
+                errors,
+            )
+            if isinstance(zero_sell_value, list):
+                recorded_ids = {
+                    str(item.get("orderbook_id") or "").strip()
+                    if isinstance(item, dict)
+                    else str(item).strip()
+                    for item in zero_sell_value
+                }
+                _require(
+                    recorded_ids == set(derived_zero_ids),
+                    f"{label} zero-SELL material identities differ from per_instrument evidence",
+                    errors,
+                )
+
+        if zero_sell_count is not None and zero_sell_count > 0:
+            _require(
+                coverage_status == "BROKER_SELL_PROTECTION_ABSENT"
+                and review_status == "PROTECTION_REVIEW_REQUIRED",
+                f"{label} material zero-SELL rows must be BROKER_SELL_PROTECTION_ABSENT / PROTECTION_REVIEW_REQUIRED",
+                errors,
+            )
+        elif zero_sell_count == 0 and eligible_position_count == 0:
+            _require(
+                coverage_status == "NOT_APPLICABLE"
+                and review_status == "CURRENT",
+                f"{label} empty eligible universe must be current NOT_APPLICABLE",
+                errors,
+            )
+        elif zero_sell_count == 0 and _nonnegative_integer(
+            eligible_position_count
+        ):
+            _require(
+                covered_position_count == eligible_position_count,
+                f"{label} every eligible position must have an active SELL row",
+                errors,
+            )
+            expected_status = (
+                "BROKER_SELL_PROTECTION_PARTIAL"
+                if any_partial
+                else "BROKER_SELL_PROTECTION_PRESENT"
+            )
+            expected_review_status = (
+                "PROTECTION_REVIEW_REQUIRED"
+                if derived_target_mismatches
+                else "CURRENT"
+            )
+            _require(
+                coverage_status == expected_status
+                and review_status == expected_review_status,
+                f"{label} coverage/review status contradicts per-instrument protected and target Antal",
+                errors,
+            )
+    return state
+
+
+def describe_dynamic_broker_sell_protection(payload: dict[str, Any]) -> str:
+    state = dynamic_broker_sell_protection_state(payload)
+    if not state["explicit"] or state["assessment_status"] != "ASSESSED":
+        return "NOT_ASSESSED (active SELL rows and zero-SELL H>1 positions unknown)"
+    parts: list[str] = []
+    for account in state.get("accounts") or []:
+        tenant = str(account.get("tenant_session_id") or "unknown")
+        coverage = str(
+            _first_present(
+                account,
+                "coverage_status",
+                "broker_sell_protection_status",
+            )
+            or "UNKNOWN"
+        ).strip().upper()
+        active_rows = _first_present(
+            account,
+            "active_sell_row_count",
+            "active_sell_count",
+        )
+        eligible_count = account.get("eligible_position_count")
+        covered_count = _first_present(
+            account,
+            "covered_position_count",
+            "positions_with_active_sell_count",
+        )
+        zero_count = _zero_sell_position_count(
+            _first_present(
+                account,
+                "zero_sell_material_positions",
+                "zero_sell_material_position_count",
+            )
+        )
+        parts.append(
+            f"{tenant}:{coverage}/active_rows={active_rows}/"
+            f"eligible_positions={eligible_count}/covered_positions={covered_count}/"
+            f"zero_sell_h_gt_1={zero_count}"
+        )
+    return ", ".join(parts) or "NOT_ASSESSED"
+
+
 def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
     """Validate current dynamic buyback governance without granting order authority."""
 
@@ -3870,8 +4930,19 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
             errors,
         )
 
-    personal_rows = sum(row.get("account_id") == "5227886" for row in rows if isinstance(row, dict))
-    darkcell_rows = sum(row.get("account_id") == "7616265" for row in rows if isinstance(row, dict))
+    scope_by_tenant = dict(EXPECTED_DYNAMIC_SCOPES)
+    personal_rows = sum(
+        row.get("tenant_session_id") == "personal"
+        and row.get("account_id") == scope_by_tenant.get("personal")
+        for row in rows
+        if isinstance(row, dict)
+    )
+    darkcell_rows = sum(
+        row.get("tenant_session_id") == "darkcell"
+        and row.get("account_id") == scope_by_tenant.get("darkcell")
+        for row in rows
+        if isinstance(row, dict)
+    )
     one_share_rows = sum(row.get("live_holding") == 1 for row in rows if isinstance(row, dict))
     below_20000_rows = sum(
         row.get("market_value_band") == "BELOW_20000_SEK"
@@ -3987,6 +5058,12 @@ def validate_dynamic_live_coverage(payload: dict[str, Any]) -> list[str]:
             "dynamic path-evidence missing count must be zero",
             errors,
         )
+    _validate_dynamic_broker_sell_protection(
+        payload,
+        rows,
+        schema_version=schema_version,
+        errors=errors,
+    )
     return errors
 
 
@@ -4349,6 +5426,9 @@ def main() -> int:
     errors = validate_live_refresh(plan, table) if "LIVE_REFRESH" in plan_path.name else validate(plan, table)
     governed_dormant_ladders = 0
     full_dynamic_rows = 0
+    broker_sell_protection_summary = (
+        "NOT_ASSESSED (active SELL rows and zero-SELL H>1 positions unknown)"
+    )
     if table_path == TABLE_PATH or table_path.name == "PORTFOLIO_BUYBACK_LADDER_TABLE_20260806.md":
         daily_path = DAILY_COVERAGE_PATH
         if not daily_path.exists():
@@ -4363,6 +5443,9 @@ def main() -> int:
             errors.append(f"dynamic live coverage missing for glob: {DYNAMIC_LIVE_GLOB}")
         else:
             dynamic_payload = json.loads(dynamic_path.read_text(encoding="utf-8"))
+            broker_sell_protection_summary = (
+                describe_dynamic_broker_sell_protection(dynamic_payload)
+            )
             remediation_path = latest_sold_marker_remediation_path()
             if remediation_path is None:
                 errors.append(f"sold-marker remediation missing for glob: {SOLD_MARKER_REMEDIATION_GLOB}")
@@ -4479,7 +5562,8 @@ def main() -> int:
         f"[buyback] PASS: {len(ladders)} executable broker ladders; "
         f"{governed_dormant_ladders} governed dormant review ladders; "
         f"{dynamic_rows} dynamic live rows; {remediation_rows} sold-marker remediation rows; "
-        f"{full_dynamic_rows} full-history dynamic rows; broker inventory remains separately classified"
+        f"{full_dynamic_rows} full-history dynamic rows; broker SELL protection: "
+        f"{broker_sell_protection_summary}; registry classification remains separate"
     )
     return 0
 

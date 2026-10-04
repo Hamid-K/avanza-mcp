@@ -21,6 +21,14 @@ Trading-assistant context lives in:
 - `INSTRUCTIONS/INSTRUCTIONS.md`: standing operating rules and safety constraints.
 - `INSTRUCTIONS/MEMORY.md`: timestamped lessons, mistakes, strategy updates, and checklist changes. This is historical context, not live portfolio state.
 - `INSTRUCTIONS/WARMUP.md`: prompt for starting a fresh Codex trading session with the right context.
+- [Strategy Governance](docs/strategy-governance.md): adopted agent-review
+  policy for economic exposure, campaign floors, recovery and lifecycle checks,
+  with an explicit backlog of controls not yet implemented in software.
+
+The local `GOAL-PROMPT.md` and `INSTRUCTIONS/WARMUP.md` are identical,
+copy/paste-ready prompts. They contain private account scope and must not be
+published or committed. Updating these prompts does not update an already-set
+Codex goal, enable trading, or implement the documented machine-control backlog.
 
 The `INSTRUCTIONS/` folder is kept visible in git, but its private contents are ignored and should remain local-only.
 
@@ -396,7 +404,7 @@ For multi-session setups:
 | `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
 | `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
 | `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan or explicit protection classification is missing, stale, contradictory, or marked `REPAIR_REQUIRED`. |
-| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans and instrument-specific protection reasons against exact live account state; an explicit preservation flag can update semantics without rebaselining a holding-only exception, and changes only the local registry, never Avanza. |
+| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans and instrument-specific protection reasons against exact live account state. Material no-SELL exceptions use closed, expiring evidence; calibrated active SELL plans carry exact target and retained-core Antal; verified non-stop eligibility uses dated capability evidence. An explicit preservation flag can update semantics without rebaselining a holding-only exception. This changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
@@ -484,6 +492,32 @@ metadata is rejected; `REPAIR_REQUIRED` is durable but blocks governance
 completion. A valid acknowledged holding-only exception can therefore remain
 strictly fingerprint-incomplete while still being governance-complete, without
 silently changing its stored fingerprint.
+
+Contract revision `2026-09-12.position-protection-v2` adds three fail-closed
+position-protection controls while retaining private registry version `1` for
+additive legacy readability:
+
+- A material zero-SELL `CORE_HOLD_EXCEPTION` or `NAMED_EXCEPTION` requires a
+  closed `no_stop_exception_evidence` object with timezone-aware
+  `decision_at`, `evidence_as_of`, `next_review_at`, and `valid_until`, a
+  nonblank gap-risk statement, unique source IDs, and exactly one of
+  `TACTICAL_PROFIT_SLICE`, `WIDER_CALIBRATED_CORE_ROW`, or
+  `DELIBERATELY_UNPROTECTED_CORE`. Missing, malformed, future-dated, elapsed,
+  or unknown evidence fails closed; legacy prose is never promoted.
+- An active SELL position plan must be `CALIBRATED_STOP_PROFIT_LADDER` with
+  exact positive `protection_target_antal` and non-negative
+  `retained_core_antal`. Their sum must equal the exact live holding and the
+  active SELL Antal must equal the target; undercoverage and overcoverage both
+  require review. Strategy-target coverage remains distinct from full-holding
+  coverage.
+- `NON_STOP_ELIGIBLE` excludes a row only while a closed, dated, sourced broker
+  capability-evidence object is current.
+
+These fields are visible in dry-run, persisted local-registry readback, audit
+output, and capability discovery. They never create a broker SELL row, protected
+Antal, live authorization, or a trade. A current decision to remain unprotected
+therefore remains actual broker coverage `0` and blocks a protected/complete
+claim.
 
 The private `output/PORTFOLIO_GOVERNANCE_REVIEW_STREAK.json` ledger records
 each scheduled twice-daily review. Validate it with:
@@ -587,6 +621,7 @@ least `0.1` seconds. Restart the bridge after changing any of these settings.
 - The Web UI `Research candidates` view uses `/api/recommendations/stocks` to assemble a bounded, read-only candidate list from TradingView movers/technicals and Zacks rank/analysis summaries. Its source controls filter the loaded table instantly without another server request and report compact per-source enrichment health. It is research input only, not an order instruction.
 - If auto mode is unavailable, fallback is `tv_auth_session_start` + manual `tv_auth_session_set`.
 - If Codex or another agent does not expose `tv_*` tools as direct native calls, keep using the registered `avanza_cli` MCP server and call the tools through the local stdio/TUI bridge. The bridge command remains `python avanza_cli.py mcp`; it forwards to the authenticated TUI localhost session.
+- Avanza U.S. extended hours, available from 2026-09-08, are three distinct Stockholm-local windows: pre-market `11:00-15:30`, regular `15:30-22:00`, and after-hours `22:00-22:30`. Verify current venue/calendar/DST state rather than treating the full interval as regular. Avanza documents lower liquidity, wider spreads, faster moves, pre-market-to-regular order rollover, `22:30` cancellation of unfilled after-hours orders, official-close portfolio valuation, and no Stop-loss or Limit-on-Close outside regular trading. The current MCP regular-order schema has no explicit extended-hours selector, so agents must not infer opt-in from `avanza_order_set` or `condition`; extended-hours mutation remains unsupported until the tool contract and readback expose it explicitly. See the [official announcement](https://investors.avanza.se/media/press/2026/avanza-lanserar-for-och-efterhandel-i-amerikanska-vardepapper/) and [order mechanics](https://blogg.avanza.se/nu-utokar-vi-handeln-i-usa-sa-nyttjar-du-de-nya-oppettiderna/).
 - Pre-open workflow:
   1. start and authenticate the TUI, then enable MCP,
   2. confirm `tv_auth_session_status` if authenticated TradingView data is needed,

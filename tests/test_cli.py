@@ -1452,13 +1452,16 @@ def test_mcp_capabilities_and_live_session_authorization():
     status = app.execute_mcp_tool("avanza_capabilities", {})
     assert status["live_trading_allowed_for_this_session"] is False
     assert status["can_place_live_orders"] is False
-    assert status["mcp_contract_revision"] == "2026-08-14.position-protection-v1"
+    assert status["mcp_contract_revision"] == "2026-09-12.position-protection-v2"
     assert status["contract_features"] == {
         "tenant_session_scope": True,
         "transactions_include_raw": True,
         "live_stop_strategy_metadata": True,
         "position_strategy_exception_preserve": True,
         "position_strategy_protection_classification": True,
+        "position_strategy_typed_no_stop_evidence": True,
+        "position_strategy_non_stop_eligible_evidence": True,
+        "position_strategy_exact_protection_target": True,
     }
     with pytest.raises(PermissionError):
         app.execute_mcp_tool("avanza_live_session_authorize", {"acknowledge": True})
@@ -2435,10 +2438,25 @@ def test_mcp_stoploss_strategy_backfill_is_exact_local_only_and_restart_durable(
         )
 
 
+def _typed_no_stop_evidence() -> dict:
+    return {
+        "decision_at": "2026-01-02T00:00:00+00:00",
+        "evidence_as_of": "2026-01-01T00:00:00+00:00",
+        "next_review_at": "2099-01-01T00:00:00+00:00",
+        "valid_until": "2099-12-31T00:00:00+00:00",
+        "gap_risk_statement": (
+            "The reviewed core remains exposed to downside without a broker SELL row."
+        ),
+        "evidence_source_ids": ["unit-test-position-review"],
+        "protection_choice": "DELIBERATELY_UNPROTECTED_CORE",
+    }
+
+
 def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable():
     from avanza_mcp.tui.app import AvanzaTradingTui
 
     live_holding = {"value": 10}
+    live_sell = {"volume": 0}
 
     class FakeAvanza:
         def get_accounts_positions(self):
@@ -2469,7 +2487,20 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
             }
 
         def get_all_stop_losses(self):
-            return []
+            if live_sell["volume"] <= 0:
+                return []
+            return [
+                {
+                    "id": "sl-calibrated",
+                    "status": "ACTIVE",
+                    "account": {"id": "acc-1", "name": "Main"},
+                    "orderbook": {"id": "ob-1", "name": "Test Corp"},
+                    "order": {
+                        "type": "SELL",
+                        "volume": live_sell["volume"],
+                    },
+                }
+            ]
 
         def get_orders(self):
             return []
@@ -2514,6 +2545,7 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
         "protection_reason": (
             "The intact reviewed core deliberately has no mechanical SELL stop."
         ),
+        "no_stop_exception_evidence": _typed_no_stop_evidence(),
         "source_snapshot_at": "2026-07-31T01:28:25+02:00",
     }
     dry_run = app.execute_mcp_tool(
@@ -2522,6 +2554,9 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
     )
     assert dry_run["dry_run"] is True
     assert dry_run["broker_mutation"] is False
+    assert dry_run["items"][0]["no_stop_exception_evidence"] == (
+        _typed_no_stop_evidence()
+    )
 
     with pytest.raises(PermissionError, match="Enable R/W"):
         app.execute_mcp_tool(
@@ -2541,11 +2576,24 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
     )
     assert app.live_trading_allowed_for_session is False
     assert registered["broker_mutation"] is False
-    assert registered["ok"] is True
-    assert registered["governance_complete"] is True
-    assert registered["governance_review_eligible"] is True
+    assert registered["ok"] is False
+    assert registered["governance_complete"] is False
+    assert registered["governance_review_eligible"] is False
     assert registered["position_strategy"]["recorded_count"] == 1
-    assert registered["position_strategy"]["protection_complete"] is True
+    assert registered["position_strategy"][
+        "protection_classification_complete"
+    ] is True
+    assert registered["position_strategy"]["broker_sell_protected"] is False
+    assert registered["position_strategy"]["protection_complete"] is False
+    assert registered["position_strategy"][
+        "zero_sell_material_position_count"
+    ] == 1
+    assert registered["position_strategy"]["zero_sell_material_positions"][0][
+        "no_stop_exception_evidence_status"
+    ] == "CURRENT"
+    assert registered["position_strategy"]["broker_sell_protection"][
+        "covered_position_count"
+    ] == 0
 
     restarted = AvanzaTradingTui()
     restarted.avanza = FakeAvanza()
@@ -2555,8 +2603,9 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
         "avanza_position_strategy_audit",
         {"account_id": "acc-1"},
     )
-    assert after_restart["complete"] is True
-    assert after_restart["governance_complete"] is True
+    assert after_restart["complete"] is False
+    assert after_restart["review_required"] is True
+    assert after_restart["governance_complete"] is False
     assert (
         after_restart["position_strategy"]["positions"][0][
             "position_strategy"
@@ -2569,9 +2618,84 @@ def test_mcp_position_strategy_backfill_is_exact_local_only_and_restart_durable(
         ]["protection_classification"]
         == "CORE_HOLD_EXCEPTION"
     )
+    assert (
+        after_restart["position_strategy"]["positions"][0][
+            "position_strategy"
+        ]["no_stop_exception_evidence"]
+        == _typed_no_stop_evidence()
+    )
+
+    live_sell["volume"] = 5
+    calibrated = {
+        **spec,
+        "active_sell_volume": 5,
+        "active_sell_count": 1,
+        "protection_classification": "CALIBRATED_STOP_PROFIT_LADDER",
+        "protection_reason": (
+            "The active broker SELL row exactly matches the reviewed tactical target."
+        ),
+        "protection_target_antal": 5,
+        "retained_core_antal": 5,
+    }
+    calibrated.pop("no_stop_exception_evidence")
+    restarted.mcp_write_enabled = True
+    stop_metadata = restarted.execute_mcp_tool(
+        "avanza_stoploss_strategy_register_batch",
+        {
+            "account_id": "acc-1",
+            "items": [
+                {
+                    "stop_loss_id": "sl-calibrated",
+                    "order_book_id": "ob-1",
+                    "side": "SELL",
+                    "volume": 5,
+                    "strategy_intent": "TACTICAL_HARVEST",
+                    "strategy_reason": (
+                        "Exact active SELL row for the reviewed tactical target."
+                    ),
+                }
+            ],
+            "confirm": True,
+        },
+    )
+    assert stop_metadata["strategy_metadata"]["complete"] is True
+    dry_run = restarted.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {"account_id": "acc-1", "items": [calibrated]},
+    )
+    assert dry_run["items"][0]["protection_target_antal"] == 5
+    assert dry_run["items"][0]["retained_core_antal"] == 5
+
+    confirmed = restarted.execute_mcp_tool(
+        "avanza_position_strategy_register_batch",
+        {"account_id": "acc-1", "items": [calibrated], "confirm": True},
+    )
+    position_audit = confirmed["position_strategy"]
+    assert position_audit["strategy_target_coverage_complete"] is True
+    assert position_audit["positions"][0]["position_strategy"][
+        "protection_target_antal"
+    ] == 5
+    assert position_audit["positions"][0]["position_strategy"][
+        "retained_core_antal"
+    ] == 5
+
+    calibrated_restart = AvanzaTradingTui()
+    calibrated_restart.avanza = FakeAvanza()
+    calibrated_restart.selected_account_id = "acc-1"
+    calibrated_restart.active_session_id = "test-session"
+    calibrated_readback = calibrated_restart.execute_mcp_tool(
+        "avanza_position_strategy_audit",
+        {"account_id": "acc-1"},
+    )
+    calibrated_row = calibrated_readback["position_strategy"]["positions"][0]
+    assert calibrated_row["broker_sell_protection"][
+        "strategy_target_coverage_status"
+    ] == "MATCHED"
+    assert calibrated_row["position_strategy"]["protection_target_antal"] == 5
+    assert calibrated_row["position_strategy"]["retained_core_antal"] == 5
 
     live_holding["value"] = 11
-    drifted = restarted.execute_mcp_tool(
+    drifted = calibrated_restart.execute_mcp_tool(
         "avanza_position_strategy_audit",
         {"account_id": "acc-1"},
     )
@@ -2664,6 +2788,7 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
         "protection_reason": (
             "The reviewed growth core deliberately has no mechanical SELL stop."
         ),
+        "no_stop_exception_evidence": _typed_no_stop_evidence(),
         "audit_exception": audit_exception,
         "source_snapshot_at": "2026-08-14T14:00:00+02:00",
     }
@@ -2675,7 +2800,12 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
             "confirm": True,
         },
     )
-    assert initial["ok"] is True
+    assert initial["ok"] is False
+    assert initial["position_strategy"][
+        "protection_classification_complete"
+    ] is True
+    assert initial["position_strategy"]["broker_sell_protected"] is False
+    assert initial["position_strategy"]["protection_complete"] is False
 
     live_holding["value"] = 1
     updated = {
@@ -2692,6 +2822,7 @@ def test_mcp_position_strategy_semantic_update_preserves_exception_fingerprint()
         ),
         "preserve_audit_exception_fingerprint": True,
     }
+    updated.pop("no_stop_exception_evidence")
     dry_run = app.execute_mcp_tool(
         "avanza_position_strategy_register_batch",
         {"account_id": "acc-1", "items": [updated]},
@@ -3274,6 +3405,44 @@ def test_position_strategy_schema_keeps_audit_exception_holding_only():
     ]
     assert "protection_classification" in item_schema["required"]
     assert "protection_reason" in item_schema["required"]
+    no_stop = item_schema["properties"]["no_stop_exception_evidence"]
+    assert no_stop["additionalProperties"] is False
+    assert no_stop["required"] == [
+        "decision_at",
+        "evidence_as_of",
+        "next_review_at",
+        "valid_until",
+        "gap_risk_statement",
+        "evidence_source_ids",
+        "protection_choice",
+    ]
+    assert no_stop["properties"]["protection_choice"]["enum"] == [
+        "DELIBERATELY_UNPROTECTED_CORE",
+        "TACTICAL_PROFIT_SLICE",
+        "WIDER_CALIBRATED_CORE_ROW",
+    ]
+    non_stop = item_schema["properties"]["non_stop_eligible_evidence"]
+    assert non_stop["additionalProperties"] is False
+    assert non_stop["required"] == [
+        "evidence_as_of",
+        "valid_until",
+        "capability_statement",
+        "evidence_source_ids",
+    ]
+    assert item_schema["properties"]["protection_target_antal"][
+        "exclusiveMinimum"
+    ] == 0
+    assert item_schema["properties"]["retained_core_antal"]["minimum"] == 0
+    assert len(item_schema["allOf"]) == 4
+    active_sell_condition = item_schema["allOf"][0]
+    assert active_sell_condition["then"]["properties"][
+        "protection_classification"
+    ] == {"const": "CALIBRATED_STOP_PROFIT_LADDER"}
+    assert active_sell_condition["then"]["required"] == [
+        "protection_classification",
+        "protection_target_antal",
+        "retained_core_antal",
+    ]
     assert item_schema["properties"]["preserve_audit_exception_fingerprint"] == {
         "type": "boolean",
         "default": False,

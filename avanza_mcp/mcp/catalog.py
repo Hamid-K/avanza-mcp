@@ -10,6 +10,7 @@ from avanza_mcp.config import (
     TRANSACTION_TYPE_CHOICES,
 )
 from avanza_mcp.position_strategy_registry import (
+    NO_STOP_PROTECTION_CHOICES,
     POSITION_PROTECTION_CLASSIFICATIONS,
 )
 from avanza_mcp.strategy_intent import (
@@ -69,6 +70,73 @@ MCP_SELL_COVERAGE_PROPERTIES = {
     },
 }
 
+MCP_NO_STOP_EXCEPTION_EVIDENCE_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Closed, instrument-specific decision evidence for a material no-stop "
+        "CORE_HOLD_EXCEPTION or NAMED_EXCEPTION. It records review evidence only; "
+        "it never creates broker SELL coverage. valid_until is decision expiry, "
+        "not broker-order validity."
+    ),
+    "properties": {
+        "decision_at": {"type": "string", "format": "date-time"},
+        "evidence_as_of": {"type": "string", "format": "date-time"},
+        "next_review_at": {"type": "string", "format": "date-time"},
+        "valid_until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Decision expiry; not broker-order validity.",
+        },
+        "gap_risk_statement": {"type": "string", "minLength": 1},
+        "evidence_source_ids": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+        "protection_choice": {
+            "type": "string",
+            "enum": sorted(NO_STOP_PROTECTION_CHOICES),
+        },
+    },
+    "required": [
+        "decision_at",
+        "evidence_as_of",
+        "next_review_at",
+        "valid_until",
+        "gap_risk_statement",
+        "evidence_source_ids",
+        "protection_choice",
+    ],
+    "additionalProperties": False,
+}
+
+MCP_NON_STOP_ELIGIBLE_EVIDENCE_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Dated, sourced broker-capability evidence required before a position can "
+        "be excluded as NON_STOP_ELIGIBLE."
+    ),
+    "properties": {
+        "evidence_as_of": {"type": "string", "format": "date-time"},
+        "valid_until": {"type": "string", "format": "date-time"},
+        "capability_statement": {"type": "string", "minLength": 1},
+        "evidence_source_ids": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+    },
+    "required": [
+        "evidence_as_of",
+        "valid_until",
+        "capability_statement",
+        "evidence_source_ids",
+    ],
+    "additionalProperties": False,
+}
+
 MCP_POSITION_STRATEGY_ITEM_PROPERTIES = {
     "order_book_id": {"type": ["string", "integer"]},
     "instrument": {"type": "string"},
@@ -106,6 +174,23 @@ MCP_POSITION_STRATEGY_ITEM_PROPERTIES = {
         "description": (
             "Instrument-specific reason the current stop/profit state is appropriate "
             "or requires repair; next_gate supplies the promotion/review condition."
+        ),
+    },
+    "no_stop_exception_evidence": MCP_NO_STOP_EXCEPTION_EVIDENCE_SCHEMA,
+    "non_stop_eligible_evidence": MCP_NON_STOP_ELIGIBLE_EVIDENCE_SCHEMA,
+    "protection_target_antal": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": (
+            "Exact reviewed aggregate SELL Antal for an active "
+            "CALIBRATED_STOP_PROFIT_LADDER; metadata never creates the broker rows."
+        ),
+    },
+    "retained_core_antal": {
+        "type": "number",
+        "minimum": 0,
+        "description": (
+            "Exact reviewed holding Antal retained outside the active calibrated SELL target."
         ),
     },
     "proposed_correction": {"type": ["string", "null"]},
@@ -166,6 +251,78 @@ MCP_POSITION_STRATEGY_REQUIRED_FIELDS = [
     "next_gate",
     "protection_classification",
     "protection_reason",
+]
+
+MCP_POSITION_STRATEGY_ITEM_CONDITIONS = [
+    {
+        "if": {
+            "anyOf": [
+                {
+                    "properties": {
+                        "active_sell_volume": {"exclusiveMinimum": 0}
+                    },
+                    "required": ["active_sell_volume"],
+                },
+                {
+                    "properties": {"active_sell_count": {"minimum": 1}},
+                    "required": ["active_sell_count"],
+                },
+            ]
+        },
+        "then": {
+            "properties": {
+                "protection_classification": {
+                    "const": "CALIBRATED_STOP_PROFIT_LADDER"
+                }
+            },
+            "required": [
+                "protection_classification",
+                "protection_target_antal",
+                "retained_core_antal",
+            ],
+        },
+    },
+    {
+        "if": {
+            "properties": {
+                "protection_classification": {
+                    "const": "CALIBRATED_STOP_PROFIT_LADDER"
+                }
+            },
+            "required": ["protection_classification"],
+        },
+        "then": {
+            "required": ["protection_target_antal", "retained_core_antal"]
+        },
+    },
+    {
+        "if": {
+            "properties": {
+                "protection_classification": {"const": "NON_STOP_ELIGIBLE"}
+            },
+            "required": ["protection_classification"],
+        },
+        "then": {"required": ["non_stop_eligible_evidence"]},
+    },
+    {
+        "if": {
+            "properties": {
+                "protection_classification": {
+                    "enum": ["CORE_HOLD_EXCEPTION", "NAMED_EXCEPTION"]
+                },
+                "holding": {"exclusiveMinimum": 1},
+                "active_sell_volume": {"maximum": 0},
+                "active_sell_count": {"maximum": 0},
+            },
+            "required": [
+                "protection_classification",
+                "holding",
+                "active_sell_volume",
+                "active_sell_count",
+            ],
+        },
+        "then": {"required": ["no_stop_exception_evidence"]},
+    },
 ]
 
 MCP_LIVE_STOP_METADATA_CONDITION = {
@@ -845,6 +1002,7 @@ MCP_TOOLS = [
                         "type": "object",
                         "properties": MCP_POSITION_STRATEGY_ITEM_PROPERTIES,
                         "required": MCP_POSITION_STRATEGY_REQUIRED_FIELDS,
+                        "allOf": MCP_POSITION_STRATEGY_ITEM_CONDITIONS,
                         "additionalProperties": False,
                     },
                 },

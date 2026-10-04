@@ -286,7 +286,7 @@ Multi-session MCP behavior:
 | `avanza_stoploss_strategy_audit` | Refresh active broker stops and verify that each exact row reloads with matching durable local strategy metadata. |
 | `avanza_stoploss_strategy_register_batch` | Dry-run or atomically register reviewed intent for exact active broker rows; changes only the local registry, never Avanza. |
 | `avanza_position_strategy_audit` | Refresh exact holdings plus aggregate active-stop/open-order exposure, return the read-only `event_protection_screen`, and fail closed when a reviewed per-position plan is missing, stale, or mismatched. |
-| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state; changes only the local registry, never Avanza. |
+| `avanza_position_strategy_register_batch` | Dry-run or atomically register reviewed per-position plans against exact live account state, including closed no-stop/capability evidence and exact calibrated SELL target/retained-core Antal; changes only the local registry, never Avanza. |
 | `avanza_open_orders` | List live open/pending regular orders, optionally filtered by instrument, side, or status. |
 | `avanza_open_orders_raw` | Debug tool for normalized open orders plus optional raw Avanza order payload. |
 | `avanza_ongoing_orders` | List ongoing orders for the selected account: live stop-losses + live open orders, with optional paper active orders. |
@@ -413,6 +413,109 @@ Missing, stale, or contradictory plans,
 `REPAIR_REQUIRED`, unclassifiable rows, and plans that still require broker
 cleanup remain blocked. Neither result is placement, edit, or cancellation
 authority.
+
+### Typed position-protection evidence
+
+Contract revision `2026-09-12.position-protection-v2` records three exact
+machine controls in the account-scoped position registry without changing its
+version or touching broker state:
+
+1. Material zero-SELL core/named exceptions require a closed, current
+   `no_stop_exception_evidence` object: timezone-aware `decision_at`,
+   `evidence_as_of`, `next_review_at`, and `valid_until`; a nonblank
+   `gap_risk_statement`; nonempty unique `evidence_source_ids`; and one closed
+   `protection_choice`. The choice is either an exact tactical slice, a wider
+   calibrated core row, or a deliberate unprotected core. A protective choice
+   remains `REPAIR_REQUIRED` until the required active SELL row exists.
+2. Every active calibrated SELL plan requires exact
+   `protection_target_antal` and `retained_core_antal`. Target plus retained
+   must equal the live holding, and exact same-orderbook active SELL Antal must
+   equal the target. A missing target, token SELL, undercoverage, or
+   overcoverage is review-required even when some SELL volume is present.
+3. `NON_STOP_ELIGIBLE` requires a closed, current capability statement with
+   timezone-aware evidence/expiry and unique source IDs. Missing or elapsed
+   evidence returns the position to material protection scope.
+
+The MCP dry-run echoes these fields and confirmed registry writes persist them
+for restart readback. They are review metadata only: do not count them as an
+order, authorization, protected Antal, or portfolio repair. After deploying
+the code, verify capability discovery reports the new contract revision before
+using the fields operationally; an older running TUI remains authoritative
+until the operator reloads it.
+
+### Economic exposure and net-exposure drift
+
+Apply [Strategy Governance](strategy-governance.md), version
+`STRATEGY-GOVERNANCE-20260911`, with the private rulebook. Report accounting
+integrity, decision freshness, execution lifecycle and economic exposure
+independently. A valid exception, funded plan, dormant ladder, accepted order
+or timed wait does not restore exposure. Desired-growth markers remain
+underweight until actual fills reach the approved target or an explicit target
+change resolves the revised allocation; retain original targets and history.
+Review below-SEK-25,000 rows, including the 20,000-25,000 borderline band,
+without forcing a minimum purchase or changing the existing below-20,000
+structural validator gate.
+
+Treat the sale price as an attribution and performance reference, not an
+automatic re-entry ceiling. An intact-thesis recovery may use a hard-capped
+near-current tranche at or above the sale when current structure/momentum,
+event, liquidity, risk-at-invalidation, factor, concentration, capacity, and
+full-friction gates pass. Quantify the percentage premium and keep any
+pullback/deeper residual separately attributed so quantities do not overlap.
+
+Before an optional intact-thesis harvest is ready, require an absolute campaign
+core floor, remaining cumulative sale allowance and funded disposition or an
+explicit target-reduction decision. Do not recalculate floors from shrinking
+holdings. Risk-critical exits do not wait for a recovery plan, but retain all
+authorization and safety gates. An independent pre-sale BUY must be funded
+and risk-tested alongside the unsold holding without assumed sale proceeds:
+a SELL stop-limit can remain unfilled while the lower BUY fills. Price spacing
+is not fill dependency.
+
+Track same-account/same-instrument unfilled recovery Antal separately from
+allocated capital-disposition debt in SEK. A completed rotation needs an
+explicit source-target disposition; never subtract unlike share quantities or
+cross-account fills. Preserve FX/cost basis, retained cash and mark-to-market
+target drift separately. Active orders can reserve lot accounting coverage,
+but do not reduce unfilled recovery or prove economic restoration. Pause
+optional harvesting while prior disposition debt grows or remains stranded.
+
+Check semantic evidence deadlines independently of `stale_plan_count`. Distinguish
+preview, submission, acceptance and fill; journal synchronous rejections even
+without a broker ID, and resolve ambiguous results by readback without blind
+resubmission. An active price-only trigger cannot be called an unplaced dormant
+plan or assumed to wait for analytical catalyst/volume conditions.
+
+The current buyback artifact validators model stages only as positive
+percentages below a sale marker. Until a separately approved source/schema
+change represents signed or above-sale participation explicitly, record such a
+tranche as a policy-compliant proposal and a machine-enforcement gap. Never
+encode it as a false below-sale percentage or claim that the validator enforces
+this policy.
+
+### Avanza U.S. extended-hours boundary
+
+From 2026-09-08, Avanza supports U.S. securities trading in three separate
+Stockholm-local windows: pre-market `11:00-15:30`, regular
+`15:30-22:00`, and after-hours `22:00-22:30`. Always verify current MCP
+venue state, calendar exceptions, and Sweden/U.S. DST alignment; do not label
+the entire interval regular.
+
+Pre-market orders that remain unfilled roll into regular trading. Unfilled
+after-hours orders are cancelled at `22:30`. Stop-loss and Limit-on-Close are
+not available in pre-market or after-hours trading. The order ticket can show
+realtime extended-hours prices while the portfolio overview remains valued at
+the official close. Lower liquidity, wider spreads, and faster moves require a
+hard limit, exact session opt-in, current quote/spread/depth, conservative
+sizing, and full-friction review.
+
+The current MCP regular-order schema does not expose an explicit
+pre-market/after-hours selector. Do not infer extended-hours participation from
+`avanza_order_set`, `condition`, or a regular-session approval. Until discovery,
+preview, submission, and readback preserve the selector exactly, live and paper
+extended-hours mutations are unsupported and must fail closed. See Avanza's
+[official announcement](https://investors.avanza.se/media/press/2026/avanza-lanserar-for-och-efterhandel-i-amerikanska-vardepapper/)
+and [order mechanics](https://blogg.avanza.se/nu-utokar-vi-handeln-i-usa-sa-nyttjar-du-de-nya-oppettiderna/).
 
 ### TradingView pre-open workflow
 

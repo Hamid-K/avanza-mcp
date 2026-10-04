@@ -53,6 +53,23 @@ Credentials are entered at runtime. Password and TOTP fields are masked and must
 
 ## Trading Safety
 
+The [strategy-review contract](strategy-governance.md) is adopted in agent
+instructions, not a new kernel feature. Its four-axis economic state, campaign
+floors, typed continuation, semantic freshness and lifecycle requirements have
+an explicit implementation backlog. Current structural audits remain required
+but must not be presented as enforcing these additional policy checks.
+
+Position-protection contract revision
+`2026-09-12.position-protection-v2` adds closed, expiring no-stop decision
+evidence, dated broker-capability evidence for `NON_STOP_ELIGIBLE`, and exact
+strategy SELL target/retained-core Antal. The registry remains version `1` so
+legacy rows load, but missing new evidence stays fail-closed and is never
+inferred from prose. Runtime reconciliation compares every active SELL target
+to the same orderbook's exact live Antal; undercoverage, overcoverage, and a
+token SELL without a calibrated target all require review. The bridge only
+previews and persists local metadata. It cannot synthesize a broker order,
+protected Antal, or mutation authority.
+
 Read operations may run after login. Mutating operations must remain explicit:
 
 - dry-run by default where practical
@@ -61,6 +78,7 @@ Read operations may run after login. Mutating operations must remain explicit:
 - MCP starts read-only; the TUI `R/W` switch must be enabled before live MCP mutations are accepted
 - live MCP mutations also require `confirm: true` in the tool arguments
 - stop-losses are trigger-based controls, not guaranteed fills through after-hours, pre-market, halted, or fast-gap markets
+- Avanza Stop-loss and Limit-on-Close are unavailable during its U.S. pre-market and after-hours windows; extended-hours orders require an explicit session selector and must fail closed while the MCP contract cannot represent and read it back
 - catalyst gap risk must be handled through explicit sizing, trim, sell, hedge, or hold-and-accept decisions before relying on stop-loss rows
 
 Future order placement features should follow the same pattern.

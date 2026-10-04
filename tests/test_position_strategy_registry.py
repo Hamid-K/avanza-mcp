@@ -38,13 +38,41 @@ def live_state(
     }
 
 
+def no_stop_exception_evidence(
+    protection_choice: str = "DELIBERATELY_UNPROTECTED_CORE",
+) -> dict:
+    return {
+        "decision_at": "2026-01-02T00:00:00+00:00",
+        "evidence_as_of": "2026-01-01T00:00:00+00:00",
+        "next_review_at": "2099-01-01T00:00:00+00:00",
+        "valid_until": "2099-12-31T00:00:00+00:00",
+        "gap_risk_statement": (
+            "The reviewed core remains exposed to downside without a broker SELL row."
+        ),
+        "evidence_source_ids": ["unit-test-position-review"],
+        "protection_choice": protection_choice,
+    }
+
+
+def non_stop_eligible_evidence() -> dict:
+    return {
+        "evidence_as_of": "2026-01-01T00:00:00+00:00",
+        "valid_until": "2099-12-31T00:00:00+00:00",
+        "capability_statement": (
+            "The dated broker capability review confirms that this instrument "
+            "cannot receive a stop-loss row."
+        ),
+        "evidence_source_ids": ["unit-test-broker-capability-review"],
+    }
+
+
 def candidate(state: dict | None = None) -> dict:
     reviewed_state = state or live_state()
     has_active_sell = (
         reviewed_state.get("active_sell_volume", 0) > 0
         and reviewed_state.get("active_sell_count", 0) > 0
     )
-    return {
+    reviewed = {
         "live_state": reviewed_state,
         "instrument": "Test Corp",
         "ticker": "TEST",
@@ -72,6 +100,16 @@ def candidate(state: dict | None = None) -> dict:
         "proposed_correction": None,
         "source_snapshot_at": "2026-07-31T01:28:25+02:00",
     }
+    if has_active_sell:
+        reviewed["protection_target_antal"] = reviewed_state[
+            "active_sell_volume"
+        ]
+        reviewed["retained_core_antal"] = (
+            reviewed_state["holding"] - reviewed_state["active_sell_volume"]
+        )
+    else:
+        reviewed["no_stop_exception_evidence"] = no_stop_exception_evidence()
+    return reviewed
 
 
 def test_event_protection_screen_flags_profitable_event_shock_without_authority():
@@ -251,6 +289,15 @@ def test_position_registry_rejects_protection_contradictions(
     registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
     reviewed = candidate(state)
     reviewed["protection_classification"] = classification
+    if classification == "CALIBRATED_STOP_PROFIT_LADDER":
+        reviewed.pop("no_stop_exception_evidence", None)
+        reviewed["protection_target_antal"] = 2
+        reviewed["retained_core_antal"] = 8
+    elif classification in {"CORE_HOLD_EXCEPTION", "MARKER_EXCEPTION"}:
+        reviewed.pop("protection_target_antal", None)
+        reviewed.pop("retained_core_antal", None)
+        if classification == "MARKER_EXCEPTION":
+            reviewed.pop("no_stop_exception_evidence", None)
 
     with pytest.raises(ValueError, match=message):
         registry.register_many_existing(
@@ -271,6 +318,7 @@ def test_repair_required_is_recorded_but_blocks_governance_completion(tmp_path):
     reviewed = candidate(state)
     reviewed["protection_classification"] = "REPAIR_REQUIRED"
     reviewed["protection_reason"] = "The live relative BUY child lacks a fixed cap."
+    reviewed.pop("no_stop_exception_evidence", None)
     registry.register_many_existing(
         [reviewed],
         tenant_session_id="personal",
@@ -290,6 +338,448 @@ def test_repair_required_is_recorded_but_blocks_governance_completion(tmp_path):
     assert audit["complete"] is False
     assert audit["protection_repair_required_count"] == 1
     assert audit["protection_repair_required_orderbook_ids"] == ["ob-1"]
+
+
+def test_material_no_stop_exception_is_valid_but_broker_unprotected(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    state = live_state(
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    registry.register_many_existing(
+        [candidate(state)],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "volume": 10,
+            }
+        ],
+        [],
+        [],
+    )
+
+    assert audit["protection_classification_complete"] is True
+    assert audit["positions"][0]["position_protection_status"] == "VALID"
+    assert audit["broker_sell_protected"] is False
+    assert audit["broker_protection_review_required"] is True
+    assert audit["protection_review_required"] is True
+    assert audit["protection_complete"] is False
+    assert audit["complete"] is False
+    assert audit["governance_complete"] is False
+    assert audit["zero_sell_material_position_count"] == 1
+    assert audit["zero_sell_material_positions"] == [
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "ob-1",
+            "stock": "Test Corp",
+            "held_antal": 10.0,
+            "active_sell_row_count": 0,
+            "active_sell_antal": 0.0,
+            "protection_classification": "CORE_HOLD_EXCEPTION",
+            "position_protection_status": "VALID",
+            "no_stop_exception_evidence_status": "CURRENT",
+            "no_stop_exception_evidence_complete": True,
+            "no_stop_exception_evidence_issues": [],
+            "no_stop_exception_decision_current": True,
+            "no_stop_exception_protection_choice": (
+                "DELIBERATELY_UNPROTECTED_CORE"
+            ),
+            "no_stop_exception_protection_action_required": False,
+            "no_stop_exception_evidence": no_stop_exception_evidence(),
+        }
+    ]
+    assert audit["no_stop_exception_evidence_incomplete_count"] == 0
+    metrics = audit["broker_sell_protection"]
+    assert metrics["assessment_status"] == "ASSESSED"
+    assert metrics["coverage_status"] == "BROKER_SELL_PROTECTION_ABSENT"
+    assert metrics["review_status"] == "PROTECTION_REVIEW_REQUIRED"
+    assert metrics["eligible_position_count"] == 1
+    assert metrics["covered_position_count"] == 0
+    assert metrics["material_stop_eligible_position_count"] == 1
+    assert metrics["positions_with_active_sell_count"] == 0
+    assert metrics["active_sell_row_count"] == 0
+    assert metrics["position_coverage_percent"] == 0.0
+    assert metrics["zero_sell_material_positions"] == [
+        {"orderbook_id": "ob-1", "holding_antal": 10.0}
+    ]
+    assert metrics["per_instrument"] == [
+        {
+            "orderbook_id": "ob-1",
+            "holding_antal": 10.0,
+            "active_sell_row_count": 0,
+            "active_sell_antal": 0.0,
+            "protected_antal": 0.0,
+            "protection_target_antal": None,
+            "retained_core_antal": None,
+            "strategy_target_coverage_status": "NOT_APPLICABLE",
+            "no_stop_exception_evidence_status": "CURRENT",
+            "no_stop_exception_decision_current": True,
+            "no_stop_exception_protection_choice": (
+                "DELIBERATELY_UNPROTECTED_CORE"
+            ),
+            "no_stop_exception_protection_action_required": False,
+            "no_stop_exception_evidence": no_stop_exception_evidence(),
+            "active_sell_rows": [],
+        }
+    ]
+    assert metrics["cross_instrument_antal_aggregated"] is False
+
+
+def test_partial_two_sell_rows_preserve_exact_antal_without_cross_sum(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    state = live_state(active_sell_volume=5, active_sell_count=2)
+    registry.register_many_existing(
+        [candidate(state)],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "volume": 10,
+            }
+        ],
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "status": "ACTIVE",
+                "side": "BUY",
+                "volume": 3,
+            },
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "status": "ACTIVE",
+                "side": "SELL",
+                "stop_loss_id": "sl-two",
+                "volume": 2,
+            },
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "status": "ACTIVE",
+                "side": "SELL",
+                "stop_loss_id": "sl-three",
+                "volume": 3,
+            },
+        ],
+        [],
+    )
+
+    assert audit["protection_classification_complete"] is True
+    assert audit["broker_sell_protected"] is True
+    assert audit["broker_sell_presence_complete"] is True
+    assert audit["broker_sell_protection_complete"] is False
+    assert audit["protection_complete"] is True
+    assert audit["complete"] is True
+    assert audit["zero_sell_material_positions"] == []
+    metrics = audit["broker_sell_protection"]
+    assert metrics["assessment_status"] == "ASSESSED"
+    assert metrics["coverage_status"] == "BROKER_SELL_PROTECTION_PARTIAL"
+    assert metrics["review_status"] == "CURRENT"
+    assert metrics["eligible_position_count"] == 1
+    assert metrics["covered_position_count"] == 1
+    assert metrics["positions_with_active_sell_count"] == 1
+    assert metrics["fully_protected_position_count"] == 0
+    assert metrics["active_sell_position_count"] == 1
+    assert metrics["active_sell_row_count"] == 2
+    assert "active_sell_antal" not in metrics
+    assert metrics["active_sell_positions"] == [
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "ob-1",
+            "stock": "Test Corp",
+            "held_antal": 10.0,
+                "active_sell_row_count": 2,
+                "active_sell_antal": 5.0,
+                "protection_target_antal": 5.0,
+                "retained_core_antal": 5.0,
+                "strategy_target_coverage_status": "MATCHED",
+                "active_sell_rows": [
+                {"stop_loss_id": "sl-three", "antal": 3.0},
+                {"stop_loss_id": "sl-two", "antal": 2.0},
+            ],
+        }
+    ]
+    assert metrics["position_coverage_percent"] == 100.0
+    assert metrics["zero_sell_material_positions"] == []
+    assert metrics["per_instrument"] == [
+        {
+            "orderbook_id": "ob-1",
+            "holding_antal": 10.0,
+            "active_sell_row_count": 2,
+            "active_sell_antal": 5.0,
+            "protected_antal": 5.0,
+            "protection_target_antal": 5.0,
+            "retained_core_antal": 5.0,
+            "strategy_target_coverage_status": "MATCHED",
+            "no_stop_exception_evidence_status": "NOT_APPLICABLE",
+            "no_stop_exception_decision_current": False,
+            "no_stop_exception_protection_choice": None,
+            "no_stop_exception_protection_action_required": None,
+            "no_stop_exception_evidence": None,
+            "active_sell_rows": [
+                {"stop_loss_id": "sl-three", "antal": 3.0},
+                {"stop_loss_id": "sl-two", "antal": 2.0},
+            ],
+        }
+    ]
+    assert metrics["material_positions"] == [
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "ob-1",
+            "stock": "Test Corp",
+            "status": "PARTIAL",
+            "held_antal": 10.0,
+            "active_sell_row_count": 2,
+            "active_sell_antal": 5.0,
+            "protected_antal": 5.0,
+            "unprotected_antal": 5.0,
+            "protection_target_antal": 5.0,
+            "retained_core_antal": 5.0,
+            "strategy_target_coverage_status": "MATCHED",
+            "active_sell_rows": [
+                {"stop_loss_id": "sl-three", "antal": 3.0},
+                {"stop_loss_id": "sl-two", "antal": 2.0},
+            ],
+        }
+    ]
+    assert "active_sell_rows" not in audit["positions"][0][
+        "recorded_live_state"
+    ]
+
+
+def test_canonical_broker_statuses_cover_full_and_not_applicable(tmp_path):
+    full_registry = PositionStrategyRegistry(tmp_path / "full.json")
+    full_state = live_state(
+        active_buy_volume=0,
+        active_sell_volume=10,
+        active_buy_count=0,
+        active_sell_count=1,
+    )
+    full_registry.register_many_existing(
+        [candidate(full_state)],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    full_audit = full_registry.reconcile_account(
+        "acc-1",
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "volume": 10,
+            }
+        ],
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "status": "ACTIVE",
+                "side": "SELL",
+                "volume": 10,
+            }
+        ],
+        [],
+    )
+
+    assert full_audit["broker_sell_protection_complete"] is True
+    assert full_audit["broker_sell_protection"]["coverage_status"] == (
+        "BROKER_SELL_PROTECTION_PRESENT"
+    )
+
+    marker_registry = PositionStrategyRegistry(tmp_path / "marker.json")
+    marker_state = live_state(
+        holding=1,
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    marker = candidate(marker_state)
+    marker["protection_classification"] = "MARKER_EXCEPTION"
+    marker["protection_reason"] = "One-unit marker is outside material scope."
+    marker.pop("no_stop_exception_evidence", None)
+    marker_registry.register_many_existing(
+        [marker],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    marker_audit = marker_registry.reconcile_account(
+        "acc-1",
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "volume": 1,
+            }
+        ],
+        [],
+        [],
+    )
+
+    marker_metrics = marker_audit["broker_sell_protection"]
+    assert marker_metrics["coverage_status"] == "NOT_APPLICABLE"
+    assert marker_metrics["review_status"] == "CURRENT"
+    assert marker_metrics["eligible_position_count"] == 0
+    assert marker_metrics["per_instrument"] == []
+
+
+def test_h1_and_non_stop_rows_are_excluded_but_named_hgt1_is_not(tmp_path):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+
+    marker_state = {
+        **live_state(
+            holding=1,
+            active_buy_volume=0,
+            active_sell_volume=0,
+            active_buy_count=0,
+            active_sell_count=0,
+        ),
+        "orderbook_id": "ob-marker",
+        "stock": "Marker Corp",
+    }
+    marker = candidate(marker_state)
+    marker["protection_classification"] = "MARKER_EXCEPTION"
+    marker["protection_reason"] = "One-unit marker is outside material scope."
+    marker.pop("no_stop_exception_evidence", None)
+
+    fund_state = {
+        **marker_state,
+        "orderbook_id": "ob-fund",
+        "stock": "Fund Corp",
+        "holding": 100,
+    }
+    fund = candidate(fund_state)
+    fund["protection_classification"] = "NON_STOP_ELIGIBLE"
+    fund["protection_reason"] = "Broker does not support stock stops here."
+    fund.pop("no_stop_exception_evidence", None)
+    fund["non_stop_eligible_evidence"] = non_stop_eligible_evidence()
+
+    named_state = {
+        **marker_state,
+        "orderbook_id": "ob-named",
+        "stock": "Named Corp",
+        "holding": 36,
+    }
+    named = candidate(named_state)
+    named["protection_classification"] = "NAMED_EXCEPTION"
+    named["protection_reason"] = "Named review does not create broker protection."
+
+    registry.register_many_existing(
+        [marker, fund, named],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    audit = registry.reconcile_account(
+        "acc-1",
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": state["orderbook_id"],
+                "stock": state["stock"],
+                "volume": state["holding"],
+            }
+            for state in (marker_state, fund_state, named_state)
+        ],
+        [],
+        [],
+    )
+
+    by_id = {row["orderbook_id"]: row for row in audit["positions"]}
+    assert by_id["ob-marker"]["broker_sell_protection"]["status"] == "EXCLUDED"
+    assert by_id["ob-fund"]["broker_sell_protection"]["status"] == "EXCLUDED"
+    assert by_id["ob-named"]["position_protection_status"] == "VALID"
+    assert by_id["ob-named"]["broker_sell_protection"]["status"] == "MISSING"
+    assert audit["broker_sell_protection"][
+        "material_stop_eligible_position_count"
+    ] == 1
+    assert audit["zero_sell_material_position_count"] == 1
+    assert audit["zero_sell_material_positions"][0]["orderbook_id"] == "ob-named"
+    assert audit["broker_sell_protected"] is False
+
+
+def test_no_stop_free_text_cannot_satisfy_typed_evidence_without_schema(
+    tmp_path,
+):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    state = live_state(
+        holding=4,
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    reviewed = candidate(state)
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["accounts"]["acc-1"]["positions"]["ob-1"].pop(
+        "no_stop_exception_evidence"
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    registry = PositionStrategyRegistry(path)
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "stock": "Test Corp",
+                "volume": 4,
+            }
+        ],
+        [],
+        [],
+    )
+
+    assert audit["positions"][0]["position_protection_status"] == "MISSING"
+    assert audit["protection_classification_complete"] is False
+    assert audit["no_stop_exception_evidence_incomplete_count"] == 1
+    assert audit["no_stop_exception_evidence_incomplete_orderbook_ids"] == [
+        "ob-1"
+    ]
+    assert audit["zero_sell_material_positions"][0][
+        "no_stop_exception_evidence_status"
+    ] == "MISSING"
+    assert audit["zero_sell_material_positions"][0][
+        "no_stop_exception_evidence_issues"
+    ] == [
+        "decision_at",
+        "evidence_as_of",
+        "next_review_at",
+        "valid_until",
+        "gap_risk_statement",
+        "evidence_source_ids",
+        "protection_choice",
+    ]
 
 
 def test_intentional_holding_drift_is_acknowledged_but_remains_incomplete(tmp_path):
@@ -340,8 +830,11 @@ def test_intentional_holding_drift_is_acknowledged_but_remains_incomplete(tmp_pa
     assert audit["acknowledged_mismatch_count"] == 1
     assert audit["unresolved_mismatch_count"] == 0
     assert audit["acknowledged_mismatch_orderbook_ids"] == ["ob-1"]
-    assert audit["protection_complete"] is True
-    assert audit["governance_complete"] is True
+    assert audit["protection_classification_complete"] is True
+    assert audit["protection_classification_governance_complete"] is True
+    assert audit["protection_complete"] is False
+    assert audit["broker_sell_protected"] is False
+    assert audit["governance_complete"] is False
 
 
 def test_exception_preserving_semantic_update_keeps_reviewed_fingerprint(tmp_path):
@@ -392,6 +885,7 @@ def test_exception_preserving_semantic_update_keeps_reviewed_fingerprint(tmp_pat
             "preserve_audit_exception_fingerprint": True,
         }
     )
+    update.pop("no_stop_exception_evidence", None)
 
     before_preview = path.read_bytes()
     preview = registry.preview_many_existing(
@@ -742,6 +1236,342 @@ def test_position_registry_json_is_versioned_and_account_scoped(tmp_path):
     assert payload["version"] == 1
     assert set(payload["accounts"]) == {"acc-1"}
     assert set(payload["accounts"]["acc-1"]["positions"]) == {"ob-1"}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda evidence: evidence.update(
+                {"protection_choice": "UNREVIEWED_CHOICE"}
+            ),
+            "protection_choice must be",
+        ),
+        (
+            lambda evidence: evidence.update(
+                {"evidence_as_of": "2026-01-03T00:00:00+00:00"}
+            ),
+            "evidence_as_of must be at or before decision_at",
+        ),
+        (
+            lambda evidence: evidence.update(
+                {
+                    "decision_at": "2099-01-02T00:00:00+00:00",
+                    "evidence_as_of": "2099-01-01T00:00:00+00:00",
+                    "next_review_at": "2099-02-01T00:00:00+00:00",
+                }
+            ),
+            "must not be future-dated",
+        ),
+        (
+            lambda evidence: evidence.update(
+                {
+                    "next_review_at": "2026-01-03T00:00:00+00:00",
+                    "valid_until": "2099-12-31T00:00:00+00:00",
+                }
+            ),
+            "next_review_at has elapsed",
+        ),
+        (
+            lambda evidence: evidence.update(
+                {"unexpected_field": "not allowed"}
+            ),
+            "unexpected field: unexpected_field",
+        ),
+        (
+            lambda evidence: evidence.update(
+                {"decision_at": "2026-01-02T00:00:00"}
+            ),
+            "timezone-aware ISO timestamp",
+        ),
+        (
+            lambda evidence: evidence.update({"decision_at": 20260102}),
+            "timezone-aware ISO timestamp",
+        ),
+        (
+            lambda evidence: evidence.update({"gap_risk_statement": 123}),
+            "gap_risk_statement must be nonblank",
+        ),
+        (
+            lambda evidence: evidence.update({"evidence_source_ids": [123]}),
+            "evidence_source_ids must be a nonempty unique string array",
+        ),
+    ],
+)
+def test_no_stop_evidence_rejects_invalid_or_noncurrent_payloads(
+    tmp_path,
+    mutate,
+    message,
+):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    state = live_state(
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    reviewed = candidate(state)
+    mutate(reviewed["no_stop_exception_evidence"])
+
+    with pytest.raises(ValueError, match=message):
+        registry.register_many_existing(
+            [reviewed],
+            tenant_session_id="personal",
+            source="unit_test",
+        )
+
+
+@pytest.mark.parametrize(
+    "protection_choice",
+    ["TACTICAL_PROFIT_SLICE", "WIDER_CALIBRATED_CORE_ROW"],
+)
+def test_protective_no_stop_choice_requires_broker_action_and_stays_incomplete(
+    tmp_path,
+    protection_choice,
+):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    state = live_state(
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    reviewed = candidate(state)
+    reviewed["no_stop_exception_evidence"] = no_stop_exception_evidence(
+        protection_choice
+    )
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+
+    audit = registry.reconcile_account(
+        "acc-1",
+        [{"account_id": "acc-1", "orderbook_id": "ob-1", "volume": 10}],
+        [],
+        [],
+    )
+
+    assert audit["positions"][0]["position_protection_status"] == (
+        "REPAIR_REQUIRED"
+    )
+    assert audit["zero_sell_material_positions"][0][
+        "no_stop_exception_evidence_status"
+    ] == "CURRENT"
+    assert audit["zero_sell_material_positions"][0][
+        "no_stop_exception_protection_action_required"
+    ] is True
+    assert audit["broker_sell_protection"]["covered_position_count"] == 0
+    assert audit["protection_complete"] is False
+    assert audit["governance_review_eligible"] is False
+
+
+def test_calibrated_target_round_trip_and_live_under_overcoverage(tmp_path):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    state = live_state(
+        active_buy_volume=0,
+        active_buy_count=0,
+        active_sell_volume=5,
+        active_sell_count=1,
+    )
+    reviewed = candidate(state)
+
+    preview = registry.preview_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    assert not path.exists()
+    assert preview[0]["protection_target_antal"] == 5
+    assert preview[0]["retained_core_antal"] == 5
+
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    restarted = PositionStrategyRegistry(path)
+    persisted = restarted.enrich(state)["position_strategy"]
+    assert persisted["protection_target_antal"] == 5
+    assert persisted["retained_core_antal"] == 5
+
+    def audit_at(active_antal: int) -> dict:
+        return restarted.reconcile_account(
+            "acc-1",
+            [{"account_id": "acc-1", "orderbook_id": "ob-1", "volume": 10}],
+            [
+                {
+                    "account_id": "acc-1",
+                    "orderbook_id": "ob-1",
+                    "status": "ACTIVE",
+                    "side": "SELL",
+                    "stop_loss_id": f"sell-{active_antal}",
+                    "volume": active_antal,
+                }
+            ],
+            [],
+        )
+
+    under = audit_at(3)
+    assert under["strategy_target_coverage_mismatch_orderbook_ids"] == [
+        "ob-1"
+    ]
+    assert under["broker_sell_protection"]["per_instrument"][0][
+        "strategy_target_coverage_status"
+    ] == "UNDERCOVERED"
+    assert under["broker_sell_protection"]["review_status"] == (
+        "PROTECTION_REVIEW_REQUIRED"
+    )
+    assert under["complete"] is False
+
+    over = audit_at(7)
+    assert over["broker_sell_protection"]["per_instrument"][0][
+        "strategy_target_coverage_status"
+    ] == "OVERCOVERED"
+    assert over["complete"] is False
+
+
+def test_expired_non_stop_evidence_no_longer_excludes_position(tmp_path):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    state = live_state(
+        holding=100,
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    reviewed = candidate(state)
+    reviewed.pop("no_stop_exception_evidence")
+    reviewed["protection_classification"] = "NON_STOP_ELIGIBLE"
+    reviewed["protection_reason"] = "Stops are unsupported for this instrument."
+    reviewed["non_stop_eligible_evidence"] = non_stop_eligible_evidence()
+    registry.register_many_existing(
+        [reviewed],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    evidence = payload["accounts"]["acc-1"]["positions"]["ob-1"][
+        "non_stop_eligible_evidence"
+    ]
+    evidence["valid_until"] = "2026-01-02T00:00:00+00:00"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    audit = PositionStrategyRegistry(path).reconcile_account(
+        "acc-1",
+        [{"account_id": "acc-1", "orderbook_id": "ob-1", "volume": 100}],
+        [],
+        [],
+    )
+    row = audit["positions"][0]
+    assert row["position_protection_status"] == "INVALID"
+    assert row["broker_sell_protection"]["non_stop_eligible_verified"] is False
+    assert row["broker_sell_protection"]["status"] == "MISSING"
+    assert audit["zero_sell_material_position_count"] == 1
+    assert audit["broker_sell_protected"] is False
+    assert audit["complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "evidence_as_of",
+            20260101,
+            "evidence_as_of must be a timezone-aware ISO timestamp",
+        ),
+        ("capability_statement", 123, "capability_statement must be nonblank"),
+        (
+            "evidence_source_ids",
+            [123],
+            "evidence_source_ids must be a nonempty unique string array",
+        ),
+    ],
+)
+def test_non_stop_capability_evidence_rejects_non_string_values(
+    tmp_path,
+    field,
+    value,
+    message,
+):
+    registry = PositionStrategyRegistry(tmp_path / "position-strategies.json")
+    state = live_state(
+        holding=100,
+        active_buy_volume=0,
+        active_sell_volume=0,
+        active_buy_count=0,
+        active_sell_count=0,
+    )
+    reviewed = candidate(state)
+    reviewed.pop("no_stop_exception_evidence")
+    reviewed["protection_classification"] = "NON_STOP_ELIGIBLE"
+    reviewed["protection_reason"] = "Stops are unsupported for this instrument."
+    reviewed["non_stop_eligible_evidence"] = non_stop_eligible_evidence()
+    reviewed["non_stop_eligible_evidence"][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        registry.register_many_existing(
+            [reviewed],
+            tenant_session_id="personal",
+            source="unit_test",
+        )
+
+
+def test_legacy_named_exception_with_token_sell_cannot_fabricate_completion(
+    tmp_path,
+):
+    path = tmp_path / "position-strategies.json"
+    registry = PositionStrategyRegistry(path)
+    state = live_state(
+        holding=100,
+        active_buy_volume=0,
+        active_sell_volume=1,
+        active_buy_count=0,
+        active_sell_count=1,
+    )
+    registry.register_many_existing(
+        [candidate(state)],
+        tenant_session_id="personal",
+        source="unit_test",
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["accounts"]["acc-1"]["positions"]["ob-1"]
+    entry["protection_classification"] = "NAMED_EXCEPTION"
+    entry["protection_reason"] = "Legacy named exception with token SELL row."
+    entry.pop("protection_target_antal")
+    entry.pop("retained_core_antal")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    audit = PositionStrategyRegistry(path).reconcile_account(
+        "acc-1",
+        [{"account_id": "acc-1", "orderbook_id": "ob-1", "volume": 100}],
+        [
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "ob-1",
+                "status": "ACTIVE",
+                "side": "SELL",
+                "stop_loss_id": "token-sell",
+                "volume": 1,
+            }
+        ],
+        [],
+    )
+
+    assert audit["positions"][0]["position_protection_status"] == (
+        "CONTRADICTION"
+    )
+    assert audit["broker_sell_protection"]["per_instrument"][0][
+        "strategy_target_coverage_status"
+    ] == "MISSING"
+    assert audit["strategy_target_coverage_mismatch_count"] == 1
+    assert audit["protection_complete"] is False
+    assert audit["governance_review_eligible"] is False
+    assert audit["complete"] is False
 
 
 def test_position_registry_preserves_unavailable_non_equity_identity_fields(tmp_path):

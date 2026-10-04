@@ -41,6 +41,34 @@ POSITION_PROTECTION_CLASSIFICATIONS = frozenset(
         "REPAIR_REQUIRED",
     }
 )
+NO_STOP_EXCEPTION_CLASSIFICATIONS = frozenset(
+    {
+        "CORE_HOLD_EXCEPTION",
+        "NAMED_EXCEPTION",
+    }
+)
+NO_STOP_EXCEPTION_EVIDENCE_FIELDS = (
+    "decision_at",
+    "evidence_as_of",
+    "next_review_at",
+    "valid_until",
+    "gap_risk_statement",
+    "evidence_source_ids",
+    "protection_choice",
+)
+NO_STOP_PROTECTION_CHOICES = frozenset(
+    {
+        "TACTICAL_PROFIT_SLICE",
+        "WIDER_CALIBRATED_CORE_ROW",
+        "DELIBERATELY_UNPROTECTED_CORE",
+    }
+)
+NON_STOP_ELIGIBLE_EVIDENCE_FIELDS = (
+    "evidence_as_of",
+    "valid_until",
+    "capability_statement",
+    "evidence_source_ids",
+)
 
 _LIVE_STATE_FIELDS = (
     "account_id",
@@ -106,6 +134,12 @@ _PLAN_TEXT_FIELDS = (
     *_REQUIRED_PLAN_TEXT_FIELDS,
     *_OPTIONAL_PLAN_TEXT_FIELDS,
 )
+_TYPED_PLAN_FIELDS = (
+    "no_stop_exception_evidence",
+    "non_stop_eligible_evidence",
+    "protection_target_antal",
+    "retained_core_antal",
+)
 
 
 def _normalize_audit_exception(value: Any) -> dict[str, Any] | None:
@@ -164,6 +198,189 @@ def _normalized_count(value: Any) -> int:
     return int(parsed)
 
 
+def _aware_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO timestamp only when it carries an explicit UTC offset."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def _normalized_source_ids(value: Any) -> list[str] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    if not all(isinstance(item, str) for item in value):
+        return None
+    normalized = [item.strip() for item in value]
+    if any(not item for item in normalized) or len(set(normalized)) != len(normalized):
+        return None
+    return normalized
+
+
+def _no_stop_exception_evidence_evaluation(
+    value: Any,
+    *,
+    now: datetime | None = None,
+) -> tuple[str, dict[str, Any] | None, list[str]]:
+    """Validate a closed, current no-stop decision without inferring prose."""
+
+    if value is None:
+        return "MISSING", None, list(NO_STOP_EXCEPTION_EVIDENCE_FIELDS)
+    if not isinstance(value, dict):
+        return "INVALID", None, ["no_stop_exception_evidence must be an object"]
+
+    missing = [field for field in NO_STOP_EXCEPTION_EVIDENCE_FIELDS if field not in value]
+    unknown = sorted(set(value) - set(NO_STOP_EXCEPTION_EVIDENCE_FIELDS))
+    issues = [f"unexpected field: {field}" for field in unknown]
+    if missing:
+        return "MISSING", None, [*missing, *issues]
+
+    normalized = {
+        "decision_at": (
+            value.get("decision_at", "").strip()
+            if isinstance(value.get("decision_at"), str)
+            else ""
+        ),
+        "evidence_as_of": (
+            value.get("evidence_as_of", "").strip()
+            if isinstance(value.get("evidence_as_of"), str)
+            else ""
+        ),
+        "next_review_at": (
+            value.get("next_review_at", "").strip()
+            if isinstance(value.get("next_review_at"), str)
+            else ""
+        ),
+        "valid_until": (
+            value.get("valid_until", "").strip()
+            if isinstance(value.get("valid_until"), str)
+            else ""
+        ),
+        "gap_risk_statement": (
+            value.get("gap_risk_statement", "").strip()
+            if isinstance(value.get("gap_risk_statement"), str)
+            else ""
+        ),
+        "evidence_source_ids": _normalized_source_ids(value.get("evidence_source_ids")),
+        "protection_choice": (
+            _normalized_token(value.get("protection_choice"))
+            if isinstance(value.get("protection_choice"), str)
+            else ""
+        ),
+    }
+    timestamps = {
+        field: _aware_timestamp(normalized[field])
+        for field in ("decision_at", "evidence_as_of", "next_review_at", "valid_until")
+    }
+    for field, parsed in timestamps.items():
+        if parsed is None:
+            issues.append(f"{field} must be a timezone-aware ISO timestamp")
+    if not normalized["gap_risk_statement"]:
+        issues.append("gap_risk_statement must be nonblank")
+    if normalized["evidence_source_ids"] is None:
+        issues.append("evidence_source_ids must be a nonempty unique string array")
+    if normalized["protection_choice"] not in NO_STOP_PROTECTION_CHOICES:
+        issues.append(
+            "protection_choice must be TACTICAL_PROFIT_SLICE, "
+            "WIDER_CALIBRATED_CORE_ROW, or DELIBERATELY_UNPROTECTED_CORE"
+        )
+
+    reference_now = now or datetime.now(timezone.utc)
+    evidence_as_of = timestamps["evidence_as_of"]
+    decision_at = timestamps["decision_at"]
+    next_review_at = timestamps["next_review_at"]
+    valid_until = timestamps["valid_until"]
+    if evidence_as_of is not None and decision_at is not None:
+        if evidence_as_of > decision_at:
+            issues.append("evidence_as_of must be at or before decision_at")
+    if decision_at is not None and decision_at > reference_now:
+        issues.append("decision_at must not be future-dated")
+    if evidence_as_of is not None and evidence_as_of > reference_now:
+        issues.append("evidence_as_of must not be future-dated")
+    if decision_at is not None and next_review_at is not None:
+        if next_review_at <= decision_at:
+            issues.append("next_review_at must be after decision_at")
+    if next_review_at is not None and valid_until is not None:
+        if valid_until < next_review_at:
+            issues.append("valid_until must be at or after next_review_at")
+    if issues:
+        return "INVALID", normalized, issues
+
+    elapsed = []
+    if next_review_at is not None and next_review_at <= reference_now:
+        elapsed.append("next_review_at has elapsed")
+    if valid_until is not None and valid_until <= reference_now:
+        elapsed.append("valid_until has elapsed")
+    if elapsed:
+        return "EXPIRED", normalized, elapsed
+    return "CURRENT", normalized, []
+
+
+def _non_stop_eligible_evidence_evaluation(
+    value: Any,
+    *,
+    now: datetime | None = None,
+) -> tuple[str, dict[str, Any] | None, list[str]]:
+    """Validate dated, sourced evidence that the broker cannot use a stop."""
+
+    if value is None:
+        return "MISSING", None, list(NON_STOP_ELIGIBLE_EVIDENCE_FIELDS)
+    if not isinstance(value, dict):
+        return "INVALID", None, ["non_stop_eligible_evidence must be an object"]
+
+    missing = [field for field in NON_STOP_ELIGIBLE_EVIDENCE_FIELDS if field not in value]
+    unknown = sorted(set(value) - set(NON_STOP_ELIGIBLE_EVIDENCE_FIELDS))
+    issues = [f"unexpected field: {field}" for field in unknown]
+    if missing:
+        return "MISSING", None, [*missing, *issues]
+
+    normalized = {
+        "evidence_as_of": (
+            value.get("evidence_as_of", "").strip()
+            if isinstance(value.get("evidence_as_of"), str)
+            else ""
+        ),
+        "valid_until": (
+            value.get("valid_until", "").strip()
+            if isinstance(value.get("valid_until"), str)
+            else ""
+        ),
+        "capability_statement": (
+            value.get("capability_statement", "").strip()
+            if isinstance(value.get("capability_statement"), str)
+            else ""
+        ),
+        "evidence_source_ids": _normalized_source_ids(value.get("evidence_source_ids")),
+    }
+    evidence_as_of = _aware_timestamp(normalized["evidence_as_of"])
+    valid_until = _aware_timestamp(normalized["valid_until"])
+    if evidence_as_of is None:
+        issues.append("evidence_as_of must be a timezone-aware ISO timestamp")
+    if valid_until is None:
+        issues.append("valid_until must be a timezone-aware ISO timestamp")
+    if not normalized["capability_statement"]:
+        issues.append("capability_statement must be nonblank")
+    if normalized["evidence_source_ids"] is None:
+        issues.append("evidence_source_ids must be a nonempty unique string array")
+    reference_now = now or datetime.now(timezone.utc)
+    if evidence_as_of is not None and evidence_as_of > reference_now:
+        issues.append("evidence_as_of must not be future-dated")
+    if evidence_as_of is not None and valid_until is not None:
+        if valid_until <= evidence_as_of:
+            issues.append("valid_until must be after evidence_as_of")
+    if issues:
+        return "INVALID", normalized, issues
+    if valid_until is not None and valid_until <= reference_now:
+        return "EXPIRED", normalized, ["valid_until has elapsed"]
+    return "CURRENT", normalized, []
+
+
 def _position_protection_evaluation(
     plan: dict[str, Any] | None,
     live_state: dict[str, Any],
@@ -190,16 +407,94 @@ def _position_protection_evaluation(
     active_sell_volume = float(fingerprint["active_sell_volume"])
     active_sell_count = int(fingerprint["active_sell_count"])
     has_active_sell = active_sell_volume > 0 or active_sell_count > 0
+    missing: list[str] = []
+    invalid: list[str] = []
     contradictions: list[str] = []
+
+    no_stop_value = plan.get("no_stop_exception_evidence")
+    no_stop_required = bool(
+        holding > 1
+        and not has_active_sell
+        and classification in NO_STOP_EXCEPTION_CLASSIFICATIONS
+    )
+    if no_stop_required or no_stop_value is not None:
+        evidence_status, _, evidence_issues = (
+            _no_stop_exception_evidence_evaluation(no_stop_value)
+        )
+        if evidence_status == "MISSING":
+            missing.extend(
+                f"no_stop_exception_evidence.{issue}" for issue in evidence_issues
+            )
+        elif evidence_status in {"INVALID", "EXPIRED"}:
+            invalid.extend(
+                f"no_stop_exception_evidence.{issue}" for issue in evidence_issues
+            )
+        if (
+            no_stop_value is not None
+            and classification not in NO_STOP_EXCEPTION_CLASSIFICATIONS
+        ):
+            invalid.append(
+                "no_stop_exception_evidence is allowed only for "
+                "CORE_HOLD_EXCEPTION or NAMED_EXCEPTION"
+            )
+
+    non_stop_value = plan.get("non_stop_eligible_evidence")
+    if classification == "NON_STOP_ELIGIBLE" or non_stop_value is not None:
+        eligibility_status, _, eligibility_issues = (
+            _non_stop_eligible_evidence_evaluation(non_stop_value)
+        )
+        if eligibility_status == "MISSING":
+            missing.extend(
+                f"non_stop_eligible_evidence.{issue}" for issue in eligibility_issues
+            )
+        elif eligibility_status in {"INVALID", "EXPIRED"}:
+            invalid.extend(
+                f"non_stop_eligible_evidence.{issue}" for issue in eligibility_issues
+            )
+        if non_stop_value is not None and classification != "NON_STOP_ELIGIBLE":
+            invalid.append(
+                "non_stop_eligible_evidence is allowed only for NON_STOP_ELIGIBLE"
+            )
+
+    target_raw = plan.get("protection_target_antal")
+    retained_raw = plan.get("retained_core_antal")
+    target_supplied = target_raw is not None
+    retained_supplied = retained_raw is not None
+    target = scalar_number(target_raw) if not isinstance(target_raw, bool) else None
+    retained = scalar_number(retained_raw) if not isinstance(retained_raw, bool) else None
 
     if classification == "CALIBRATED_STOP_PROFIT_LADDER":
         if active_sell_volume <= 0 or active_sell_count <= 0:
             contradictions.append(
                 "CALIBRATED_STOP_PROFIT_LADDER requires active SELL volume and count"
             )
+        if not target_supplied:
+            missing.append("protection_target_antal")
+        elif target is None or float(target) <= 0:
+            invalid.append("protection_target_antal must be a positive number")
+        if not retained_supplied:
+            missing.append("retained_core_antal")
+        elif retained is None or float(retained) < 0:
+            invalid.append("retained_core_antal must be a non-negative number")
+        if target is not None and retained is not None:
+            normalized_target = _normalized_number(target)
+            normalized_retained = _normalized_number(retained)
+            if _normalized_number(normalized_target + normalized_retained) != holding:
+                contradictions.append(
+                    "protection_target_antal plus retained_core_antal must equal live holding"
+                )
+            if active_sell_volume < normalized_target:
+                contradictions.append(
+                    "active SELL Antal is below protection_target_antal"
+                )
+            elif active_sell_volume > normalized_target:
+                contradictions.append(
+                    "active SELL Antal exceeds protection_target_antal"
+                )
     elif classification in {
         "CORE_HOLD_EXCEPTION",
         "MARKER_EXCEPTION",
+        "NAMED_EXCEPTION",
         "NON_STOP_ELIGIBLE",
     }:
         if has_active_sell:
@@ -207,14 +502,186 @@ def _position_protection_evaluation(
                 f"{classification} cannot coexist with an active SELL stop"
             )
 
+    if classification != "CALIBRATED_STOP_PROFIT_LADDER" and (
+        target_supplied or retained_supplied
+    ):
+        invalid.append(
+            "protection_target_antal and retained_core_antal are allowed only for "
+            "CALIBRATED_STOP_PROFIT_LADDER"
+        )
+
     if classification == "MARKER_EXCEPTION" and holding > 1:
         contradictions.append("MARKER_EXCEPTION requires live holding at or below one")
 
+    no_stop_evidence_status, normalized_no_stop, _ = (
+        _no_stop_exception_evidence_evaluation(no_stop_value)
+        if no_stop_value is not None
+        else ("NOT_APPLICABLE", None, [])
+    )
+    protection_choice = (
+        str((normalized_no_stop or {}).get("protection_choice") or "")
+        if no_stop_evidence_status == "CURRENT"
+        else ""
+    )
+
+    if missing:
+        return POSITION_PROTECTION_MISSING, missing
+    if invalid:
+        return POSITION_PROTECTION_INVALID, invalid
     if contradictions:
         return POSITION_PROTECTION_CONTRADICTION, contradictions
+    if (
+        no_stop_required
+        and protection_choice
+        in {"TACTICAL_PROFIT_SLICE", "WIDER_CALIBRATED_CORE_ROW"}
+    ):
+        return POSITION_PROTECTION_REPAIR_REQUIRED, [
+            f"{protection_choice} requires an exact calibrated target and active broker SELL row"
+        ]
     if classification == "REPAIR_REQUIRED":
         return POSITION_PROTECTION_REPAIR_REQUIRED, []
     return POSITION_PROTECTION_VALID, []
+
+
+def _broker_sell_protection_evaluation(row: dict[str, Any]) -> dict[str, Any]:
+    """Measure actual broker SELL protection without changing plan validity.
+
+    A reviewed exception may be classification-valid while still having no
+    broker protection. Material scope is deliberately narrow and deterministic:
+    a live holding above one unit, excluding only an explicit
+    NON_STOP_ELIGIBLE classification. This excludes one-unit markers while
+    keeping named exceptions, missing plans, and invalid classifications in the
+    fail-closed broker-protection scope.
+    """
+
+    fingerprint = position_strategy_live_fingerprint(row)
+    plan = row.get("position_strategy")
+    plan = plan if isinstance(plan, dict) else {}
+    classification = _normalized_token(plan.get("protection_classification"))
+    holding = float(fingerprint["holding"])
+    active_sell_volume = float(fingerprint["active_sell_volume"])
+    active_sell_count = int(fingerprint["active_sell_count"])
+    non_stop_evidence_status, _, non_stop_evidence_issues = (
+        _non_stop_eligible_evidence_evaluation(
+            plan.get("non_stop_eligible_evidence")
+        )
+        if classification == "NON_STOP_ELIGIBLE"
+        else ("NOT_APPLICABLE", None, [])
+    )
+    verified_non_stop_eligible = bool(
+        classification == "NON_STOP_ELIGIBLE"
+        and non_stop_evidence_status == "CURRENT"
+    )
+    material_stop_eligible = holding > 1 and not verified_non_stop_eligible
+    has_active_sell = active_sell_volume > 0 and active_sell_count > 0
+    protected_holding = (
+        min(holding, active_sell_volume)
+        if material_stop_eligible and has_active_sell
+        else 0.0
+    )
+    fully_protected = bool(
+        material_stop_eligible
+        and has_active_sell
+        and active_sell_volume >= holding
+    )
+    zero_sell_material = bool(material_stop_eligible and not has_active_sell)
+
+    evidence_applicable = bool(
+        zero_sell_material
+        and classification in NO_STOP_EXCEPTION_CLASSIFICATIONS
+    )
+    evidence_status, _, evidence_issues = (
+        _no_stop_exception_evidence_evaluation(
+            plan.get("no_stop_exception_evidence")
+        )
+        if evidence_applicable
+        else ("NOT_APPLICABLE", None, [])
+    )
+    protection_choice = _normalized_token(
+        (plan.get("no_stop_exception_evidence") or {}).get("protection_choice")
+        if isinstance(plan.get("no_stop_exception_evidence"), dict)
+        else None
+    )
+    protection_action_required = bool(
+        evidence_applicable
+        and protection_choice
+        in {"TACTICAL_PROFIT_SLICE", "WIDER_CALIBRATED_CORE_ROW"}
+        and not has_active_sell
+    )
+
+    target = scalar_number(plan.get("protection_target_antal"))
+    retained = scalar_number(plan.get("retained_core_antal"))
+    if has_active_sell and classification != "CALIBRATED_STOP_PROFIT_LADDER":
+        target_coverage_status = "MISSING"
+    elif classification == "CALIBRATED_STOP_PROFIT_LADDER" and (
+        target is None or retained is None
+    ):
+        target_coverage_status = "MISSING"
+    elif classification == "CALIBRATED_STOP_PROFIT_LADDER" and (
+        active_sell_volume < _normalized_number(target)
+    ):
+        target_coverage_status = "UNDERCOVERED"
+    elif classification == "CALIBRATED_STOP_PROFIT_LADDER" and (
+        active_sell_volume > _normalized_number(target)
+    ):
+        target_coverage_status = "OVERCOVERED"
+    elif classification == "CALIBRATED_STOP_PROFIT_LADDER":
+        target_coverage_status = "MATCHED"
+    else:
+        target_coverage_status = "NOT_APPLICABLE"
+
+    if not material_stop_eligible:
+        status = "EXCLUDED"
+    elif not has_active_sell:
+        status = "MISSING"
+    elif fully_protected:
+        status = "FULL"
+    else:
+        status = "PARTIAL"
+
+    return {
+        "status": status,
+        "material_stop_eligible": material_stop_eligible,
+        "broker_sell_present": bool(material_stop_eligible and has_active_sell),
+        "broker_sell_protected": bool(material_stop_eligible and has_active_sell),
+        "broker_sell_fully_protected": fully_protected,
+        "strategy_target_coverage_status": target_coverage_status,
+        "strategy_target_coverage_complete": (
+            target_coverage_status in {"MATCHED", "NOT_APPLICABLE"}
+        ),
+        "protection_target_antal": (
+            _normalized_number(target) if target is not None else None
+        ),
+        "retained_core_antal": (
+            _normalized_number(retained) if retained is not None else None
+        ),
+        "broker_protection_review_required": zero_sell_material,
+        "held_antal": holding,
+        "active_sell_row_count": active_sell_count,
+        "active_sell_antal": active_sell_volume,
+        "protected_antal": _normalized_number(protected_holding),
+        "unprotected_antal": _normalized_number(
+            holding - protected_holding if material_stop_eligible else 0.0
+        ),
+        "no_stop_exception_evidence_status": evidence_status,
+        "no_stop_exception_evidence_complete": (
+            evidence_status == "CURRENT" if evidence_applicable else None
+        ),
+        "no_stop_exception_evidence_issues": evidence_issues,
+        "no_stop_exception_decision_current": evidence_status == "CURRENT",
+        "no_stop_exception_protection_choice": protection_choice or None,
+        "no_stop_exception_protection_action_required": (
+            protection_action_required if evidence_applicable else None
+        ),
+        "non_stop_eligible_verified": verified_non_stop_eligible,
+        "non_stop_eligible_evidence_status": non_stop_evidence_status,
+        "non_stop_eligible_evidence_complete": (
+            non_stop_evidence_status == "CURRENT"
+            if classification == "NON_STOP_ELIGIBLE"
+            else None
+        ),
+        "non_stop_eligible_evidence_issues": non_stop_evidence_issues,
+    }
 
 
 def _row_account_id(row: dict[str, Any]) -> str:
@@ -252,6 +719,16 @@ def _row_side(row: dict[str, Any]) -> str:
 
 def _row_volume(row: dict[str, Any]) -> float:
     return _normalized_number(row.get("volume", row.get("Volume")))
+
+
+def _row_stop_loss_id(row: dict[str, Any]) -> str:
+    return str(
+        row.get("stop_loss_id")
+        or row.get("Stop Loss ID")
+        or row.get("stopLossId")
+        or row.get("id")
+        or ""
+    ).strip()
 
 
 def _is_active_stop(row: dict[str, Any]) -> bool:
@@ -433,7 +910,9 @@ def build_position_strategy_live_states(
 
     The tracked set is the union of held instruments, active stop rows, and
     non-terminal regular orders. This also catches an order left behind after
-    a position reaches zero.
+    a position reaches zero. Individual active SELL rows are returned as
+    read-only evidence but deliberately remain outside the persisted live
+    fingerprint.
     """
 
     account_token = str(account_id or "").strip()
@@ -457,6 +936,7 @@ def build_position_strategy_live_states(
                 "active_sell_volume": 0.0,
                 "active_buy_count": 0,
                 "active_sell_count": 0,
+                "active_sell_rows": [],
                 "open_buy_volume": 0.0,
                 "open_sell_volume": 0.0,
                 "open_buy_count": 0,
@@ -486,8 +966,17 @@ def build_position_strategy_live_states(
         state = ensure(_row_orderbook_id(stoploss), _row_stock(stoploss))
         volume_key = "active_buy_volume" if side == "BUY" else "active_sell_volume"
         count_key = "active_buy_count" if side == "BUY" else "active_sell_count"
-        state[volume_key] = _normalized_number(state[volume_key] + _row_volume(stoploss))
+        state[volume_key] = _normalized_number(
+            state[volume_key] + _row_volume(stoploss)
+        )
         state[count_key] += 1
+        if side == "SELL":
+            state["active_sell_rows"].append(
+                {
+                    "stop_loss_id": _row_stop_loss_id(stoploss) or None,
+                    "antal": _row_volume(stoploss),
+                }
+            )
 
     for order in open_orders:
         if _row_account_id(order) not in {"", account_token}:
@@ -503,6 +992,10 @@ def build_position_strategy_live_states(
         state[volume_key] = _normalized_number(state[volume_key] + _row_volume(order))
         state[count_key] += 1
 
+    for state in states.values():
+        state["active_sell_rows"].sort(
+            key=lambda row: (str(row.get("stop_loss_id") or ""), row["antal"])
+        )
     return [states[key] for key in sorted(states)]
 
 
@@ -714,6 +1207,60 @@ class PositionStrategyRegistry:
         for field in _OPTIONAL_PLAN_TEXT_FIELDS:
             value = str(candidate.get(field) or "").strip()
             plan[field] = value or None
+        no_stop_status, normalized_no_stop, _ = (
+            _no_stop_exception_evidence_evaluation(
+                candidate.get("no_stop_exception_evidence")
+            )
+            if candidate.get("no_stop_exception_evidence") is not None
+            else ("NOT_APPLICABLE", None, [])
+        )
+        if candidate.get("no_stop_exception_evidence") is not None and (
+            no_stop_status != "CURRENT"
+        ):
+            _, _, issues = _no_stop_exception_evidence_evaluation(
+                candidate.get("no_stop_exception_evidence")
+            )
+            raise ValueError(
+                "Invalid no_stop_exception_evidence: " + "; ".join(issues) + "."
+            )
+        plan["no_stop_exception_evidence"] = (
+            normalized_no_stop
+            if no_stop_status != "NOT_APPLICABLE"
+            else None
+        )
+        non_stop_status, normalized_non_stop, _ = (
+            _non_stop_eligible_evidence_evaluation(
+                candidate.get("non_stop_eligible_evidence")
+            )
+            if candidate.get("non_stop_eligible_evidence") is not None
+            else ("NOT_APPLICABLE", None, [])
+        )
+        if candidate.get("non_stop_eligible_evidence") is not None and (
+            non_stop_status != "CURRENT"
+        ):
+            _, _, issues = _non_stop_eligible_evidence_evaluation(
+                candidate.get("non_stop_eligible_evidence")
+            )
+            raise ValueError(
+                "Invalid non_stop_eligible_evidence: " + "; ".join(issues) + "."
+            )
+        plan["non_stop_eligible_evidence"] = (
+            normalized_non_stop
+            if non_stop_status != "NOT_APPLICABLE"
+            else None
+        )
+        target = candidate.get("protection_target_antal")
+        retained = candidate.get("retained_core_antal")
+        plan["protection_target_antal"] = (
+            _normalized_number(target)
+            if not isinstance(target, bool) and scalar_number(target) is not None
+            else None
+        )
+        plan["retained_core_antal"] = (
+            _normalized_number(retained)
+            if not isinstance(retained, bool) and scalar_number(retained) is not None
+            else None
+        )
         priority = plan["priority"].upper()
         if priority not in {"A", "B", "C", "D", "E"}:
             raise ValueError("priority must be one of A, B, C, D, or E.")
@@ -887,6 +1434,7 @@ class PositionStrategyRegistry:
                     field: entry.get(field)
                     for field in (
                         *_PLAN_TEXT_FIELDS,
+                        *_TYPED_PLAN_FIELDS,
                         "proposed_correction",
                         "audit_exception",
                         "source",
@@ -931,6 +1479,10 @@ class PositionStrategyRegistry:
             open_orders,
         )
         enriched = [self.enrich(state) for state in states]
+        for row in enriched:
+            row["broker_sell_protection"] = _broker_sell_protection_evaluation(
+                row
+            )
         missing = [
             row
             for row in enriched
@@ -1024,22 +1576,122 @@ class PositionStrategyRegistry:
             if row.get("position_protection_status")
             == POSITION_PROTECTION_REGISTRY_UNAVAILABLE
         ]
-        protection_complete = not (
+        protection_classification_complete = not (
             protection_missing
             or protection_invalid
             or protection_contradictions
             or protection_repairs
             or protection_unavailable
         )
+        material_stop_eligible = [
+            row
+            for row in enriched
+            if row["broker_sell_protection"]["material_stop_eligible"]
+        ]
+        broker_sell_present = [
+            row
+            for row in material_stop_eligible
+            if row["broker_sell_protection"]["broker_sell_present"]
+        ]
+        broker_sell_fully_protected = [
+            row
+            for row in material_stop_eligible
+            if row["broker_sell_protection"]["broker_sell_fully_protected"]
+        ]
+        zero_sell_material = [
+            row
+            for row in material_stop_eligible
+            if row["broker_sell_protection"][
+                "broker_protection_review_required"
+            ]
+        ]
+        no_stop_evidence_incomplete = [
+            row
+            for row in zero_sell_material
+            if row["broker_sell_protection"].get(
+                "no_stop_exception_evidence_complete"
+            )
+            is False
+        ]
+        non_stop_evidence_incomplete = [
+            row
+            for row in enriched
+            if _normalized_token(
+                (row.get("position_strategy") or {}).get(
+                    "protection_classification"
+                )
+            )
+            == "NON_STOP_ELIGIBLE"
+            and row["broker_sell_protection"].get(
+                "non_stop_eligible_evidence_complete"
+            )
+            is not True
+        ]
+        strategy_target_mismatches = [
+            row
+            for row in material_stop_eligible
+            if row["broker_sell_protection"].get("broker_sell_present")
+            and row["broker_sell_protection"].get(
+                "strategy_target_coverage_status"
+            )
+            != "MATCHED"
+        ]
+        active_sell_row_count = sum(
+            int(row.get("active_sell_count") or 0) for row in enriched
+        )
+        active_sell_positions = [
+            row
+            for row in enriched
+            if int(row.get("active_sell_count") or 0) > 0
+            or float(row.get("active_sell_volume") or 0.0) > 0
+        ]
+        position_coverage_percent = (
+            round(
+                100.0
+                * len(broker_sell_present)
+                / len(material_stop_eligible),
+                4,
+            )
+            if material_stop_eligible
+            else None
+        )
+        broker_sell_presence_complete = not zero_sell_material
+        broker_sell_protection_complete = (
+            len(broker_sell_fully_protected) == len(material_stop_eligible)
+        )
+        strategy_target_coverage_complete = not strategy_target_mismatches
+        if not material_stop_eligible:
+            broker_coverage_status = "NOT_APPLICABLE"
+        elif zero_sell_material:
+            broker_coverage_status = "BROKER_SELL_PROTECTION_ABSENT"
+        elif broker_sell_protection_complete:
+            broker_coverage_status = "BROKER_SELL_PROTECTION_PRESENT"
+        else:
+            broker_coverage_status = "BROKER_SELL_PROTECTION_PARTIAL"
+        broker_review_status = (
+            "PROTECTION_REVIEW_REQUIRED"
+            if zero_sell_material or strategy_target_mismatches
+            else "CURRENT"
+        )
+        protection_complete = bool(
+            protection_classification_complete
+            and broker_sell_presence_complete
+            and strategy_target_coverage_complete
+        )
         strict_fingerprint_complete = not (
             missing or mismatches or unavailable or stale_ids
         )
-        governance_complete = bool(
-            protection_complete
+        protection_classification_governance_complete = bool(
+            protection_classification_complete
             and not missing
             and not unavailable
             and not stale_ids
             and not unresolved_mismatches
+        )
+        governance_complete = bool(
+            protection_classification_governance_complete
+            and broker_sell_presence_complete
+            and strategy_target_coverage_complete
         )
         complete = bool(strict_fingerprint_complete and protection_complete)
         return {
@@ -1049,7 +1701,262 @@ class PositionStrategyRegistry:
             "strict_fingerprint_complete": strict_fingerprint_complete,
             "governance_complete": governance_complete,
             "governance_review_eligible": governance_complete,
+            "protection_classification_complete": (
+                protection_classification_complete
+            ),
+            "protection_classification_governance_complete": (
+                protection_classification_governance_complete
+            ),
+            "broker_sell_protected": broker_sell_presence_complete,
+            "broker_sell_presence_complete": broker_sell_presence_complete,
+            "broker_sell_protection_complete": (
+                broker_sell_protection_complete
+            ),
+            "strategy_target_coverage_complete": (
+                strategy_target_coverage_complete
+            ),
+            "broker_protection_review_required": bool(zero_sell_material),
+            "protection_review_required": not protection_complete,
             "protection_complete": protection_complete,
+            "broker_sell_protection": {
+                "assessment_status": "ASSESSED",
+                "coverage_status": broker_coverage_status,
+                "review_status": broker_review_status,
+                "eligible_position_count": len(material_stop_eligible),
+                "covered_position_count": len(broker_sell_present),
+                "material_stop_eligible_position_count": len(
+                    material_stop_eligible
+                ),
+                "positions_with_active_sell_count": len(
+                    broker_sell_present
+                ),
+                "fully_protected_position_count": len(
+                    broker_sell_fully_protected
+                ),
+                "strategy_target_matched_position_count": sum(
+                    row["broker_sell_protection"].get(
+                        "strategy_target_coverage_status"
+                    )
+                    == "MATCHED"
+                    for row in material_stop_eligible
+                ),
+                "strategy_target_mismatch_position_count": len(
+                    strategy_target_mismatches
+                ),
+                "active_sell_position_count": len(active_sell_positions),
+                "active_sell_row_count": active_sell_row_count,
+                "active_sell_positions": [
+                    {
+                        "account_id": row.get("account_id"),
+                        "orderbook_id": row.get("orderbook_id"),
+                        "stock": row.get("stock"),
+                        "held_antal": row.get("holding"),
+                        "active_sell_row_count": row.get(
+                            "active_sell_count"
+                        ),
+                        "active_sell_antal": row.get("active_sell_volume"),
+                        "protection_target_antal": row[
+                            "broker_sell_protection"
+                        ]["protection_target_antal"],
+                        "retained_core_antal": row["broker_sell_protection"][
+                            "retained_core_antal"
+                        ],
+                        "strategy_target_coverage_status": row[
+                            "broker_sell_protection"
+                        ]["strategy_target_coverage_status"],
+                        "active_sell_rows": deepcopy(
+                            row.get("active_sell_rows") or []
+                        ),
+                    }
+                    for row in active_sell_positions
+                ],
+                "position_coverage_percent": position_coverage_percent,
+                "zero_sell_material_positions": [
+                    {
+                        "orderbook_id": row.get("orderbook_id"),
+                        "holding_antal": row["broker_sell_protection"][
+                            "held_antal"
+                        ],
+                    }
+                    for row in zero_sell_material
+                ],
+                "per_instrument": [
+                    {
+                        "orderbook_id": row.get("orderbook_id"),
+                        "holding_antal": row["broker_sell_protection"][
+                            "held_antal"
+                        ],
+                        "active_sell_row_count": row[
+                            "broker_sell_protection"
+                        ]["active_sell_row_count"],
+                        "active_sell_antal": row[
+                            "broker_sell_protection"
+                        ]["active_sell_antal"],
+                        "protected_antal": row[
+                            "broker_sell_protection"
+                        ]["protected_antal"],
+                        "protection_target_antal": row[
+                            "broker_sell_protection"
+                        ]["protection_target_antal"],
+                        "retained_core_antal": row["broker_sell_protection"][
+                            "retained_core_antal"
+                        ],
+                        "strategy_target_coverage_status": row[
+                            "broker_sell_protection"
+                        ]["strategy_target_coverage_status"],
+                        "no_stop_exception_evidence_status": row[
+                            "broker_sell_protection"
+                        ]["no_stop_exception_evidence_status"],
+                        "no_stop_exception_decision_current": row[
+                            "broker_sell_protection"
+                        ]["no_stop_exception_decision_current"],
+                        "no_stop_exception_protection_choice": row[
+                            "broker_sell_protection"
+                        ]["no_stop_exception_protection_choice"],
+                        "no_stop_exception_protection_action_required": row[
+                            "broker_sell_protection"
+                        ]["no_stop_exception_protection_action_required"],
+                        "no_stop_exception_evidence": deepcopy(
+                            (row.get("position_strategy") or {}).get(
+                                "no_stop_exception_evidence"
+                            )
+                        ),
+                        "active_sell_rows": deepcopy(
+                            row.get("active_sell_rows") or []
+                        ),
+                    }
+                    for row in material_stop_eligible
+                ],
+                "material_positions": [
+                    {
+                        "account_id": row.get("account_id"),
+                        "orderbook_id": row.get("orderbook_id"),
+                        "stock": row.get("stock"),
+                        "status": row["broker_sell_protection"]["status"],
+                        "held_antal": row["broker_sell_protection"][
+                            "held_antal"
+                        ],
+                        "active_sell_row_count": row[
+                            "broker_sell_protection"
+                        ]["active_sell_row_count"],
+                        "active_sell_antal": row["broker_sell_protection"][
+                            "active_sell_antal"
+                        ],
+                        "protected_antal": row["broker_sell_protection"][
+                            "protected_antal"
+                        ],
+                        "unprotected_antal": row[
+                            "broker_sell_protection"
+                        ]["unprotected_antal"],
+                        "protection_target_antal": row[
+                            "broker_sell_protection"
+                        ]["protection_target_antal"],
+                        "retained_core_antal": row["broker_sell_protection"][
+                            "retained_core_antal"
+                        ],
+                        "strategy_target_coverage_status": row[
+                            "broker_sell_protection"
+                        ]["strategy_target_coverage_status"],
+                        "active_sell_rows": deepcopy(
+                            row.get("active_sell_rows") or []
+                        ),
+                    }
+                    for row in material_stop_eligible
+                ],
+                "verified_non_stop_eligible_position_count": sum(
+                    row["broker_sell_protection"].get(
+                        "non_stop_eligible_verified"
+                    )
+                    is True
+                    for row in enriched
+                ),
+                "verified_non_stop_eligible_positions": [
+                    {
+                        "account_id": row.get("account_id"),
+                        "orderbook_id": row.get("orderbook_id"),
+                        "stock": row.get("stock"),
+                        "holding_antal": row.get("holding"),
+                        "non_stop_eligible_evidence_status": row[
+                            "broker_sell_protection"
+                        ]["non_stop_eligible_evidence_status"],
+                        "non_stop_eligible_evidence": deepcopy(
+                            (row.get("position_strategy") or {}).get(
+                                "non_stop_eligible_evidence"
+                            )
+                        ),
+                    }
+                    for row in enriched
+                    if row["broker_sell_protection"].get(
+                        "non_stop_eligible_verified"
+                    )
+                    is True
+                ],
+                "coverage_semantics": (
+                    "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY"
+                ),
+                "cross_instrument_antal_aggregated": False,
+            },
+            "zero_sell_material_position_count": len(zero_sell_material),
+            "zero_sell_material_positions": [
+                {
+                    "account_id": row.get("account_id"),
+                    "orderbook_id": row.get("orderbook_id"),
+                    "stock": row.get("stock"),
+                    "held_antal": row.get("holding"),
+                    "active_sell_row_count": row.get("active_sell_count"),
+                    "active_sell_antal": row.get("active_sell_volume"),
+                    "protection_classification": (
+                        (row.get("position_strategy") or {}).get(
+                            "protection_classification"
+                        )
+                    ),
+                    "position_protection_status": row.get(
+                        "position_protection_status"
+                    ),
+                    "no_stop_exception_evidence_status": row[
+                        "broker_sell_protection"
+                    ]["no_stop_exception_evidence_status"],
+                    "no_stop_exception_evidence_complete": row[
+                        "broker_sell_protection"
+                    ]["no_stop_exception_evidence_complete"],
+                    "no_stop_exception_evidence_issues": row[
+                        "broker_sell_protection"
+                    ]["no_stop_exception_evidence_issues"],
+                    "no_stop_exception_decision_current": row[
+                        "broker_sell_protection"
+                    ]["no_stop_exception_decision_current"],
+                    "no_stop_exception_protection_choice": row[
+                        "broker_sell_protection"
+                    ]["no_stop_exception_protection_choice"],
+                    "no_stop_exception_protection_action_required": row[
+                        "broker_sell_protection"
+                    ]["no_stop_exception_protection_action_required"],
+                    "no_stop_exception_evidence": deepcopy(
+                        (row.get("position_strategy") or {}).get(
+                            "no_stop_exception_evidence"
+                        )
+                    ),
+                }
+                for row in zero_sell_material
+            ],
+            "no_stop_exception_evidence_incomplete_count": len(
+                no_stop_evidence_incomplete
+            ),
+            "no_stop_exception_evidence_incomplete_orderbook_ids": [
+                row["orderbook_id"] for row in no_stop_evidence_incomplete
+            ],
+            "non_stop_eligible_evidence_incomplete_count": len(
+                non_stop_evidence_incomplete
+            ),
+            "non_stop_eligible_evidence_incomplete_orderbook_ids": [
+                row["orderbook_id"] for row in non_stop_evidence_incomplete
+            ],
+            "strategy_target_coverage_mismatch_count": len(
+                strategy_target_mismatches
+            ),
+            "strategy_target_coverage_mismatch_orderbook_ids": [
+                row["orderbook_id"] for row in strategy_target_mismatches
+            ],
             "row_count": len(enriched),
             "planned_count": len(planned_ids) - len(pruned_ids),
             "recorded_count": len(recorded),

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import verify_buyback_ladder_artifact as buyback_verifier
 from scripts.build_buyback_daily_coverage_json import (
     candidate_metrics,
     extract_latest_refresh_attempt,
@@ -24,6 +25,7 @@ from scripts.verify_buyback_ladder_artifact import (
     PLAN_PATH,
     TABLE_PATH,
     _canonical_json_sha256,
+    describe_dynamic_broker_sell_protection,
     latest_dynamic_coverage_path,
     latest_sold_marker_remediation_path,
     governed_dormant_ladder_count,
@@ -203,6 +205,21 @@ def dynamic_buyback_payload():
         },
         "rows": rows,
     }
+
+
+_SYNTHETIC_ACCOUNT_IDS = {"personal": "1000001", "darkcell": "1000002"}
+
+
+def synthetic_account_dynamic_buyback_payload(monkeypatch):
+    monkeypatch.setattr(
+        buyback_verifier,
+        "EXPECTED_DYNAMIC_SCOPES",
+        {(tenant, account_id) for tenant, account_id in _SYNTHETIC_ACCOUNT_IDS.items()},
+    )
+    payload = dynamic_buyback_payload()
+    for row in (*payload["rows"], *payload["scope"]):
+        row["account_id"] = _SYNTHETIC_ACCOUNT_IDS[row["tenant_session_id"]]
+    return payload
 
 
 def r17_path_row(
@@ -671,6 +688,7 @@ def sold_marker_reconciled_payloads():
             "personal": {
                 "tenant_session_id": "personal",
                 "account_id": "5227886",
+                "assessment_status": "ASSESSED",
                 "session_authenticated": True,
                 "live_authorization_off": True,
                 "recovery_reachability_unresolved": 0,
@@ -680,6 +698,7 @@ def sold_marker_reconciled_payloads():
             "darkcell": {
                 "tenant_session_id": "darkcell",
                 "account_id": "7616265",
+                "assessment_status": "ASSESSED",
                 "session_authenticated": True,
                 "live_authorization_off": True,
                 "recovery_reachability_unresolved": 0,
@@ -762,6 +781,406 @@ def test_dynamic_buyback_validator_accepts_variable_size_live_universe():
 
     assert payload["summary"]["exact_account_rows"] == 3
     assert validate_dynamic_live_coverage(payload) == []
+
+
+def test_legacy_dynamic_buyback_does_not_imply_broker_sell_protection():
+    payload = dynamic_buyback_payload()
+    payload["live_governance"]["protection_complete"] = True
+
+    assert validate_dynamic_live_coverage(payload) == []
+    assert describe_dynamic_broker_sell_protection(payload).startswith(
+        "NOT_ASSESSED"
+    )
+
+
+def test_dynamic_buyback_records_material_core_without_sell_as_review_required(monkeypatch):
+    payload = synthetic_account_dynamic_buyback_payload(monkeypatch)
+    beta = payload["rows"][1]
+    beta["live_market_value_sek"] = 25_000.0
+    beta["market_value_band"] = "AT_OR_ABOVE_20000_SEK"
+    beta["selection_reasons"] = ["CURRENT_POSITION"]
+    payload["summary"]["below_20000_sek_rows"] = 1
+    payload["summary"]["at_or_above_20000_sek_rows"] = 1
+    payload["broker_sell_protection"] = {
+        "assessment_status": "ASSESSED",
+        "accounts": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": _SYNTHETIC_ACCOUNT_IDS["personal"],
+                "assessment_status": "ASSESSED",
+                "coverage_status": "BROKER_SELL_PROTECTION_ABSENT",
+                "review_status": "PROTECTION_REVIEW_REQUIRED",
+                "active_sell_row_count": 0,
+                "eligible_position_count": 1,
+                "covered_position_count": 0,
+                "strategy_target_mismatch_position_count": 0,
+                "verified_non_stop_eligible_position_count": 0,
+                "verified_non_stop_eligible_positions": [],
+                "zero_sell_material_positions": ["1002"],
+                "coverage_semantics": "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY",
+                "cross_instrument_antal_aggregated": False,
+                "per_instrument": [
+                    {
+                        "orderbook_id": "1002",
+                        "holding_antal": 2,
+                        "active_sell_row_count": 0,
+                        "active_sell_antal": 0,
+                        "protected_antal": 0,
+                        "protection_target_antal": None,
+                        "retained_core_antal": None,
+                        "strategy_target_coverage_status": "NOT_APPLICABLE",
+                        "active_sell_rows": [],
+                    }
+                ],
+            },
+            {
+                "tenant_session_id": "darkcell",
+                "account_id": _SYNTHETIC_ACCOUNT_IDS["darkcell"],
+                "assessment_status": "ASSESSED",
+                "coverage_status": "NOT_APPLICABLE",
+                "review_status": "CURRENT",
+                "active_sell_row_count": 0,
+                "eligible_position_count": 0,
+                "covered_position_count": 0,
+                "strategy_target_mismatch_position_count": 0,
+                "verified_non_stop_eligible_position_count": 0,
+                "verified_non_stop_eligible_positions": [],
+                "zero_sell_material_positions": [],
+                "coverage_semantics": "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY",
+                "cross_instrument_antal_aggregated": False,
+                "per_instrument": [],
+            },
+        ],
+    }
+
+    assert validate_dynamic_live_coverage(payload) == []
+
+    excluded = copy.deepcopy(payload)
+    excluded["rows"][1]["current_protection_classification"] = (
+        "NON_STOP_ELIGIBLE"
+    )
+    excluded["rows"][1].update(
+        {
+            "non_stop_eligible_verified": True,
+            "non_stop_eligible_evidence_status": "CURRENT",
+            "non_stop_eligible_evidence": {
+                "evidence_as_of": "2026-08-18T12:00:00+02:00",
+                "valid_until": "2026-08-25T12:00:00+02:00",
+                "capability_statement": (
+                    "The dated broker review confirms stops are unsupported."
+                ),
+                "evidence_source_ids": ["broker-capability-1002"],
+            },
+        }
+    )
+    personal_excluded = excluded["broker_sell_protection"]["accounts"][0]
+    personal_excluded.update(
+        {
+            "coverage_status": "NOT_APPLICABLE",
+            "review_status": "CURRENT",
+            "eligible_position_count": 0,
+            "covered_position_count": 0,
+            "verified_non_stop_eligible_position_count": 1,
+            "verified_non_stop_eligible_positions": [
+                {"orderbook_id": "1002"}
+            ],
+            "zero_sell_material_positions": [],
+            "per_instrument": [],
+        }
+    )
+    assert validate_dynamic_live_coverage(excluded) == []
+
+    excluded["rows"][1]["non_stop_eligible_evidence"][
+        "capability_statement"
+    ] = 123
+    errors = validate_dynamic_live_coverage(excluded)
+    assert any(
+        "per_instrument identities differ from dynamic material stop-eligible rows"
+        in error
+        for error in errors
+    )
+
+    payload["broker_sell_protection"]["accounts"][0]["coverage_status"] = (
+        "BROKER_SELL_PROTECTION_PRESENT"
+    )
+    errors = validate_dynamic_live_coverage(payload)
+    assert any(
+        "material zero-SELL rows must be BROKER_SELL_PROTECTION_ABSENT"
+        in error
+        for error in errors
+    )
+
+    personal = payload["broker_sell_protection"]["accounts"][0]
+    personal["coverage_status"] = "BROKER_SELL_PROTECTION_ABSENT"
+    instrument = personal["per_instrument"][0]
+    instrument.update(
+        {
+            "no_stop_exception_evidence_status": "CURRENT",
+            "no_stop_exception_decision_current": True,
+            "no_stop_exception_protection_choice": (
+                "DELIBERATELY_UNPROTECTED_CORE"
+            ),
+            "no_stop_exception_protection_action_required": False,
+            "no_stop_exception_evidence": {
+                "decision_at": "2026-08-17T12:00:00+02:00",
+                "evidence_as_of": "2026-08-17T11:00:00+02:00",
+                "next_review_at": "2026-08-18T12:00:00+02:00",
+                "valid_until": "2026-08-20T12:00:00+02:00",
+                "gap_risk_statement": "No broker SELL row is present.",
+                "evidence_source_ids": ["broker-readback-1002"],
+                "protection_choice": "DELIBERATELY_UNPROTECTED_CORE",
+            },
+        }
+    )
+    errors = validate_dynamic_live_coverage(payload)
+    assert any("next_review_at has elapsed" in error for error in errors)
+
+    evidence = instrument["no_stop_exception_evidence"]
+    evidence["next_review_at"] = "2026-08-21T12:00:00+02:00"
+    evidence["valid_until"] = "2026-08-22T12:00:00+02:00"
+    evidence["gap_risk_statement"] = 123
+    errors = validate_dynamic_live_coverage(payload)
+    assert any(
+        "CURRENT no-stop evidence requires a gap risk statement" in error
+        for error in errors
+    )
+
+
+def test_dynamic_buyback_uses_per_instrument_antal_not_cross_instrument_sum(monkeypatch):
+    payload = synthetic_account_dynamic_buyback_payload(monkeypatch)
+    beta = payload["rows"][1]
+    beta.update(
+        {
+            "live_market_value_sek": 25_000.0,
+            "market_value_band": "AT_OR_ABOVE_20000_SEK",
+            "selection_reasons": ["CURRENT_POSITION"],
+            "active_sell_volume": 1,
+            "current_protection_classification": "CALIBRATED_STOP_PROFIT_LADDER",
+            "protection_target_antal": 1,
+            "retained_core_antal": 1,
+        }
+    )
+    payload["summary"]["below_20000_sek_rows"] = 1
+    payload["summary"]["at_or_above_20000_sek_rows"] = 1
+    payload["broker_sell_protection"] = {
+        "assessment_status": "ASSESSED",
+        "accounts": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": _SYNTHETIC_ACCOUNT_IDS["personal"],
+                "assessment_status": "ASSESSED",
+                "coverage_status": "BROKER_SELL_PROTECTION_PARTIAL",
+                "review_status": "CURRENT",
+                "active_sell_row_count": 1,
+                "eligible_position_count": 1,
+                "covered_position_count": 1,
+                "strategy_target_mismatch_position_count": 0,
+                "verified_non_stop_eligible_position_count": 0,
+                "verified_non_stop_eligible_positions": [],
+                "zero_sell_material_positions": [],
+                "coverage_semantics": "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY",
+                "cross_instrument_antal_aggregated": False,
+                "per_instrument": [
+                    {
+                        "orderbook_id": "1002",
+                        "holding_antal": 2,
+                        "active_sell_row_count": 1,
+                        "active_sell_antal": 1,
+                        "protected_antal": 1,
+                        "protection_target_antal": 1,
+                        "retained_core_antal": 1,
+                        "strategy_target_coverage_status": "MATCHED",
+                        "active_sell_rows": [
+                            {"stop_loss_id": "sell-1002-1", "antal": 1}
+                        ],
+                    }
+                ],
+            },
+            {
+                "tenant_session_id": "darkcell",
+                "account_id": _SYNTHETIC_ACCOUNT_IDS["darkcell"],
+                "assessment_status": "ASSESSED",
+                "coverage_status": "NOT_APPLICABLE",
+                "review_status": "CURRENT",
+                "active_sell_row_count": 0,
+                "eligible_position_count": 0,
+                "covered_position_count": 0,
+                "strategy_target_mismatch_position_count": 0,
+                "verified_non_stop_eligible_position_count": 0,
+                "verified_non_stop_eligible_positions": [],
+                "zero_sell_material_positions": [],
+                "coverage_semantics": "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY",
+                "cross_instrument_antal_aggregated": False,
+                "per_instrument": [],
+            },
+        ],
+    }
+
+    assert validate_dynamic_live_coverage(payload) == []
+
+    personal = payload["broker_sell_protection"]["accounts"][0]
+    personal["per_instrument"][0][
+        "strategy_target_coverage_status"
+    ] = "NOT_APPLICABLE"
+    personal["per_instrument"][0]["protection_target_antal"] = None
+    personal["per_instrument"][0]["retained_core_antal"] = None
+    personal["strategy_target_mismatch_position_count"] = 0
+    errors = validate_dynamic_live_coverage(payload)
+    assert any(
+        "active SELL row cannot have NOT_APPLICABLE strategy target coverage"
+        in error
+        for error in errors
+    )
+    personal["per_instrument"][0].update(
+        {
+            "protection_target_antal": 1,
+            "retained_core_antal": 1,
+            "strategy_target_coverage_status": "MATCHED",
+        }
+    )
+
+    personal["per_instrument"][0]["protected_antal"] = 2
+    errors = validate_dynamic_live_coverage(payload)
+    assert any("protected_antal exceeds active SELL Antal" in error for error in errors)
+
+    personal["per_instrument"][0]["protected_antal"] = 1
+    personal["per_instrument"][0]["active_sell_rows"][0]["antal"] = 2
+    errors = validate_dynamic_live_coverage(payload)
+    assert any(
+        "active_sell_rows Antal does not sum to the per-orderbook" in error
+        for error in errors
+    )
+
+    personal["per_instrument"][0]["active_sell_rows"][0]["antal"] = 1
+    beta["protection_target_antal"] = 2
+    beta["retained_core_antal"] = 0
+    personal["per_instrument"][0].update(
+        {
+            "protection_target_antal": 2,
+            "retained_core_antal": 0,
+            "strategy_target_coverage_status": "UNDERCOVERED",
+        }
+    )
+    personal["strategy_target_mismatch_position_count"] = 1
+    personal["review_status"] = "PROTECTION_REVIEW_REQUIRED"
+    assert validate_dynamic_live_coverage(payload) == []
+
+    beta["protection_target_antal"] = 0.5
+    beta["retained_core_antal"] = 1.5
+    personal["per_instrument"][0].update(
+        {
+            "protection_target_antal": 0.5,
+            "retained_core_antal": 1.5,
+            "strategy_target_coverage_status": "OVERCOVERED",
+        }
+    )
+    assert validate_dynamic_live_coverage(payload) == []
+
+
+def test_expired_non_stop_evidence_no_longer_excludes_material_position(monkeypatch):
+    payload = synthetic_account_dynamic_buyback_payload(monkeypatch)
+    beta = payload["rows"][1]
+    beta.update(
+        {
+            "live_market_value_sek": 25_000.0,
+            "market_value_band": "AT_OR_ABOVE_20000_SEK",
+            "selection_reasons": ["CURRENT_POSITION"],
+            "current_protection_classification": "NON_STOP_ELIGIBLE",
+            "non_stop_eligible_verified": True,
+            "non_stop_eligible_evidence_status": "EXPIRED",
+            "non_stop_eligible_evidence": {
+                "evidence_as_of": "2026-08-01T12:00:00+02:00",
+                "valid_until": "2026-08-18T12:00:00+02:00",
+                "capability_statement": "Historical unsupported-stop evidence.",
+                "evidence_source_ids": ["broker-capability-1002"],
+            },
+        }
+    )
+    payload["summary"]["below_20000_sek_rows"] = 1
+    payload["summary"]["at_or_above_20000_sek_rows"] = 1
+    payload["broker_sell_protection"] = {
+        "assessment_status": "ASSESSED",
+        "accounts": [
+            {
+                "tenant_session_id": "personal",
+                "account_id": _SYNTHETIC_ACCOUNT_IDS["personal"],
+                "assessment_status": "ASSESSED",
+                "coverage_status": "BROKER_SELL_PROTECTION_ABSENT",
+                "review_status": "PROTECTION_REVIEW_REQUIRED",
+                "active_sell_row_count": 0,
+                "eligible_position_count": 1,
+                "covered_position_count": 0,
+                "strategy_target_mismatch_position_count": 0,
+                "verified_non_stop_eligible_position_count": 0,
+                "verified_non_stop_eligible_positions": [],
+                "zero_sell_material_positions": ["1002"],
+                "coverage_semantics": (
+                    "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY"
+                ),
+                "cross_instrument_antal_aggregated": False,
+                "per_instrument": [
+                    {
+                        "orderbook_id": "1002",
+                        "holding_antal": 2,
+                        "active_sell_row_count": 0,
+                        "active_sell_antal": 0,
+                        "protected_antal": 0,
+                        "protection_target_antal": None,
+                        "retained_core_antal": None,
+                        "strategy_target_coverage_status": "NOT_APPLICABLE",
+                        "active_sell_rows": [],
+                    }
+                ],
+            },
+            {
+                "tenant_session_id": "darkcell",
+                "account_id": _SYNTHETIC_ACCOUNT_IDS["darkcell"],
+                "assessment_status": "ASSESSED",
+                "coverage_status": "NOT_APPLICABLE",
+                "review_status": "CURRENT",
+                "active_sell_row_count": 0,
+                "eligible_position_count": 0,
+                "covered_position_count": 0,
+                "strategy_target_mismatch_position_count": 0,
+                "verified_non_stop_eligible_position_count": 0,
+                "verified_non_stop_eligible_positions": [],
+                "zero_sell_material_positions": [],
+                "coverage_semantics": (
+                    "POSITION_COUNT_AND_PER_ORDERBOOK_ANTAL_ONLY"
+                ),
+                "cross_instrument_antal_aggregated": False,
+                "per_instrument": [],
+            },
+        ],
+    }
+
+    assert validate_dynamic_live_coverage(payload) == []
+
+
+def test_schema10_dynamic_buyback_requires_broker_sell_protection_block():
+    payload = dynamic_buyback_payload()
+    payload["schema_version"] = 10
+
+    errors = validate_dynamic_live_coverage(payload)
+
+    assert any(
+        "dynamic broker SELL protection is NOT_ASSESSED" in error
+        for error in errors
+    )
+
+
+def test_schema9_missing_broker_sell_block_cannot_be_completion_clean():
+    payload = dynamic_buyback_payload()
+    payload["schema_version"] = 9
+    payload["summary"]["buyback_coverage_state_counts"]["REPAIR_REQUIRED"] = 0
+
+    errors = validate_dynamic_live_coverage(payload)
+
+    assert any(
+        "schema 9 can remain structurally valid only while REPAIR_REQUIRED rows"
+        in error
+        for error in errors
+    )
 
 
 def test_schema4_dynamic_buyback_keeps_current_hold_orthogonal_to_recovery_gap():
@@ -3681,3 +4100,86 @@ def test_full_dynamic_mirror_rejects_unmirrored_terminal_decision():
     errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
 
     assert any("terminal-closure membership mismatch" in error for error in errors)
+
+
+def _fail_closed_repair_component_mirror():
+    canonical = full_history_payload()
+    official = {"rows": []}
+    mirror = full_dynamic_mirror(canonical, official)
+    row = mirror["rows"][0]
+    row.update(
+        {
+            "buyback_coverage_state": "REPAIR_REQUIRED",
+            "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+            "stage_quantities": None,
+            "r390_recovery_components": [
+                {
+                    "component_id": "lot-1-residual",
+                    "sale_date": "2026-08-01",
+                    "exact_open_sale_lot_ids": ["lot-1"],
+                    "target_rebuild_quantity": 6,
+                    "state": "REPAIR_REQUIRED",
+                    "stages_percent_below_sold_marker": "PERCENTAGE_NOT_SET",
+                    "stage_quantities": None,
+                    "execution_state": "NOT_PLACED",
+                    "unfilled_recovery_credit_exact": "0",
+                    "economic_restoration_credit_sek_exact": "0",
+                    "promotion_evidence": "Fresh sale-lot path, reversal, risk, capacity and full friction required.",
+                }
+            ],
+        }
+    )
+    return canonical, official, mirror
+
+
+def test_full_dynamic_mirror_accepts_fail_closed_unquantified_component():
+    canonical, official, mirror = _fail_closed_repair_component_mirror()
+
+    assert validate_full_dynamic_governance_mirror(mirror, canonical, official) == []
+    assert mirror["objective_complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("target_rebuild_quantity", 5, "dated repair component lot or quantity mismatch"),
+        ("sale_date", "2026-08-02", "dated repair component lot or quantity mismatch"),
+        ("execution_state", "AWAITING_TRIGGER", "neither quantified nor fail-closed"),
+        ("unfilled_recovery_credit_exact", "1", "neither quantified nor fail-closed"),
+        ("economic_restoration_credit_sek_exact", "1", "neither quantified nor fail-closed"),
+        ("promotion_evidence", "", "neither quantified nor fail-closed"),
+        ("state", "LADDER_DORMANT", "neither quantified nor fail-closed"),
+        ("stages_percent_below_sold_marker", [8], "neither quantified nor fail-closed"),
+    ],
+)
+def test_full_dynamic_mirror_rejects_false_repair_component(field, value, message):
+    canonical, official, mirror = _fail_closed_repair_component_mirror()
+    mirror["rows"][0]["r390_recovery_components"][0][field] = value
+
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+
+    assert any(message in error for error in errors)
+
+
+def test_full_dynamic_mirror_rejects_repair_lot_omission_or_duplication():
+    canonical, official, mirror = _fail_closed_repair_component_mirror()
+    component = mirror["rows"][0]["r390_recovery_components"][0]
+
+    component["exact_open_sale_lot_ids"] = []
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+    assert any("component lot parity failed" in error for error in errors)
+
+    component["exact_open_sale_lot_ids"] = ["lot-1", "lot-1"]
+    component["target_rebuild_quantity"] = 12
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+    assert any("component lot parity failed" in error for error in errors)
+
+
+def test_full_dynamic_mirror_rejects_unvalidated_repair_component_field():
+    canonical, official, mirror = _fail_closed_repair_component_mirror()
+    row = mirror["rows"][0]
+    row["r390_unquantified_repair_components"] = row.pop("r390_recovery_components")
+
+    errors = validate_full_dynamic_governance_mirror(mirror, canonical, official)
+
+    assert any("unvalidated recovery component field" in error for error in errors)

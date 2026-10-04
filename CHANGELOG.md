@@ -12,6 +12,32 @@
   Goal audit links accept explicitly omitted cross-instrument share totals
   without manufacturing an economic aggregate or weakening completion gates.
 
+- Added MCP position-protection contract
+  `2026-09-12.position-protection-v2`: closed, timezone-aware and expiring
+  no-stop decision evidence; dated sourced capability evidence for
+  `NON_STOP_ELIGIBLE`; and exact calibrated SELL target/retained-core Antal.
+  Runtime and artifact validators now reject legacy token-SELL false greens,
+  target under/overcoverage, malformed or elapsed evidence, and fabricated
+  protected/eligible results. Dry-run, confirmed local-registry persistence,
+  restart readback, and capability discovery carry the new fields. Registry
+  version remains `1`; legacy rows load but fail closed. This metadata neither
+  creates broker coverage nor grants order authority, and requires an operator
+  reload before the running bridge advertises the new revision.
+
+- Adopted the strategy audit's agent-review policy and aligned rulebook,
+  warmup and monitoring templates: separate accounting, freshness, execution
+  and economic exposure; preserve absolute campaign floors; remove generic
+  re-entry splits; distinguish independent pre-sale BUY risk and actual fills.
+  Added `docs/strategy-governance.md` with an explicit machine-enforcement
+  backlog. This documentation update does not implement those controls,
+  migrate live registries, change trading authority, or place orders.
+
+- Documented Avanza's 2026-09-08 U.S. extended-hours rollout as distinct
+  pre-market, regular, and after-hours windows. Governance now records the
+  rollover/cancellation, realtime-price, liquidity/spread, and stop-loss/LOC
+  limitations, and fails closed on extended-hours mutations until MCP exposes
+  an explicit session selector with preview and readback parity.
+
 - Added an operator-run, preview-by-default reviewed-order manifest runner using
   the existing keychain-backed MCP bridge. It preserves canonical order/stop
   semantics, scoped authorization, exact state guards, durable no-retry

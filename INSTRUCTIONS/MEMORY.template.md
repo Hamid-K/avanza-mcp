@@ -6,6 +6,10 @@ Rules:
 - Keep `MEMORY.md` local-only (ignored by git).
 - Do not store account IDs, order IDs, stop-loss IDs, usernames, hostnames, file paths, or personal notes here.
 - Keep entries generalized and strategy-focused.
+- Historical observations never override the current private rulebook and its
+  adopted `STRATEGY-GOVERNANCE-20260911` policy. Keep superseded observations
+  for evidence, but do not reuse generic tranche vectors, holding-minus-one
+  targets, automatic matching SELLs or fixed-price SELL-first assumptions.
 
 ## Format
 
@@ -13,6 +17,8 @@ Newest-first table:
 
 | Timestamp (Stockholm) | Topic | Observation | Operational rule |
 |---|---|---|---|
+| YYYY-MM-DD HH:MM CEST | Example: Planning was mistaken for restored exposure | A formally valid plan left the actual position below target. | Report accounting, freshness, execution and economic exposure separately. Only fills or an explicit target change resolve the revised allocation. Keep same-instrument recovery units separate from capital-disposition amounts; rotation never subtracts unlike shares. Prompt changes are not implemented machine enforcement. |
+| YYYY-MM-DD HH:MM CEST | Example: Sale-price anchoring caused exposure decay | Profit-harvest SELLs executed while below-sale-only BUY rules and unfilled/expired orders left desired-growth positions at marker size. | Treat the sale price as a reference rather than a ceiling; allow a bounded above-sale participation tranche when current gates pass, pair it with a pullback/deeper residual, and count only filled recovery or completed rotation against net exposure debt. A valid marker exception is not economic resolution when intended exposure is larger. |
 | YYYY-MM-DD HH:MM CEST | Example: Transaction identity sensitivity | A broker ledger exposed no stable transaction ID, so raw rows could include API duplicates while exact-text deduplication could also remove genuinely separate identical fills. | Retain and label both raw and conservative-floor views. Use the floor for churn grades, preserve raw values as the upper-bound source record, and block any decision that changes materially between interpretations rather than presenting either as exact. |
 | YYYY-MM-DD HH:MM CEST | Example: Whole-position drift control | A static plan remained described as current after a holding fill or order change altered the live exposure. | Persist the reviewed account/orderbook plan separately from broker orders and compare exact holding plus aggregate stop/open-order exposure every run. Missing or mismatched state blocks a clean result; a fill requires review before rebaselining. Local metadata never authorizes a trade. |
 | YYYY-MM-DD HH:MM CEST | Example: Downstream order-plan drift | A recovery or displacement report reused stale estimated-order data and revived a superseded keep/replace/cancel decision. | Make the exact active-order implementation ledger authoritative for stop IDs, sides, row counts, statuses, and modeled notional. All downstream artifacts must share its live-source timestamp and reconcile exactly; any contradiction blocks clean state and never authorizes mutation. |

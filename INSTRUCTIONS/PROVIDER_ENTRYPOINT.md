@@ -52,6 +52,18 @@ Files ending in `.template.md` are public examples. They are not live context.
 If a private file is absent, report that context is unavailable rather than
 substituting its template.
 
+## Parallel Agent Work
+
+- Start independent, useful subtasks with sub-agents as soon as the task scope
+  is known. Use as many available agent slots as can make concurrent progress;
+  assign distinct scopes and consolidate their findings before acting.
+- For trading work, parallelize read-only account, protection, buy-back, and
+  governance reviews. Keep broker mutations under one coordinating agent so
+  orders, scoped live authorization, and post-mutation readback cannot race.
+- Sub-agents must load the instructions for their role, refresh exact live
+  account state, and obey the same approval and trading gates. Delegation does
+  not turn a goal, plan, or another agent's result into mutation authority.
+
 ## Handoff Contract
 
 - Before pausing, switching providers, or ending substantial work, update

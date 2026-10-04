@@ -259,6 +259,19 @@ class CoreBridgeMixin:
                     in position_strategy_item_properties
                     and "protection_reason" in position_strategy_item_properties
                 ),
+                "position_strategy_typed_no_stop_evidence": (
+                    "no_stop_exception_evidence"
+                    in position_strategy_item_properties
+                ),
+                "position_strategy_non_stop_eligible_evidence": (
+                    "non_stop_eligible_evidence"
+                    in position_strategy_item_properties
+                ),
+                "position_strategy_exact_protection_target": (
+                    "protection_target_antal"
+                    in position_strategy_item_properties
+                    and "retained_core_antal" in position_strategy_item_properties
+                ),
             },
             "can_read_quotes": True,
             "can_place_paper_orders": True,
@@ -1510,6 +1523,10 @@ class CoreBridgeMixin:
                 "next_gate",
                 "protection_classification",
                 "protection_reason",
+                "no_stop_exception_evidence",
+                "non_stop_eligible_evidence",
+                "protection_target_antal",
+                "retained_core_antal",
                 "proposed_correction",
                 "audit_exception",
                 "source_snapshot_at",
@@ -1617,6 +1634,18 @@ class CoreBridgeMixin:
                             "protection_classification"
                         ),
                         "protection_reason": requested.get("protection_reason"),
+                        "no_stop_exception_evidence": requested.get(
+                            "no_stop_exception_evidence"
+                        ),
+                        "non_stop_eligible_evidence": requested.get(
+                            "non_stop_eligible_evidence"
+                        ),
+                        "protection_target_antal": requested.get(
+                            "protection_target_antal"
+                        ),
+                        "retained_core_antal": requested.get(
+                            "retained_core_antal"
+                        ),
                         "preserve_audit_exception_fingerprint": bool(
                             requested.get(
                                 "preserve_audit_exception_fingerprint",
