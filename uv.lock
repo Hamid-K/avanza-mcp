@@ -35,16 +35,12 @@ wheels = [
 
 [[package]]
 name = "avanza-api"
-version = "16.1.0"
-source = { registry = "https://pypi.org/simple" }
+version = "16.2.0"
+source = { git = "https://github.com/Qluxzz/avanza.git?rev=16b6e260c9a389c0688b5862b75d5cd4dbd04b8f#16b6e260c9a389c0688b5862b75d5cd4dbd04b8f" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyotp" },
     { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/0d/c9a3b84ce00a00eb1e6462983b928827da6b24b8374939b45cdbe13d7987/avanza_api-16.1.0.tar.gz", hash = "sha256:df99509acea9dcc5cec679b66bf79008d676dd2cba6fdd752c1c02cb76d7a47b", size = 29029, upload-time = "2026-02-07T10:17:07.995Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/39/e14f9c69f682658ef000b89126c234e97ebe4377829a29b8a7474636eddf/avanza_api-16.1.0-py3-none-any.whl", hash = "sha256:2059db8434697666a2f4aa7f71682efa12bf0e62793e8034d4ddc7ae8757b059", size = 34237, upload-time = "2026-02-07T10:17:06.811Z" },
 ]
 
 [[package]]
@@ -73,7 +69,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "avanza-api", specifier = ">=16.1.0,<17" },
+    { name = "avanza-api", git = "https://github.com/Qluxzz/avanza.git?rev=16b6e260c9a389c0688b5862b75d5cd4dbd04b8f" },
     { name = "fastapi", specifier = ">=0.139.0,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },

@@ -323,7 +323,7 @@ def test_live_stoploss_review_requires_strategy_intent_and_reason(
     with_session,
     runtime,
 ):
-    from datetime import date, timedelta
+    from datetime import date, datetime, timedelta
 
     body = {
         "order_book_id": "1234",
@@ -338,6 +338,20 @@ def test_live_stoploss_review_requires_strategy_intent_and_reason(
         "order_valid_days": 1,
     }
     runtime.kernel.paper_mode_enabled = False
+    from avanza_mcp.market_data import broker_verified_currency_metadata
+
+    runtime.kernel.orderbook_metadata_by_id["1234"] = {
+        "orderbook_id": "1234",
+        **broker_verified_currency_metadata(
+            currency="SEK",
+            source="MARKET_DATA_EXPLICIT_CURRENCY",
+            orderbook_id="1234",
+            raw_payload={"orderbookId": "1234", "quote": {"currency": "SEK"}},
+            observed_orderbook_ids=["1234"],
+        ),
+    }
+    runtime.kernel.orderbook_metadata_checked_at["1234"] = datetime.now()
+    runtime.kernel.orderbook_metadata_refresh_succeeded["1234"] = True
     missing = with_session.post("/api/stoplosses/dry-run", json=body)
     assert missing.status_code == 400
     assert "strategy_intent is required" in missing.json()["detail"]
@@ -353,6 +367,35 @@ def test_live_stoploss_review_requires_strategy_intent_and_reason(
     assert reviewed.status_code == 200, reviewed.text
     assert reviewed.json()["preview"]["strategy_intent"] == "DEEP_RESIDUAL"
     runtime.kernel.paper_mode_enabled = True
+
+
+def test_web_live_monetary_stop_rejects_static_known_currency_without_remote_readback(
+    with_session,
+    runtime,
+    monkeypatch,
+):
+    from datetime import timedelta
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    runtime.kernel.paper_mode_enabled = False
+    body = {
+        "order_book_id": "5269",
+        "volume": 2,
+        "trigger_type": "less_or_equal",
+        "trigger_value": 95.0,
+        "trigger_value_type": "monetary",
+        "valid_until": (date.today() + timedelta(days=10)).isoformat(),
+        "order_type": "sell",
+        "order_price": 94.0,
+        "order_price_type": "monetary",
+        "order_valid_days": 1,
+        "strategy_intent": "PROFIT_PROTECTION",
+        "strategy_reason": "Regression guard for static currency provenance.",
+    }
+
+    response = with_session.post("/api/stoplosses/dry-run", json=body)
+    assert response.status_code == 400
+    assert "SEK is unverified (KNOWN_ORDERBOOK_METADATA)" in response.json()["detail"]
 
 
 def test_paper_cancel_flow(with_session):

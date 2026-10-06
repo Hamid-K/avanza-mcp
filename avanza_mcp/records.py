@@ -5,12 +5,16 @@ from typing import Any
 
 from avanza.constants import TransactionsDetailsType
 
-from avanza_mcp import utils
+from avanza_mcp import avanza_ext, utils
 from avanza_mcp.market_data import (
+    broker_payload_json_error,
+    broker_payload_orderbook_ids,
+    broker_verified_currency_metadata,
     display_symbol,
     infer_currency_from_metadata,
     iso_from_any_timestamp,
     market_quote_first_text,
+    metadata_from_market_guide_payload,
     merged_orderbook_metadata,
     normalize_symbol_candidate,
     orderbook_quote_row,
@@ -38,6 +42,49 @@ from avanza_mcp.rendering import (
 )
 from avanza_mcp.utils import nested_value, value_number
 
+_INVALID_SEARCH_PAYLOAD_KEY = "_avanza_mcp_invalid_search_payload"
+
+
+def _invalid_payload_currency_metadata(
+    payload: Any,
+    source: str,
+    *,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    error = error or broker_payload_json_error(payload)
+    if error is None:
+        return None
+    return {
+        "currency": None,
+        "currency_source": source,
+        "currency_verified": False,
+        "currency_orderbook_id": None,
+        "currency_conflicts": [{
+            "type": "CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+            **error,
+            "source": source,
+        }],
+    }
+
+
+def _invalid_payload_record(
+    payload: Any,
+    source: str,
+    *,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    failure = _invalid_payload_currency_metadata(payload, source, error=error)
+    if failure is None:
+        return None
+    return {
+        "name": None,
+        "ticker": None,
+        "symbol": None,
+        "display_symbol": None,
+        "orderbook_id": "",
+        **failure,
+    }
+
 def stoploss_instrument_metadata(
     avanza: Any,
     order_book_id: str,
@@ -49,10 +96,21 @@ def stoploss_instrument_metadata(
         return metadata
 
     try:
-        market_payload = payload_to_json_safe(avanza.get_market_data(order_book_id))
+        market_payload = avanza.get_market_data(order_book_id)
     except Exception:
         market_payload = {}
-    if isinstance(market_payload, dict):
+    market_failure = _invalid_payload_currency_metadata(
+        market_payload,
+        "MARKET_DATA_EXPLICIT_CURRENCY",
+    )
+    if market_failure is not None:
+        metadata = merged_orderbook_metadata(metadata, market_failure)
+    elif type(market_payload) is dict:
+        explicit_market_currency = market_quote_first_text(
+            market_payload,
+            (("quote", "currency"), ("currency",)),
+        )
+        market_payload_orderbook_ids = broker_payload_orderbook_ids(market_payload)
         quote = orderbook_quote_row(
             order_book_id,
             market_payload,
@@ -61,13 +119,21 @@ def stoploss_instrument_metadata(
             fallback_market=str(metadata.get("market") or ""),
             fallback_currency=str(metadata.get("currency") or ""),
         )
+        quote_currency_metadata = broker_verified_currency_metadata(
+            currency=explicit_market_currency,
+            source="MARKET_DATA_EXPLICIT_CURRENCY",
+            orderbook_id=order_book_id,
+            raw_payload=market_payload,
+            observed_orderbook_ids=market_payload_orderbook_ids,
+            currency_path=("quote",) if nested_value(market_payload, "quote", "currency") else (),
+        )
         metadata = merged_orderbook_metadata(
             metadata,
             {
                 "name": quote.get("name"),
                 "ticker": quote.get("ticker"),
                 "market": quote.get("market"),
-                "currency": quote.get("currency"),
+                **quote_currency_metadata,
                 "country_code": market_quote_first_text(
                     market_payload,
                     (("countryCode",), ("country",), ("flagCode",), ("orderbook", "countryCode")),
@@ -79,14 +145,49 @@ def stoploss_instrument_metadata(
             },
         )
 
-    missing_currency = not str(metadata.get("currency") or "").strip()
-    if missing_currency:
+    guide_metadata: dict[str, Any] = {}
+    try:
+        guide_payload = avanza_ext.avanza_private_get(
+            avanza,
+            f"/_api/market-guide/stock/{order_book_id}",
+            options={},
+        )
+        guide_failure = _invalid_payload_currency_metadata(
+            guide_payload,
+            "MARKET_GUIDE_EXPLICIT_CURRENCY",
+        )
+        if guide_failure is not None:
+            guide_metadata = {"orderbook_id": order_book_id, **guide_failure}
+            metadata = merged_orderbook_metadata(metadata, guide_metadata)
+        elif type(guide_payload) is dict and guide_payload:
+            guide_metadata = metadata_from_market_guide_payload(order_book_id, guide_payload)
+            metadata = merged_orderbook_metadata(metadata, guide_metadata)
+    except Exception:
+        guide_metadata = {}
+
+    required_core_fields = ("name", "ticker", "market", "country_code", "instrument_type", "currency")
+    guide_complete = bool(guide_metadata.get("currency_verified") is True) and all(
+        guide_metadata.get(key) for key in required_core_fields
+    )
+    if not guide_complete:
         try:
             hits = flattened_search_hits(avanza.search_for_stock(order_book_id, 15))
             rows = normalized_search_rows(hits, query=order_book_id)
+            invalid_search = next(
+                (
+                    row
+                    for row in rows
+                    if any(
+                        type(conflict) is dict
+                        and conflict.get("type") == "CURRENCY_EVIDENCE_NON_JSON_PAYLOAD"
+                        for conflict in (row.get("currency_conflicts") or [])
+                    )
+                ),
+                None,
+            )
+            if type(invalid_search) is dict:
+                metadata = merged_orderbook_metadata(metadata, invalid_search)
             match = next((row for row in rows if str(row.get("orderbook_id") or "") == order_book_id), None)
-            if not match and rows:
-                match = rows[0]
             if isinstance(match, dict):
                 metadata = merged_orderbook_metadata(
                     metadata,
@@ -96,47 +197,48 @@ def stoploss_instrument_metadata(
                         "display_symbol": match.get("display_symbol"),
                         "market": match.get("market_place"),
                         "currency": match.get("currency"),
+                        "currency_source": match.get("currency_source"),
+                        "currency_verified": match.get("currency_verified"),
+                        "currency_orderbook_id": match.get("currency_orderbook_id"),
+                        "_currency_evidence_token": match.get("_currency_evidence_token"),
+                        "_currency_evidence_payload_sha256": match.get("_currency_evidence_payload_sha256"),
                         "country_code": match.get("country"),
                         "instrument_type": match.get("instrument_type"),
                     },
                 )
         except Exception:
             pass
+    if guide_metadata:
+        metadata = merged_orderbook_metadata(metadata, guide_metadata)
+        if any(
+            conflict.get("type") == "ORDERBOOK_ID_MISMATCH"
+            for conflict in guide_metadata.get("currency_conflicts", [])
+            if isinstance(conflict, dict)
+        ):
+            metadata.pop("_currency_evidence_token", None)
+            metadata.pop("_currency_evidence_payload_sha256", None)
+            metadata["currency_verified"] = False
     return merged_orderbook_metadata(metadata, {})
 
 
 def to_plain_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
+    if type(value) is dict:
         return value
-    if hasattr(value, "model_dump"):
-        try:
-            dumped = value.model_dump()
-        except Exception:
-            dumped = None
-        if isinstance(dumped, dict):
-            return dumped
-    if hasattr(value, "dict"):
-        try:
-            dumped = value.dict()
-        except Exception:
-            dumped = None
-        if isinstance(dumped, dict):
-            return dumped
     return {}
 
 
 def normalize_search_results_payload(results: Any) -> Any:
-    if isinstance(results, list):
+    if type(results) is list:
         normalized: list[Any] = []
         for item in results:
-            if isinstance(item, dict):
+            if type(item) is dict:
                 normalized.append(item)
                 continue
             as_dict = to_plain_dict(item)
             if as_dict:
                 normalized.append(as_dict)
         return normalized
-    if isinstance(results, dict):
+    if type(results) is dict:
         return results
     as_dict = to_plain_dict(results)
     if as_dict:
@@ -146,21 +248,34 @@ def normalize_search_results_payload(results: Any) -> Any:
 
 def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    payload_error = broker_payload_json_error(results)
+    if payload_error is None and type(results) not in {dict, list}:
+        payload_error = {
+            "reason": "INVALID_ROOT_TYPE",
+            "expected": "object_or_array",
+        }
+    if payload_error is not None:
+        failure = _invalid_payload_record(
+            results,
+            "AVANZA_SEARCH_EXPLICIT_CURRENCY",
+            error=payload_error,
+        )
+        return [{_INVALID_SEARCH_PAYLOAD_KEY: failure}]
     normalized = normalize_search_results_payload(results)
 
-    if isinstance(normalized, list):
+    if type(normalized) is list:
         source = normalized
-    elif isinstance(normalized, dict):
+    elif type(normalized) is dict:
         if "hits" in normalized:
             source = normalized.get("hits") or []
         elif "topHits" in normalized:
             source = normalized.get("topHits") or []
         elif "results" in normalized:
             source = normalized.get("results") or []
-        elif any(isinstance(value, list) for value in normalized.values()):
+        elif any(type(value) is list for value in normalized.values()):
             source = []
             for group_name, group_items in normalized.items():
-                if not isinstance(group_items, list):
+                if type(group_items) is not list:
                     continue
                 for raw_item in group_items:
                     item = to_plain_dict(raw_item)
@@ -199,7 +314,7 @@ def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
                 if slug:
                     row["tickerSymbol"] = slug.split("-")[-1].upper()
             price = row.get("price")
-            if isinstance(price, dict):
+            if type(price) is dict:
                 row.setdefault("lastPrice", price.get("last"))
                 row.setdefault("buy", price.get("buy"))
                 row.setdefault("sell", price.get("sell"))
@@ -214,14 +329,8 @@ def flattened_search_hits(results: Any) -> list[dict[str, Any]]:
 
 
 def search_hit_order_book_id(hit: dict[str, Any]) -> str:
-    orderbook = hit.get("orderbook") if isinstance(hit.get("orderbook"), dict) else {}
-    return str(
-        hit.get("id")
-        or hit.get("orderbookId")
-        or hit.get("orderBookId")
-        or orderbook.get("id")
-        or ""
-    )
+    identities = broker_payload_orderbook_ids(hit)
+    return identities[0] if identities else ""
 
 
 def search_hit_name(hit: dict[str, Any]) -> str:
@@ -273,17 +382,28 @@ def search_hit_price(hit: dict[str, Any], key: str) -> float | None:
 
 
 def normalized_search_rows(hits: list[dict[str, Any]], query: str = "") -> list[dict[str, Any]]:
+    invalid_record = _invalid_payload_record(hits, "AVANZA_SEARCH_EXPLICIT_CURRENCY")
+    if invalid_record is not None:
+        return [invalid_record]
+    if (
+        len(hits) == 1
+        and type(hits[0]) is dict
+        and type(hits[0].get(_INVALID_SEARCH_PAYLOAD_KEY)) is dict
+    ):
+        return [dict(hits[0][_INVALID_SEARCH_PAYLOAD_KEY])]
     query_upper = str(query or "").strip().upper()
     rows: list[dict[str, Any]] = []
     for hit in hits:
         if not isinstance(hit, dict):
             continue
         order_book_id = search_hit_order_book_id(hit)
+        observed_orderbook_ids = broker_payload_orderbook_ids(hit)
         name = search_hit_name(hit)
         ticker = search_hit_ticker(hit)
         market_place = str(hit.get("marketPlaceName") or hit.get("market_place") or "").strip()
         country = search_hit_country(hit)
-        currency = str(hit.get("currency") or "").strip().upper() or (infer_currency_from_metadata({"country": country, "market": market_place}) or "")
+        explicit_currency = str(hit.get("currency") or "").strip().upper()
+        currency = explicit_currency or (infer_currency_from_metadata({"country": country, "market": market_place}) or "")
         instrument_type = str(hit.get("instrumentType") or hit.get("subType") or "").strip().upper()
         tradeable, buyable, sellable = search_hit_tradeable_flags(hit)
         last_price = search_hit_price(hit, "lastPrice") or search_hit_price(hit, "last")
@@ -308,6 +428,21 @@ def normalized_search_rows(hits: list[dict[str, Any]], query: str = "") -> list[
                 "market_place": market_place or None,
                 "country": country or None,
                 "currency": currency or None,
+                "currency_source": "AVANZA_SEARCH_EXPLICIT_CURRENCY" if explicit_currency else "MARKET_COUNTRY_INFERENCE" if currency else "UNRESOLVED",
+                "currency_verified": bool(explicit_currency),
+                "currency_orderbook_id": order_book_id if explicit_currency else None,
+                **(
+                    broker_verified_currency_metadata(
+                        currency=explicit_currency,
+                        source="AVANZA_SEARCH_EXPLICIT_CURRENCY",
+                        orderbook_id=order_book_id,
+                        raw_payload=hit,
+                        observed_orderbook_ids=observed_orderbook_ids,
+                        currency_path=(),
+                    )
+                    if explicit_currency
+                    else {}
+                ),
                 "instrument_type": instrument_type or None,
                 "tradeable": tradeable,
                 "buyable": buyable,
@@ -1049,7 +1184,10 @@ def render_transactions_history(
 
 def movers_rows_from_payload(items: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    if not isinstance(items, list):
+    invalid_record = _invalid_payload_record(items, "AVANZA_MOVERS_EXPLICIT_CURRENCY")
+    if invalid_record is not None:
+        return [invalid_record]
+    if type(items) is not list:
         return rows
     for item in items:
         if not isinstance(item, dict):
@@ -1057,17 +1195,26 @@ def movers_rows_from_payload(items: Any) -> list[dict[str, Any]]:
         name = str(item.get("name") or item.get("title") or nested_value(item, "orderbook", "name") or "")
         market = str(item.get("marketPlaceName") or item.get("market") or nested_value(item, "orderbook", "marketPlaceName") or "")
         country = str(item.get("countryCode") or item.get("country") or item.get("flagCode") or "").upper() or None
-        currency = str(item.get("currency") or "").upper() or infer_currency_from_metadata({"country": country, "market": market})
+        raw_currency = str(item.get("currency") or nested_value(item, "orderbook", "currency") or "").strip().upper()
+        currency = raw_currency or infer_currency_from_metadata({"country": country, "market": market})
         ticker = normalize_symbol_candidate(str(item.get("tickerSymbol") or item.get("symbol") or nested_value(item, "orderbook", "symbol") or ""))
+        observed_orderbook_ids = broker_payload_orderbook_ids(item)
+        orderbook_id = observed_orderbook_ids[0] if observed_orderbook_ids else ""
+        currency_metadata = (
+            broker_verified_currency_metadata(
+                currency=raw_currency,
+                source="AVANZA_MOVERS_EXPLICIT_CURRENCY",
+                orderbook_id=orderbook_id,
+                raw_payload=item,
+                observed_orderbook_ids=observed_orderbook_ids,
+                currency_path=() if item.get("currency") else ("orderbook",),
+            )
+            if raw_currency
+            else {}
+        )
         rows.append(
             {
-                "orderbook_id": str(
-                    item.get("orderBookId")
-                    or item.get("orderbookId")
-                    or item.get("id")
-                    or nested_value(item, "orderbook", "id")
-                    or ""
-                ),
+                "orderbook_id": orderbook_id,
                 "name": name,
                 "ticker": ticker or None,
                 "display_symbol": display_symbol(ticker or None, name),
@@ -1075,6 +1222,14 @@ def movers_rows_from_payload(items: Any) -> list[dict[str, Any]]:
                 "country": country,
                 "country_code": country,
                 "currency": currency,
+                "currency_source": (
+                    "AVANZA_MOVERS_EXPLICIT_CURRENCY"
+                    if raw_currency
+                    else "MARKET_COUNTRY_INFERENCE" if currency else "UNRESOLVED"
+                ),
+                "currency_verified": bool(raw_currency),
+                "currency_orderbook_id": orderbook_id if raw_currency else None,
+                **currency_metadata,
                 "instrument_type": str(item.get("instrumentType") or nested_value(item, "orderbook", "instrumentType") or "") or None,
                 "last_price": utils.scalar_number(item.get("lastPrice")) or utils.scalar_number(item.get("last")),
                 "one_day_change_percent": (
@@ -1118,13 +1273,11 @@ def filter_mover_rows(
 
 
 def index_constituent_row(item: dict[str, Any]) -> dict[str, Any]:
-    orderbook_id = str(
-        item.get("orderBookId")
-        or item.get("orderbookId")
-        or item.get("id")
-        or nested_value(item, "orderbook", "id")
-        or ""
-    ).strip()
+    invalid_record = _invalid_payload_record(item, "AVANZA_INDEX_EXPLICIT_CURRENCY")
+    if invalid_record is not None:
+        return invalid_record
+    observed_orderbook_ids = broker_payload_orderbook_ids(item)
+    orderbook_id = observed_orderbook_ids[0] if observed_orderbook_ids else ""
     name = str(item.get("name") or item.get("title") or nested_value(item, "orderbook", "name") or "").strip()
     ticker = normalize_symbol_candidate(str(item.get("tickerSymbol") or item.get("symbol") or "").strip())
     if not ticker:
@@ -1133,6 +1286,20 @@ def index_constituent_row(item: dict[str, Any]) -> dict[str, Any]:
             ticker = normalize_symbol_candidate(slug.split("-")[-1])
     market = str(item.get("marketPlaceName") or item.get("market") or nested_value(item, "orderbook", "marketPlaceName") or "").strip()
     country = str(item.get("countryCode") or item.get("flagCode") or item.get("country") or "").strip().upper() or None
+    raw_currency = str(item.get("currency") or nested_value(item, "orderbook", "currency") or "").strip().upper()
+    currency = raw_currency or infer_currency_from_metadata({"country": country, "market": market})
+    currency_metadata = (
+        broker_verified_currency_metadata(
+            currency=raw_currency,
+            source="AVANZA_INDEX_EXPLICIT_CURRENCY",
+            orderbook_id=orderbook_id,
+            raw_payload=item,
+            observed_orderbook_ids=observed_orderbook_ids,
+            currency_path=() if item.get("currency") else ("orderbook",),
+        )
+        if raw_currency
+        else {}
+    )
     return {
         "name": name,
         "orderbook_id": orderbook_id,
@@ -1147,7 +1314,14 @@ def index_constituent_row(item: dict[str, Any]) -> dict[str, Any]:
         "symbol": ticker or None,
         "display_symbol": display_symbol(ticker, name),
         "market": market or None,
-        "currency": str(item.get("currency") or nested_value(item, "orderbook", "currency") or "").strip().upper()
-        or infer_currency_from_metadata({"country": country, "market": market}),
+        "currency": currency,
+        "currency_source": (
+            "AVANZA_INDEX_EXPLICIT_CURRENCY"
+            if raw_currency
+            else "MARKET_COUNTRY_INFERENCE" if currency else "UNRESOLVED"
+        ),
+        "currency_verified": bool(raw_currency),
+        "currency_orderbook_id": orderbook_id if raw_currency else None,
+        **currency_metadata,
         "instrument_type": str(item.get("instrumentType") or nested_value(item, "orderbook", "instrumentType") or "").strip().upper() or None,
     }

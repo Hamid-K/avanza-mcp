@@ -16,6 +16,7 @@ from avanza_mcp.config import (
     ACCOUNT_READ_CACHE_SECONDS,
     KNOWN_ORDERBOOK_METADATA,
     LIVE_REFRESH_SECONDS,
+    ORDERBOOK_METADATA_FAILURE_RETRY_SECONDS,
     ORDERBOOK_METADATA_REFRESH_SECONDS,
     QUOTE_CACHE_SECONDS,
     QUOTE_REFRESH_COALESCE_SECONDS,
@@ -34,6 +35,8 @@ from avanza_mcp.external.tradingview_data import (
 from avanza_mcp.market_data import (
     STOCKHOLM_TIMEZONE,
     account_performance_summary_from_payload,
+    currency_metadata_evidence,
+    demote_stale_currency_metadata,
     display_symbol,
     infer_country_from_metadata,
     infer_currency_from_metadata,
@@ -2414,7 +2417,19 @@ class CoreSnapshotsMixin:
         rows: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         normalized_fields = [str(field).strip() for field in fields if str(field).strip()] if isinstance(fields, list) else []
-        metadata_fields = {"name", "ticker", "market", "currency", "country", "instrument_type", "display_symbol"}
+        metadata_fields = {
+            "name",
+            "ticker",
+            "market",
+            "currency",
+            "currency_source",
+            "currency_verified",
+            "currency_orderbook_id",
+            "currency_conflicts",
+            "country",
+            "instrument_type",
+            "display_symbol",
+        }
         needs_metadata = not normalized_fields or bool(metadata_fields.intersection(normalized_fields))
         for orderbook_id in ids:
             payload = None
@@ -2440,7 +2455,12 @@ class CoreSnapshotsMixin:
                 row["name"] = row.get("name") or metadata.get("name")
                 row["ticker"] = normalize_symbol_candidate(row.get("ticker") or metadata.get("ticker")) or None
                 row["market"] = row.get("market") or metadata.get("market")
-                row["currency"] = row.get("currency") or metadata.get("currency") or infer_currency_from_metadata(metadata)
+                currency, currency_source, currency_verified = currency_metadata_evidence(metadata)
+                row["currency"] = currency
+                row["currency_source"] = currency_source
+                row["currency_verified"] = currency_verified
+                row["currency_orderbook_id"] = metadata.get("currency_orderbook_id")
+                row["currency_conflicts"] = metadata.get("currency_conflicts", [])
                 row["country"] = metadata.get("country") or metadata.get("country_code") or infer_country_from_metadata(metadata)
                 row["instrument_type"] = metadata.get("instrument_type")
                 row["display_symbol"] = metadata.get("display_symbol") or display_symbol(row.get("ticker"), row.get("name"))
@@ -2473,7 +2493,14 @@ class CoreSnapshotsMixin:
             },
         }
 
-    def _cache_orderbook_metadata(self, orderbook_id: str, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _cache_orderbook_metadata(
+        self,
+        orderbook_id: str,
+        updates: dict[str, Any] | None = None,
+        *,
+        remote_attempted: bool = False,
+        remote_succeeded: bool = False,
+    ) -> dict[str, Any]:
         current = self.orderbook_metadata_by_id.get(orderbook_id, {})
         merged = merged_orderbook_metadata(current, updates or {})
         if not merged.get("name"):
@@ -2482,7 +2509,9 @@ class CoreSnapshotsMixin:
                 merged["name"] = cached_name
         merged["orderbook_id"] = orderbook_id
         self.orderbook_metadata_by_id[orderbook_id] = merged
-        self.orderbook_metadata_checked_at[orderbook_id] = datetime.now()
+        if remote_attempted:
+            self.orderbook_metadata_checked_at[orderbook_id] = datetime.now()
+            self.orderbook_metadata_refresh_succeeded[orderbook_id] = bool(remote_succeeded)
         return merged
 
     def _search_metadata_for_orderbook(self, orderbook_id: str) -> dict[str, Any]:
@@ -2510,6 +2539,11 @@ class CoreSnapshotsMixin:
             "ticker": normalize_symbol_candidate(str(match.get("ticker") or match.get("symbol") or "").strip()) or None,
             "market": str(match.get("market_place") or "").strip() or None,
             "currency": str(match.get("currency") or "").strip() or None,
+            "currency_source": str(match.get("currency_source") or "").strip() or None,
+            "currency_verified": match.get("currency_verified") is True,
+            "currency_orderbook_id": str(match.get("currency_orderbook_id") or "").strip() or None,
+            "_currency_evidence_token": match.get("_currency_evidence_token"),
+            "_currency_evidence_payload_sha256": match.get("_currency_evidence_payload_sha256"),
             "country_code": str(match.get("country") or "").strip() or None,
             "country": str(match.get("country") or "").strip() or None,
             "instrument_type": str(match.get("instrument_type") or "STOCK").strip() or None,
@@ -2522,7 +2556,7 @@ class CoreSnapshotsMixin:
             payload = payload_to_json_safe(avanza_ext.avanza_private_get(self.require_connection(), f"/_api/market-guide/stock/{orderbook_id}", options={}))
         except Exception:
             return {}
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or not payload:
             return {}
         return metadata_from_market_guide_payload(orderbook_id, payload)
 
@@ -2534,49 +2568,108 @@ class CoreSnapshotsMixin:
     ) -> dict[str, Any]:
         now = datetime.now()
         cached = self.orderbook_metadata_by_id.get(orderbook_id, {})
-        known = KNOWN_ORDERBOOK_METADATA.get(orderbook_id, {})
+        known = dict(KNOWN_ORDERBOOK_METADATA.get(orderbook_id, {}))
+        if known.get("currency"):
+            known["currency_source"] = "KNOWN_ORDERBOOK_METADATA"
+            # Static convenience metadata is useful for display and modeled
+            # estimates, but it is not a current broker readback. Keep it
+            # explicitly review-only so it cannot authorize a live monetary
+            # stop when remote guide/search enrichment is unavailable.
+            known["currency_verified"] = False
         checked_at = self.orderbook_metadata_checked_at.get(orderbook_id)
         merged = merged_orderbook_metadata(
             known,
             {"orderbook_id": orderbook_id, "name": self.holding_labels_by_order_book.get(orderbook_id, "")},
         )
         merged = merged_orderbook_metadata(merged, cached)
+        _, _, cached_currency_was_verified = currency_metadata_evidence(merged)
 
         if isinstance(quote_payload, dict):
+            explicit_quote_currency = market_quote_first_text(
+                quote_payload,
+                (("quote", "currency"), ("currency",)),
+            )
+            quote_payload_orderbook_id = market_quote_first_text(
+                quote_payload,
+                (("orderbookId",), ("id",), ("orderbook", "id"), ("orderbook", "orderbookId")),
+            )
             merged = merged_orderbook_metadata(
                 merged,
                 {
                     "name": market_quote_first_text(quote_payload, (("name",), ("orderbook", "name"), ("instrument", "name"))),
                     "ticker": market_quote_first_text(quote_payload, (("ticker",), ("symbol",), ("orderbook", "symbol"))),
                     "market": market_quote_first_text(quote_payload, (("market",), ("marketPlace",), ("marketPlaceName",))),
-                    "currency": market_quote_first_text(quote_payload, (("quote", "currency"), ("currency",))),
+                    "currency": explicit_quote_currency,
+                    "currency_source": "MARKET_DATA_EXPLICIT_CURRENCY" if explicit_quote_currency else None,
+                    "currency_verified": False if explicit_quote_currency else None,
+                    "currency_orderbook_id": quote_payload_orderbook_id or None,
                     "country_code": market_quote_first_text(quote_payload, (("countryCode",), ("country",), ("flagCode",), ("orderbook", "countryCode"))),
                     "instrument_type": market_quote_first_text(quote_payload, (("instrumentType",), ("orderbook", "instrumentType"), ("instrument", "instrumentType"))),
                 },
             )
 
-        missing_core = (
-            not merged.get("name")
-            or not merged.get("ticker")
-            or not merged.get("market")
-            or not merged.get("currency")
-            or not merged.get("country_code")
-            or not merged.get("instrument_type")
+        prior_refresh_succeeded = self.orderbook_metadata_refresh_succeeded.get(orderbook_id, False)
+        refresh_ttl_seconds = (
+            ORDERBOOK_METADATA_REFRESH_SECONDS
+            if prior_refresh_succeeded
+            else ORDERBOOK_METADATA_FAILURE_RETRY_SECONDS
         )
-        stale = checked_at is None or (now - checked_at) > timedelta(seconds=ORDERBOOK_METADATA_REFRESH_SECONDS)
+        stale = checked_at is None or (now - checked_at) > timedelta(seconds=refresh_ttl_seconds)
+        remote_attempted = False
+        remote_succeeded = False
+        currency_demoted = False
         if allow_remote_lookup and stale:
-            merged = merged_orderbook_metadata(merged, self._search_metadata_for_orderbook(orderbook_id))
-            if (
-                not merged.get("name")
-                or not merged.get("ticker")
-                or not merged.get("market")
-                or not merged.get("currency")
-                or not merged.get("country_code")
-                or not merged.get("instrument_type")
-            ):
-                merged = merged_orderbook_metadata(merged, self._market_guide_metadata_for_orderbook(orderbook_id))
+            remote_attempted = True
+            # Market guide is the authoritative currency source, so consult it
+            # first on cold and stale reads. A complete verified guide record
+            # makes the lower-authority search lookup unnecessary.
+            guide_metadata = self._market_guide_metadata_for_orderbook(orderbook_id)
+            merged = merged_orderbook_metadata(merged, guide_metadata)
+            _, guide_currency_source, guide_currency_verified = currency_metadata_evidence(guide_metadata)
+            authoritative_guide_currency = (
+                guide_currency_verified
+                and guide_currency_source
+                in {"MARKET_GUIDE_LISTING_CURRENCY", "MARKET_GUIDE_EXPLICIT_CURRENCY"}
+            )
+            required_core_fields = ("name", "ticker", "market", "country_code", "instrument_type", "currency")
+            guide_complete = authoritative_guide_currency and all(guide_metadata.get(key) for key in required_core_fields)
+            search_metadata: dict[str, Any] = {}
+            if not guide_complete:
+                search_metadata = self._search_metadata_for_orderbook(orderbook_id)
+                merged = merged_orderbook_metadata(merged, search_metadata)
+                # Reapply the already-fetched guide metadata after fallback so
+                # its higher-authority fields always win over search results.
+                merged = merged_orderbook_metadata(merged, guide_metadata)
+            remote_metadata = merged_orderbook_metadata(search_metadata, guide_metadata)
+            _, _, currency_revalidated = currency_metadata_evidence(remote_metadata)
+            guide_identity_conflict = any(
+                conflict.get("type") == "ORDERBOOK_ID_MISMATCH"
+                for conflict in guide_metadata.get("currency_conflicts", [])
+                if isinstance(conflict, dict)
+            )
+            if guide_identity_conflict:
+                currency_revalidated = False
+            remote_succeeded = currency_revalidated and all(
+                remote_metadata.get(key) for key in required_core_fields
+            )
+            if not currency_revalidated and cached_currency_was_verified:
+                merged = demote_stale_currency_metadata(
+                    merged,
+                    reason="CURRENT_GUIDE_AND_SEARCH_REVALIDATION_FAILED",
+                )
+                currency_demoted = True
 
-        return self._cache_orderbook_metadata(orderbook_id, merged)
+        # Only an actual stale remote-enrichment attempt starts a TTL. Complete
+        # verified metadata uses the normal TTL; failures get a short retry TTL.
+        # Non-stale reads and partial cache writes do not slide either forward.
+        if currency_demoted:
+            self.orderbook_metadata_by_id.pop(orderbook_id, None)
+        return self._cache_orderbook_metadata(
+            orderbook_id,
+            merged,
+            remote_attempted=remote_attempted,
+            remote_succeeded=remote_succeeded,
+        )
 
     def stoploss_metadata_for_orderbook(self, order_book_id: str) -> dict[str, Any]:
         quote_payload = self.quote_payload_for_order_book(order_book_id, refresh=False)

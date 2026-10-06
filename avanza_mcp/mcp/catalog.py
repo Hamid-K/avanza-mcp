@@ -1320,7 +1320,7 @@ MCP_TOOLS = [
     },
     {
         "name": "avanza_fee_estimate",
-        "description": "Estimate courtage/FX costs and break-even move for a planned trade (conservative assumptions when exact class data is unavailable).",
+        "description": "Estimate modeled courtage/FX costs and break-even move for a planned trade; reports exactness and provenance and can fail closed when exact fees are required.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1332,6 +1332,11 @@ MCP_TOOLS = [
                 "currency": {"type": "string"},
                 "market": {"type": "string"},
                 "brokerage_class": {"type": "string"},
+                "require_exact": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Reject the request unless the result is backed by an exact broker fee preview or tariff readback.",
+                },
             },
             "required": ["account_id", "orderbook_id", "side", "price", "quantity"],
             "additionalProperties": False,

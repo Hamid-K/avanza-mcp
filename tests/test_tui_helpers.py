@@ -131,6 +131,31 @@ def test_stoploss_request_uses_instrument_currency_for_monetary_prices():
     assert "Order: BUY 2 @ 96.0 USD" in lines
 
 
+def test_stoploss_request_never_labels_unknown_monetary_values_as_sek():
+    lines = format_stop_loss_request(
+        {
+            "account_id": "acc-1",
+            "order_book_id": "ob-unknown",
+            "stop_loss_trigger": {
+                "type": "LESS_OR_EQUAL",
+                "value": 95.5,
+                "value_type": "MONETARY",
+                "valid_until": TEST_VALID_UNTIL,
+            },
+            "stop_loss_order_event": {
+                "type": "SELL",
+                "volume": 2,
+                "price": 95.0,
+                "price_type": "MONETARY",
+                "valid_days": 1,
+            },
+        }
+    )
+    assert "Trigger: LESS_OR_EQUAL 95.5 UNKNOWN" in lines
+    assert "Order: SELL 2 @ 95.0 UNKNOWN" in lines
+    assert not any("SEK" in line for line in lines)
+
+
 def test_flattened_search_hits_accepts_avanza_list_shape():
     hits = flattened_search_hits(
         [

@@ -96,6 +96,7 @@ class TradingKernel(
         self.quote_payload_checked_at: dict[str, datetime] = {}
         self.orderbook_metadata_by_id: dict[str, dict[str, Any]] = {}
         self.orderbook_metadata_checked_at: dict[str, datetime] = {}
+        self.orderbook_metadata_refresh_succeeded: dict[str, bool] = {}
         self.live_refresh_thread: threading.Thread | None = None
         self.live_refresh_inflight = False
         self.live_refresh_pending = False

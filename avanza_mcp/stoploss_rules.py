@@ -4,7 +4,11 @@ from datetime import date, timedelta
 from typing import Any
 
 from avanza_mcp.config import VALID_UNTIL_MAX_DAYS
-from avanza_mcp.market_data import infer_currency_from_metadata, merged_orderbook_metadata
+from avanza_mcp.market_data import (
+    currency_metadata_evidence,
+    infer_currency_from_metadata,
+    merged_orderbook_metadata,
+)
 
 def max_valid_until_date(reference: date | None = None) -> date:
     base = reference or date.today()
@@ -36,6 +40,45 @@ def normalize_stoploss_order_valid_days(value: Any, label: str = "Order valid da
 def stoploss_triggered_order_expiry(valid_days: int, reference: date | None = None) -> str:
     base = reference or date.today()
     return (base + timedelta(days=normalize_stoploss_order_valid_days(valid_days))).isoformat()
+
+
+def enforce_stoploss_currency_safety(
+    preview: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+    *,
+    live: bool,
+) -> list[str]:
+    merged = merged_orderbook_metadata(metadata or {}, {})
+    currency, currency_source, currency_verified = currency_metadata_evidence(merged)
+    preview["currency"] = currency
+    preview["currency_source"] = currency_source
+    preview["currency_verified"] = currency_verified
+    preview["currency_orderbook_id"] = merged.get("currency_orderbook_id")
+    preview["currency_conflicts"] = list(merged.get("currency_conflicts") or [])
+
+    trigger = preview.get("stop_loss_trigger") if isinstance(preview.get("stop_loss_trigger"), dict) else {}
+    order_event = preview.get("stop_loss_order_event") if isinstance(preview.get("stop_loss_order_event"), dict) else {}
+    monetary = any(
+        str(value).strip().upper() == "MONETARY"
+        for value in (trigger.get("value_type"), order_event.get("price_type"))
+    )
+    if not monetary or (currency and currency_verified):
+        return []
+
+    order_book_id = str(preview.get("order_book_id") or merged.get("orderbook_id") or "instrument").strip()
+    if currency:
+        warning = (
+            f"{order_book_id}: instrument currency {currency} is unverified "
+            f"({currency_source}); monetary stop values cannot be interpreted safely."
+        )
+    else:
+        warning = (
+            f"{order_book_id}: instrument currency is unresolved; monetary "
+            "stop values cannot be interpreted safely."
+        )
+    if live:
+        raise ValueError(warning)
+    return [warning]
 
 
 def stoploss_order_valid_days_warnings(

@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import tomllib
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 TEST_VALID_UNTIL = (date.today() + timedelta(days=7)).isoformat()
 from pathlib import Path
@@ -20,7 +20,7 @@ from textual import events
 from textual.geometry import Size
 from textual.widgets import Button, DataTable, Input, Select, Static
 
-from avanza.constants import OrderType, Resolution, StopLossPriceType, TimePeriod, TransactionsDetailsType
+from avanza.constants import OrderType, Resolution, Route, StopLossPriceType, TimePeriod, TransactionsDetailsType
 from rich.text import Text
 
 from avanza_mcp.cli import build_parser
@@ -46,6 +46,11 @@ def isolate_runtime_files(monkeypatch, tmp_path):
     monkeypatch.setenv("AVANZA_MCP_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_TV_SESSION_BACKEND", "file")
     monkeypatch.setenv("AVANZA_UPDATE_CHECK_ENABLED", "0")
+
+
+def test_avanza_regular_order_routes_match_reviewed_upstream_fix():
+    assert Route.ORDER_PLACE_PATH.value == "/_api/trading/order-entry/order/new"
+    assert Route.ORDER_DELETE_PATH.value == "/_api/trading/order-entry/order/delete"
 
 
 def test_parse_date_accepts_iso_date():
@@ -1241,6 +1246,7 @@ def test_mcp_live_stoploss_rejects_foreign_order_valid_days_above_one():
     class FakeAvanza:
         def get_market_data(self, _order_book_id):
             return {
+                "orderbookId": "4478",
                 "quote": {"last": 198.5, "buy": 198.4, "sell": 198.6, "currency": "USD"},
                 "marketPlaceName": "NASDAQ",
                 "countryCode": "US",
@@ -2946,6 +2952,10 @@ def test_mcp_market_movers_uses_avanza_endpoint_and_filters(monkeypatch):
     )
     assert result["numberOfGainers"] == 2
     assert result["gainers"][0]["name"] == "HANZA"
+    assert result["gainers"][0]["currency_source"] == "AVANZA_MOVERS_EXPLICIT_CURRENCY"
+    assert result["gainers"][0]["currency_verified"] is True
+    assert app.orderbook_metadata_by_id["1"]["currency_source"] == "AVANZA_MOVERS_EXPLICIT_CURRENCY"
+    assert app.orderbook_metadata_by_id["1"]["currency_verified"] is True
     assert all(float(item["total_value_traded"] or 0.0) >= 1_000_000 for item in result["gainers"])
     assert result["losers"][0]["orderbook_id"] == "3"
     assert "filter_options" in result
@@ -2996,6 +3006,7 @@ def test_mcp_index_constituents_omxs30_shape(monkeypatch):
             "orderBookId": str(1000 + index),
             "name": f"Stock {index}",
             "countryCode": "SE",
+            "currency": "SEK" if index == 1 else None,
             "changePercent": index / 10.0,
             "tickerSymbol": f"S{index}",
         }
@@ -3020,6 +3031,10 @@ def test_mcp_index_constituents_omxs30_shape(monkeypatch):
     assert first["name"] == "Stock 1"
     assert first["country_code"] == "SE"
     assert first["ticker"] == "S1"
+    assert first["currency_source"] == "AVANZA_INDEX_EXPLICIT_CURRENCY"
+    assert first["currency_verified"] is True
+    assert app.orderbook_metadata_by_id["1001"]["currency_source"] == "AVANZA_INDEX_EXPLICIT_CURRENCY"
+    assert app.orderbook_metadata_by_id["1001"]["currency_verified"] is True
 
 
 def test_mcp_index_constituents_include_quotes_and_spread(monkeypatch):
@@ -3091,6 +3106,1648 @@ def test_mcp_search_stock_normalizes_last_price_scale_to_bid_ask():
         assert first["ask"] is not None
         mid = (first["bid"] + first["ask"]) / 2.0
         assert first["last_price"] == pytest.approx(mid, rel=0.02)
+
+
+def test_mcp_airbus_currency_uses_authoritative_market_guide_listing(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, _query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "name": "Airbus SE (AIR)",
+                        "tickerSymbol": "AIR",
+                        "id": "745811",
+                        "marketPlaceName": "Euronext Paris",
+                        "countryCode": "FR",
+                        "instrumentType": "stock",
+                    }
+                ]
+            }
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 189.08, "buy": 188.7, "sell": 190.0}}
+
+    def fake_private_get(_avanza, path, options=None):
+        assert path == "/_api/market-guide/stock/745811"
+        assert options == {}
+        return {
+            "orderbookId": "745811",
+            "name": "Airbus SE",
+            "type": "STOCK",
+            "listing": {
+                "tickerSymbol": "AIR",
+                "countryCode": "FR",
+                "currency": "EUR",
+                "marketPlaceName": "Euronext Paris",
+            },
+        }
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    search = app.execute_mcp_tool("avanza_search_stock", {"query": "Airbus", "limit": 5})
+    assert search["results"][0]["currency"] == "EUR"
+    assert search["results"][0]["currency_source"] == "MARKET_GUIDE_LISTING_CURRENCY"
+    assert search["results"][0]["currency_verified"] is True
+    quote = app.execute_mcp_tool(
+        "avanza_orderbook_quotes",
+        {"orderbook_ids": ["745811"], "refresh": False},
+    )["quotes"][0]
+    assert quote["currency"] == "EUR"
+    assert quote["currency_source"] == "MARKET_GUIDE_LISTING_CURRENCY"
+    assert quote["currency_verified"] is True
+
+
+def test_mcp_monetary_stop_fails_closed_when_currency_is_unresolved(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.0, "sell": 101.0}}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    preview = {
+        "account_id": "acc-1",
+        "order_book_id": "ob-unknown",
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY", "valid_days": 1},
+    }
+
+    warnings = app.apply_stoploss_valid_days_safety(preview, live=False)
+    assert preview.get("currency") is None
+    assert any("cannot be interpreted safely" in warning for warning in warnings)
+    with pytest.raises(ValueError, match="currency is unresolved"):
+        app.apply_stoploss_valid_days_safety(preview, live=True)
+
+
+def test_mcp_monetary_stop_rejects_heuristic_only_currency(monkeypatch):
+    from avanza_mcp.market_data import merged_orderbook_metadata
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, _order_book_id):
+            return {
+                "marketPlaceName": "NASDAQ",
+                "countryCode": "US",
+                "quote": {"last": 100.0, "buy": 99.0, "sell": 101.0},
+            }
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.orderbook_metadata_by_id["ob-heuristic"] = merged_orderbook_metadata(
+        {},
+        {"orderbook_id": "ob-heuristic", "market": "NASDAQ", "country_code": "US"},
+    )
+    app.orderbook_metadata_checked_at["ob-heuristic"] = datetime.now()
+    preview = {
+        "account_id": "acc-1",
+        "order_book_id": "ob-heuristic",
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY", "valid_days": 1},
+    }
+
+    with pytest.raises(ValueError, match="USD is unverified.*MARKET_COUNTRY_INFERENCE"):
+        app.apply_stoploss_valid_days_safety(preview, live=True)
+    assert preview["currency"] == "USD"
+    assert preview["currency_source"] == "MARKET_COUNTRY_INFERENCE"
+    assert preview["currency_verified"] is False
+
+
+def _static_currency_failure_avanza():
+    class FakeAvanza:
+        def __init__(self):
+            self.placed = 0
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.0, "sell": 101.0}}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+        def place_stop_loss_order(self, **_kwargs):
+            self.placed += 1
+            return {"stoplossOrderId": "must-not-place"}
+
+    return FakeAvanza()
+
+
+def _static_currency_monetary_stop_fields(*, confirm: bool = False) -> dict[str, Any]:
+    return {
+        "account_id": "acc-1",
+        "order_book_id": "5269",
+        "trigger_type": "less-or-equal",
+        "trigger_value": 95,
+        "trigger_value_type": "monetary",
+        "valid_until": TEST_VALID_UNTIL,
+        "order_type": "sell",
+        "order_price": 94,
+        "order_price_type": "monetary",
+        "volume": 2,
+        "order_valid_days": 1,
+        "strategy_intent": "PROFIT_PROTECTION",
+        "strategy_reason": "Regression guard for static currency provenance.",
+        "confirm": confirm,
+    }
+
+
+def test_mcp_live_monetary_stop_rejects_static_known_currency_without_remote_readback(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    fake = _static_currency_failure_avanza()
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    app = AvanzaTradingTui()
+    app.avanza = fake
+    monkeypatch.setattr(app, "require_mcp_write", lambda _confirmed: None)
+
+    with pytest.raises(ValueError, match="SEK is unverified.*KNOWN_ORDERBOOK_METADATA"):
+        app.execute_mcp_tool(
+            "avanza_stoploss_set",
+            _static_currency_monetary_stop_fields(confirm=True),
+        )
+    assert fake.placed == 0
+
+
+def test_tui_live_submit_rejects_static_known_currency_without_remote_readback(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    fake = _static_currency_failure_avanza()
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    app = AvanzaTradingTui()
+    app.avanza = fake
+    monkeypatch.setattr(app, "ensure_stoploss_strategy_registry_writable", lambda: None)
+    trigger, order_event, preview = build_stop_loss_preview(
+        _static_currency_monetary_stop_fields()
+    )
+
+    with pytest.raises(ValueError, match="SEK is unverified.*KNOWN_ORDERBOOK_METADATA"):
+        app.submit_live_stop_loss(trigger, order_event, preview, source="tui")
+    assert fake.placed == 0
+
+
+def test_authoritative_market_guide_currency_overrides_inference():
+    from avanza_mcp.market_data import metadata_from_market_guide_payload, merged_orderbook_metadata
+
+    inferred = merged_orderbook_metadata(
+        {},
+        {"orderbook_id": "745811", "market": "NASDAQ", "country_code": "US"},
+    )
+    assert inferred["currency"] == "USD"
+    assert inferred["currency_verified"] is False
+
+    authoritative = metadata_from_market_guide_payload(
+        "745811",
+        {
+            "orderbookId": "745811",
+            "currency": "EUR",
+            "listing": {
+                "currency": "EUR",
+                "marketPlaceName": "NASDAQ",
+                "countryCode": "US",
+            },
+        },
+    )
+    merged = merged_orderbook_metadata(inferred, authoritative)
+    assert merged["currency"] == "EUR"
+    assert merged["currency_source"] == "MARKET_GUIDE_LISTING_CURRENCY"
+    assert merged["currency_verified"] is True
+
+
+def test_currency_without_provenance_is_unverified():
+    from avanza_mcp.market_data import currency_metadata_evidence, merged_orderbook_metadata
+
+    assert currency_metadata_evidence({"currency": "EUR"}) == (
+        "EUR",
+        "UNSPECIFIED_METADATA_CURRENCY",
+        False,
+    )
+    merged = merged_orderbook_metadata({}, {"currency": "EUR"})
+    assert merged["currency"] == "EUR"
+    assert merged["currency_source"] == "UNSPECIFIED_METADATA_CURRENCY"
+    assert merged["currency_verified"] is False
+
+
+def test_currency_verified_requires_literal_true_allowlisted_source_and_orderbook_parity():
+    from avanza_mcp.market_data import broker_verified_currency_metadata, currency_metadata_evidence
+
+    base = {
+        "orderbook_id": "ob-proof",
+        "currency": "EUR",
+        "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+        "currency_orderbook_id": "ob-proof",
+    }
+    assert currency_metadata_evidence({**base, "currency_verified": "false"}) == (
+        "EUR",
+        "MARKET_GUIDE_LISTING_CURRENCY",
+        False,
+    )
+    minted = broker_verified_currency_metadata(
+        currency="EUR",
+        source="MARKET_GUIDE_LISTING_CURRENCY",
+        orderbook_id="ob-proof",
+        raw_payload={"orderbookId": "ob-proof", "listing": {"currency": "EUR"}},
+        observed_orderbook_ids=["ob-proof"],
+    )
+    assert currency_metadata_evidence(
+        {"orderbook_id": "ob-proof", **minted, "currency_verified": "false"}
+    ) == ("EUR", "MARKET_GUIDE_LISTING_CURRENCY", False)
+    assert currency_metadata_evidence({**base, "currency_verified": True, "currency_source": "FORGED"}) == (
+        "EUR",
+        "FORGED",
+        False,
+    )
+    assert currency_metadata_evidence({**base, "currency_verified": True, "currency_orderbook_id": "ob-other"}) == (
+        "EUR",
+        "MARKET_GUIDE_LISTING_CURRENCY",
+        False,
+    )
+
+
+def test_plain_dict_cannot_self_assert_verified_broker_currency():
+    from avanza_mcp.market_data import currency_metadata_evidence
+
+    assert currency_metadata_evidence(
+        {
+            "orderbook_id": "ob-forged",
+            "currency": "EUR",
+            "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+            "currency_verified": True,
+            "currency_orderbook_id": "ob-forged",
+        }
+    ) == ("EUR", "MARKET_GUIDE_LISTING_CURRENCY", False)
+    assert currency_metadata_evidence(
+        {
+            "orderbook_id": "ob-forged",
+            "currency": "EUR",
+            "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+            "currency_verified": True,
+            "currency_orderbook_id": "ob-forged",
+            "_currency_evidence_payload_sha256": "a" * 64,
+            "_currency_evidence_token": "b" * 64,
+        }
+    ) == ("EUR", "MARKET_GUIDE_LISTING_CURRENCY", False)
+
+
+def test_invalid_currency_code_is_unresolved_and_surfaced():
+    from avanza_mcp.market_data import merged_orderbook_metadata
+
+    merged = merged_orderbook_metadata(
+        {},
+        {
+            "orderbook_id": "ob-invalid",
+            "currency": "NOT_A_CURRENCY",
+            "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+            "currency_verified": True,
+            "currency_orderbook_id": "ob-invalid",
+        },
+    )
+
+    assert merged.get("currency") is None
+    assert merged["currency_verified"] is False
+    assert merged["currency_source"] == "UNRESOLVED"
+    assert {item["type"] for item in merged["currency_conflicts"]} == {"INVALID_CURRENCY_CODE"}
+
+
+def test_market_guide_rejects_raw_orderbook_identity_mismatch():
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+
+    metadata = metadata_from_market_guide_payload(
+        "ob-requested",
+        {
+            "orderbookId": "ob-foreign",
+            "name": "Wrong Listing",
+            "listing": {"currency": "EUR"},
+        },
+    )
+
+    assert metadata["currency"] == "EUR"
+    assert metadata["currency_verified"] is False
+    assert metadata["currency_orderbook_id"] == "ob-foreign"
+    assert metadata["currency_conflicts"] == [
+        {
+            "type": "ORDERBOOK_ID_MISMATCH",
+            "requested_orderbook_id": "ob-requested",
+            "payload_orderbook_ids": ["ob-foreign"],
+            "source": "MARKET_GUIDE_LISTING_CURRENCY",
+        }
+    ]
+
+
+def test_market_guide_rejects_nested_listing_id_mismatch_even_when_top_level_matches():
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+
+    metadata = metadata_from_market_guide_payload(
+        "ob-requested",
+        {
+            "orderbookId": "ob-requested",
+            "name": "Conflicted Listing",
+            "listing": {"orderbookId": "ob-foreign", "currency": "EUR"},
+        },
+    )
+
+    assert metadata["currency"] == "EUR"
+    assert metadata["currency_verified"] is False
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == [
+        "ob-requested",
+        "ob-foreign",
+    ]
+
+
+def _assert_conflicted_currency_rejected_by_live_guard(
+    metadata,
+    orderbook_id,
+    expected_conflict="ORDERBOOK_ID_MISMATCH",
+):
+    from avanza_mcp.stoploss_rules import enforce_stoploss_currency_safety
+
+    assert metadata["currency_verified"] is False
+    assert any(item["type"] == expected_conflict for item in metadata["currency_conflicts"])
+    preview = {
+        "order_book_id": orderbook_id,
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY"},
+    }
+    with pytest.raises(ValueError, match="is unverified|is unresolved"):
+        enforce_stoploss_currency_safety(preview, metadata, live=True)
+
+
+def test_market_guide_rejects_foreign_stock_orderbook_when_top_level_matches():
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+
+    metadata = metadata_from_market_guide_payload(
+        "ob-requested",
+        {
+            "orderbookId": "ob-requested",
+            "stock": {"orderbookId": "ob-foreign"},
+            "listing": {"currency": "EUR"},
+        },
+    )
+
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == ["ob-requested", "ob-foreign"]
+    _assert_conflicted_currency_rejected_by_live_guard(metadata, "ob-requested")
+
+
+def test_market_data_rejects_foreign_nested_orderbook_when_top_level_matches(monkeypatch):
+    from avanza_mcp.records import stoploss_instrument_metadata
+
+    class FakeAvanza:
+        def get_market_data(self, _orderbook_id):
+            return {
+                "orderbookId": "ob-requested",
+                "orderbook": {"id": "ob-foreign"},
+                "quote": {"currency": "EUR", "last": 100.0},
+            }
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    metadata = stoploss_instrument_metadata(FakeAvanza(), "ob-requested")
+
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == ["ob-requested", "ob-foreign"]
+    _assert_conflicted_currency_rejected_by_live_guard(metadata, "ob-requested")
+
+
+def test_search_rejects_foreign_nested_orderbook_when_top_level_matches():
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata = normalized_search_rows(
+        [{
+            "id": "ob-requested",
+            "orderbook": {"orderbookId": "ob-foreign"},
+            "name": "Conflicted Search",
+            "currency": "EUR",
+        }]
+    )[0]
+
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == ["ob-requested", "ob-foreign"]
+    _assert_conflicted_currency_rejected_by_live_guard(metadata, "ob-requested")
+
+
+@pytest.mark.parametrize("adapter", ["movers", "index"])
+def test_mover_and_index_reject_foreign_nested_orderbook_when_top_level_matches(adapter):
+    from avanza_mcp.records import index_constituent_row, movers_rows_from_payload
+
+    payload = {
+        "orderBookId": "ob-requested",
+        "orderbook": {"id": "ob-foreign", "currency": "EUR"},
+        "name": "Conflicted Market Row",
+        "currency": "EUR",
+    }
+    metadata = movers_rows_from_payload([payload])[0] if adapter == "movers" else index_constituent_row(payload)
+
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == ["ob-requested", "ob-foreign"]
+    _assert_conflicted_currency_rejected_by_live_guard(metadata, "ob-requested")
+
+
+@pytest.mark.parametrize(
+    "conflict_type",
+    [
+        "ORDERBOOK_ID_MISMATCH",
+        "ORDERBOOK_IDENTITY_TRAVERSAL_LIMIT",
+        "CURRENCY_BRANCH_UNBOUND",
+        "CURRENCY_BRANCH_AMBIGUOUS",
+        "CURRENCY_CROSS_BRANCH_CONFLICT",
+        "CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+        "CURRENCY_EVIDENCE_SERIALIZATION_FAILED",
+    ],
+)
+def test_identity_conflict_demotes_previously_verified_currency_tuple(conflict_type):
+    from avanza_mcp.market_data import broker_verified_currency_metadata, merged_orderbook_metadata
+
+    verified = {
+        "orderbook_id": "ob-requested",
+        **broker_verified_currency_metadata(
+            currency="EUR",
+            source="MARKET_GUIDE_LISTING_CURRENCY",
+            orderbook_id="ob-requested",
+            raw_payload={"orderbookId": "ob-requested", "listing": {"currency": "EUR"}},
+            observed_orderbook_ids=["ob-requested"],
+        ),
+    }
+    conflicted = merged_orderbook_metadata(
+        verified,
+        {
+            "orderbook_id": "ob-requested",
+            "currency": "EUR",
+            "currency_source": "MARKET_DATA_EXPLICIT_CURRENCY",
+            "currency_verified": False,
+            "currency_orderbook_id": "ob-requested",
+            "currency_conflicts": [{
+                "type": conflict_type,
+                "requested_orderbook_id": "ob-requested",
+                "payload_orderbook_ids": ["ob-requested", "ob-foreign"],
+                "source": "MARKET_DATA_EXPLICIT_CURRENCY",
+            }],
+        },
+    )
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        conflicted,
+        "ob-requested",
+        expected_conflict=conflict_type,
+    )
+
+
+@pytest.mark.parametrize("adapter", ["guide", "market", "search", "movers", "index"])
+def test_deep_relation_orderbook_identity_conflict_fails_closed(monkeypatch, adapter):
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+    from avanza_mcp.records import (
+        index_constituent_row,
+        movers_rows_from_payload,
+        normalized_search_rows,
+        stoploss_instrument_metadata,
+    )
+
+    if adapter == "guide":
+        metadata = metadata_from_market_guide_payload(
+            "ob-requested",
+            {
+                "orderbookId": "ob-requested",
+                "stock": {"security": {"orderbookId": "ob-foreign"}},
+                "listing": {"currency": "EUR"},
+            },
+        )
+    elif adapter == "market":
+        class FakeAvanza:
+            def get_market_data(self, _orderbook_id):
+                return {
+                    "orderbookId": "ob-requested",
+                    "quote": {
+                        "currency": "EUR",
+                        "security": {"orderbookId": "ob-foreign"},
+                    },
+                }
+
+            def search_for_stock(self, _query, _limit):
+                return {"stocks": []}
+
+        monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+        metadata = stoploss_instrument_metadata(FakeAvanza(), "ob-requested")
+    elif adapter == "search":
+        metadata = normalized_search_rows([{
+            "orderbookId": "ob-requested",
+            "currency": "EUR",
+            "stock": {"security": {"orderbookId": "ob-foreign"}},
+        }])[0]
+    else:
+        payload = {
+            "orderbookId": "ob-requested",
+            "currency": "EUR",
+            "orderbook": {"security": {"orderbookId": "ob-foreign"}},
+        }
+        metadata = movers_rows_from_payload([payload])[0] if adapter == "movers" else index_constituent_row(payload)
+
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == ["ob-requested", "ob-foreign"]
+    _assert_conflicted_currency_rejected_by_live_guard(metadata, "ob-requested")
+
+
+@pytest.mark.parametrize(
+    "nested",
+    [
+        {"stock": [{"orderbookId": "ob-foreign"}]},
+        {"stock": [{"OrderBookId": "ob-foreign"}]},
+    ],
+)
+def test_list_and_key_case_orderbook_identity_conflicts_fail_closed(nested):
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata = normalized_search_rows([{
+        "OrderBookId": "ob-requested",
+        "currency": "EUR",
+        **nested,
+    }])[0]
+
+    assert metadata["currency_conflicts"][0]["payload_orderbook_ids"] == ["ob-requested", "ob-foreign"]
+    _assert_conflicted_currency_rejected_by_live_guard(metadata, "ob-requested")
+
+
+def test_unrelated_stock_generic_id_is_not_an_orderbook_mismatch():
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+
+    metadata = metadata_from_market_guide_payload(
+        "ob-requested",
+        {
+            "orderbookId": "ob-requested",
+            "stock": {"id": "stock-record-id"},
+            "listing": {"id": "listing-record-id", "currency": "EUR"},
+        },
+    )
+
+    assert metadata["currency_verified"] is True
+    assert not any(item["type"] == "ORDERBOOK_ID_MISMATCH" for item in metadata["currency_conflicts"])
+
+
+@pytest.mark.parametrize("limit_kind", ["depth", "nodes"])
+def test_orderbook_identity_traversal_bounds_fail_closed(limit_kind):
+    from avanza_mcp.records import normalized_search_rows
+
+    payload = {"orderbookId": "ob-requested", "currency": "EUR"}
+    if limit_kind == "depth":
+        branch = payload
+        for _ in range(12):
+            branch["security"] = {}
+            branch = branch["security"]
+    else:
+        payload["stock"] = [{"name": f"row-{index}"} for index in range(300)]
+
+    metadata = normalized_search_rows([payload])[0]
+
+    assert metadata["currency_verified"] is False
+    assert any(item["type"] == "ORDERBOOK_IDENTITY_TRAVERSAL_LIMIT" for item in metadata["currency_conflicts"])
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="ORDERBOOK_IDENTITY_TRAVERSAL_LIMIT",
+    )
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        "search_root",
+        "market_quote",
+        "guide_listing",
+        "movers_root",
+        "movers_orderbook",
+        "index_root",
+        "index_orderbook",
+    ],
+)
+def test_duplicate_case_currency_at_selected_branch_is_ambiguous(monkeypatch, adapter):
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+    from avanza_mcp.records import (
+        index_constituent_row,
+        movers_rows_from_payload,
+        normalized_search_rows,
+        stoploss_instrument_metadata,
+    )
+
+    if adapter == "search_root":
+        metadata = normalized_search_rows([{
+            "orderbookId": "ob-requested",
+            "currency": "EUR",
+            "Currency": "USD",
+        }])[0]
+    elif adapter == "market_quote":
+        class FakeAvanza:
+            def get_market_data(self, _orderbook_id):
+                return {
+                    "orderbookId": "ob-requested",
+                    "quote": {"currency": "EUR", "Currency": "USD"},
+                }
+
+            def search_for_stock(self, _query, _limit):
+                return {"stocks": []}
+
+        monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+        metadata = stoploss_instrument_metadata(FakeAvanza(), "ob-requested")
+    elif adapter == "guide_listing":
+        metadata = metadata_from_market_guide_payload(
+            "ob-requested",
+            {
+                "orderbookId": "ob-requested",
+                "listing": {"currency": "EUR", "Currency": "USD"},
+            },
+        )
+    else:
+        nested = adapter.endswith("orderbook")
+        payload = {"orderbookId": "ob-requested"}
+        target = {"currency": "EUR", "Currency": "USD"}
+        if nested:
+            payload["orderbook"] = target
+        else:
+            payload.update(target)
+        metadata = (
+            movers_rows_from_payload([payload])[0]
+            if adapter.startswith("movers")
+            else index_constituent_row(payload)
+        )
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_BRANCH_AMBIGUOUS",
+    )
+
+
+@pytest.mark.parametrize("adapter", ["guide", "market", "search", "movers", "index"])
+def test_cross_branch_currency_conflict_fails_closed(monkeypatch, adapter):
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+    from avanza_mcp.records import (
+        index_constituent_row,
+        movers_rows_from_payload,
+        normalized_search_rows,
+        stoploss_instrument_metadata,
+    )
+
+    if adapter == "guide":
+        metadata = metadata_from_market_guide_payload(
+            "ob-requested",
+            {
+                "orderbookId": "ob-requested",
+                "listing": {"currency": "EUR", "orderbookId": "ob-requested"},
+                "quote": {"currency": "USD", "orderbookId": "ob-requested"},
+            },
+        )
+    elif adapter == "market":
+        class FakeAvanza:
+            def get_market_data(self, _orderbook_id):
+                return {
+                    "orderbookId": "ob-requested",
+                    "currency": "USD",
+                    "quote": {"currency": "EUR", "orderbookId": "ob-requested"},
+                }
+
+            def search_for_stock(self, _query, _limit):
+                return {"stocks": []}
+
+        monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+        metadata = stoploss_instrument_metadata(FakeAvanza(), "ob-requested")
+    elif adapter == "search":
+        metadata = normalized_search_rows([{
+            "orderbookId": "ob-requested",
+            "currency": "EUR",
+            "quote": {"currency": "USD", "orderbookId": "ob-requested"},
+        }])[0]
+    else:
+        payload = {
+            "orderbookId": "ob-requested",
+            "currency": "EUR",
+            "orderbook": {"currency": "USD", "id": "ob-requested"},
+        }
+        metadata = (
+            movers_rows_from_payload([payload])[0]
+            if adapter == "movers"
+            else index_constituent_row(payload)
+        )
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_CROSS_BRANCH_CONFLICT",
+    )
+
+
+def test_same_currency_across_distinct_pinned_branches_is_allowed():
+    from avanza_mcp.market_data import metadata_from_market_guide_payload
+
+    metadata = metadata_from_market_guide_payload(
+        "ob-requested",
+        {
+            "orderbookId": "ob-requested",
+            "listing": {"currency": "EUR", "orderbookId": "ob-requested"},
+            "quote": {"currency": "EUR", "orderbookId": "ob-requested"},
+        },
+    )
+
+    assert metadata["currency_verified"] is True
+    assert not any(
+        item["type"] == "CURRENCY_CROSS_BRANCH_CONFLICT"
+        for item in metadata["currency_conflicts"]
+    )
+
+
+def test_untraversed_cycle_non_json_failure_is_fatal():
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata_branch = {}
+    metadata_branch["self"] = metadata_branch
+    metadata = normalized_search_rows([{
+        "orderbookId": "ob-requested",
+        "currency": "EUR",
+        "metadata": metadata_branch,
+    }])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+class _ExplosiveStringObject:
+    def __str__(self):
+        raise RuntimeError("must not stringify untrusted payload objects")
+
+    def __bool__(self):
+        raise RuntimeError("must not test untrusted payload truthiness")
+
+
+class _ExplosiveDict(dict):
+    def get(self, *_args, **_kwargs):
+        raise RuntimeError("must not access untrusted mapping subclasses")
+
+    def items(self):
+        raise RuntimeError("must not iterate untrusted mapping subclasses")
+
+    def __bool__(self):
+        raise RuntimeError("must not test untrusted mapping truthiness")
+
+
+class _ExplosiveList(list):
+    def __iter__(self):
+        raise RuntimeError("must not iterate untrusted list subclasses")
+
+    def __bool__(self):
+        raise RuntimeError("must not test untrusted list truthiness")
+
+
+@pytest.mark.parametrize("recognized_branch", [False, True])
+def test_custom_object_payload_is_rejected_without_stringification(recognized_branch):
+    from avanza_mcp.records import normalized_search_rows
+
+    payload = {"orderbookId": "ob-requested", "currency": "EUR"}
+    if recognized_branch:
+        payload["quote"] = {"metadata": _ExplosiveStringObject()}
+    else:
+        payload["metadata"] = _ExplosiveStringObject()
+
+    metadata = normalized_search_rows([payload])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+@pytest.mark.parametrize("invalid_value", [b"bytes", {"set"}, ("tuple",)])
+def test_non_json_container_values_fail_closed(invalid_value):
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata = normalized_search_rows([{
+        "orderbookId": "ob-requested",
+        "currency": "EUR",
+        "metadata": invalid_value,
+    }])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_non_string_object_key_fails_closed():
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata = normalized_search_rows([{
+        "orderbookId": "ob-requested",
+        "currency": "EUR",
+        "metadata": {1: "invalid-key"},
+    }])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+@pytest.mark.parametrize("invalid_number", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_number_fails_closed(invalid_number):
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata = normalized_search_rows([{
+        "orderbookId": "ob-requested",
+        "currency": "EUR",
+        "metadata": {"number": invalid_number},
+    }])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+@pytest.mark.parametrize("limit_kind", ["depth", "nodes"])
+def test_full_raw_json_validation_bounds_fail_closed(limit_kind):
+    from avanza_mcp.records import normalized_search_rows
+
+    payload = {"orderbookId": "ob-requested", "currency": "EUR"}
+    if limit_kind == "depth":
+        branch = {}
+        payload["metadata"] = branch
+        for _ in range(70):
+            branch["child"] = {}
+            branch = branch["child"]
+    else:
+        payload["metadata"] = [None] * 10_001
+
+    metadata = normalized_search_rows([payload])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+@pytest.mark.parametrize("field", ["currency", "name"])
+def test_search_validates_before_accessing_explosive_fields(field):
+    from avanza_mcp.records import normalized_search_rows
+
+    payload = {"orderbookId": "ob-requested", "currency": "EUR", "name": "Safe"}
+    payload[field] = _ExplosiveStringObject()
+    metadata = normalized_search_rows([payload])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_movers_validates_before_accessing_explosive_currency():
+    from avanza_mcp.records import movers_rows_from_payload
+
+    metadata = movers_rows_from_payload([{
+        "orderbookId": "ob-requested",
+        "currency": _ExplosiveStringObject(),
+    }])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_index_validates_before_accessing_explosive_name():
+    from avanza_mcp.records import index_constituent_row
+
+    metadata = index_constituent_row({
+        "orderbookId": "ob-requested",
+        "currency": "EUR",
+        "name": _ExplosiveStringObject(),
+    })
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+@pytest.mark.parametrize("adapter", ["search_dict", "search_list", "movers_list", "index_dict"])
+def test_currency_record_adapters_reject_container_subclasses_without_access(adapter):
+    from avanza_mcp.records import index_constituent_row, movers_rows_from_payload, normalized_search_rows
+
+    if adapter == "search_dict":
+        metadata = normalized_search_rows([_ExplosiveDict(currency="EUR")])[0]
+    elif adapter == "search_list":
+        metadata = normalized_search_rows(_ExplosiveList([{"currency": "EUR"}]))[0]
+    elif adapter == "movers_list":
+        metadata = movers_rows_from_payload(_ExplosiveList([{"currency": "EUR"}]))[0]
+    else:
+        metadata = index_constituent_row(_ExplosiveDict(currency="EUR"))
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_stoploss_market_quote_validates_before_explosive_currency_and_demotes_cache(monkeypatch):
+    from avanza_mcp.market_data import broker_verified_currency_metadata
+    from avanza_mcp.records import stoploss_instrument_metadata
+
+    verified = {
+        "orderbook_id": "ob-requested",
+        **broker_verified_currency_metadata(
+            currency="EUR",
+            source="MARKET_GUIDE_LISTING_CURRENCY",
+            orderbook_id="ob-requested",
+            raw_payload={"orderbookId": "ob-requested", "listing": {"currency": "EUR"}},
+            observed_orderbook_ids=["ob-requested"],
+            currency_path=("listing",),
+        ),
+    }
+
+    class FakeAvanza:
+        def get_market_data(self, _orderbook_id):
+            return {"orderbookId": "ob-requested", "quote": {"currency": _ExplosiveStringObject()}}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    metadata = stoploss_instrument_metadata(FakeAvanza(), "ob-requested", base=verified)
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_huge_integer_orderbook_id_fails_before_decimal_conversion():
+    from avanza_mcp.records import normalized_search_rows
+
+    metadata = normalized_search_rows([{
+        "orderbookId": 10 ** 10_000,
+        "currency": "EUR",
+    }])[0]
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+    assert metadata["currency_conflicts"][0]["reason"] == "INTEGER_MAGNITUDE_LIMIT"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _ExplosiveDict(stocks=[]),
+        _ExplosiveList([{"currency": "EUR"}]),
+    ],
+    ids=["bad-dict", "bad-list"],
+)
+def test_flattened_search_validates_envelope_before_access(payload):
+    from avanza_mcp.records import flattened_search_hits, normalized_search_rows
+
+    rows = normalized_search_rows(flattened_search_hits(payload), query="test")
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        rows[0],
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _ExplosiveDict(stocks=[]),
+        _ExplosiveList([{"currency": "EUR"}]),
+    ],
+    ids=["bad-dict", "bad-list"],
+)
+def test_mcp_search_propagates_invalid_envelope_without_access(payload):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, _query, _limit):
+            return payload
+
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    result = app.execute_mcp_tool("avanza_search_stock", {"query": "test", "limit": 5})
+
+    assert result["count"] == 1
+    _assert_conflicted_currency_rejected_by_live_guard(
+        result["results"][0],
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_invalid_search_envelope_demotes_cached_stoploss_currency(monkeypatch):
+    from avanza_mcp.market_data import broker_verified_currency_metadata
+    from avanza_mcp.records import stoploss_instrument_metadata
+
+    verified = {
+        "orderbook_id": "ob-requested",
+        **broker_verified_currency_metadata(
+            currency="EUR",
+            source="MARKET_GUIDE_LISTING_CURRENCY",
+            orderbook_id="ob-requested",
+            raw_payload={"orderbookId": "ob-requested", "listing": {"currency": "EUR"}},
+            observed_orderbook_ids=["ob-requested"],
+            currency_path=("listing",),
+        ),
+    }
+
+    class FakeAvanza:
+        def get_market_data(self, _orderbook_id):
+            return {}
+
+        def search_for_stock(self, _query, _limit):
+            return _ExplosiveDict(stocks=[])
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    metadata = stoploss_instrument_metadata(FakeAvanza(), "ob-requested", base=verified)
+
+    _assert_conflicted_currency_rejected_by_live_guard(
+        metadata,
+        "ob-requested",
+        expected_conflict="CURRENCY_EVIDENCE_NON_JSON_PAYLOAD",
+    )
+
+
+def test_search_currency_conflict_is_atomic_and_authoritative_guide_wins():
+    from avanza_mcp.market_data import broker_verified_currency_metadata, merged_orderbook_metadata
+
+    search = {
+        "orderbook_id": "ob-conflict",
+        **broker_verified_currency_metadata(
+            currency="USD",
+            source="AVANZA_SEARCH_EXPLICIT_CURRENCY",
+            orderbook_id="ob-conflict",
+            raw_payload={"id": "ob-conflict", "currency": "USD"},
+            observed_orderbook_ids=["ob-conflict"],
+        ),
+    }
+    guide = {
+        "orderbook_id": "ob-conflict",
+        **broker_verified_currency_metadata(
+            currency="EUR",
+            source="MARKET_GUIDE_LISTING_CURRENCY",
+            orderbook_id="ob-conflict",
+            raw_payload={"orderbookId": "ob-conflict", "listing": {"currency": "EUR"}},
+            observed_orderbook_ids=["ob-conflict"],
+        ),
+    }
+
+    merged = merged_orderbook_metadata(search, guide)
+
+    assert (
+        merged["currency"],
+        merged["currency_source"],
+        merged["currency_verified"],
+        merged["currency_orderbook_id"],
+    ) == ("EUR", "MARKET_GUIDE_LISTING_CURRENCY", True, "ob-conflict")
+    assert any(item["type"] == "CURRENCY_SOURCE_CONFLICT" for item in merged["currency_conflicts"])
+
+
+@pytest.mark.parametrize(
+    "metadata, expected_message",
+    [
+        (
+            {
+                "orderbook_id": "ob-invalid-live",
+                "currency": "NOT_A_CURRENCY",
+                "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+                "currency_verified": True,
+                "currency_orderbook_id": "ob-invalid-live",
+            },
+            "currency is unresolved",
+        ),
+        (
+            {
+                "orderbook_id": "ob-forged-bool",
+                "currency": "EUR",
+                "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+                "currency_verified": "false",
+                "currency_orderbook_id": "ob-forged-bool",
+            },
+            "EUR is unverified",
+        ),
+        (
+            {
+                "orderbook_id": "ob-mismatch",
+                "currency": "EUR",
+                "currency_source": "MARKET_GUIDE_LISTING_CURRENCY",
+                "currency_verified": True,
+                "currency_orderbook_id": "ob-other",
+            },
+            "EUR is unverified",
+        ),
+    ],
+)
+def test_shared_live_monetary_guard_rejects_adversarial_currency_provenance(metadata, expected_message):
+    from avanza_mcp.stoploss_rules import enforce_stoploss_currency_safety
+
+    preview = {
+        "order_book_id": metadata["orderbook_id"],
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY"},
+    }
+
+    with pytest.raises(ValueError, match=expected_message):
+        enforce_stoploss_currency_safety(preview, metadata, live=True)
+    assert preview["currency_verified"] is False
+    if metadata["currency"] == "NOT_A_CURRENCY":
+        assert preview["currency_orderbook_id"] is None
+        assert any(item["type"] == "INVALID_CURRENCY_CODE" for item in preview["currency_conflicts"])
+    else:
+        assert preview["currency_orderbook_id"] == metadata["currency_orderbook_id"]
+        expected_conflict = (
+            "INVALID_CURRENCY_VERIFIED_FLAG"
+            if metadata["currency_verified"] == "false"
+            else "CURRENCY_ORDERBOOK_ID_MISMATCH"
+        )
+        assert any(item["type"] == expected_conflict for item in preview["currency_conflicts"])
+
+
+def test_orderbook_metadata_ttl_only_advances_after_remote_attempt(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.search_calls = 0
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-ttl",
+                        "name": "TTL Corp (TTL)",
+                        "tickerSymbol": "TTL",
+                        "marketPlaceName": "NYSE",
+                        "countryCode": "US",
+                        "currency": "USD",
+                        "instrumentType": "STOCK",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    first = app.orderbook_metadata_for_quote("ob-ttl", allow_remote_lookup=True)
+    first_checked_at = app.orderbook_metadata_checked_at["ob-ttl"]
+    second = app.orderbook_metadata_for_quote("ob-ttl", allow_remote_lookup=True)
+
+    assert first["currency_source"] == "AVANZA_SEARCH_EXPLICIT_CURRENCY"
+    assert first["currency_verified"] is True
+    assert app.orderbook_metadata_refresh_succeeded["ob-ttl"] is True
+    assert second["currency"] == "USD"
+    assert app.avanza.search_calls == 1
+    assert app.orderbook_metadata_checked_at["ob-ttl"] == first_checked_at
+
+
+@pytest.mark.parametrize("batch_size", [20, 50])
+def test_cold_quote_batch_uses_guide_first_and_reuses_ttl_cache(monkeypatch, batch_size):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.quote_calls = 0
+            self.search_calls = 0
+
+        def get_market_data(self, order_book_id):
+            self.quote_calls += 1
+            return {
+                "name": f"Guide Corp {order_book_id}",
+                "quote": {"last": 100.0, "buy": 99.0, "sell": 101.0},
+            }
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {"stocks": []}
+
+    guide_calls = []
+
+    def fake_private_get(_avanza, path, options=None):
+        guide_calls.append((path, options))
+        orderbook_id = path.rsplit("/", 1)[-1]
+        return {
+            "orderbookId": orderbook_id,
+            "name": f"Guide Corp {orderbook_id}",
+            "tickerSymbol": f"GC{orderbook_id.rsplit('-', 1)[-1]}",
+            "instrumentType": "STOCK",
+            "listing": {
+                "currency": "USD",
+                "marketPlaceName": "NASDAQ",
+                "countryCode": "US",
+            },
+        }
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    ids = [f"ob-guide-{index}" for index in range(batch_size)]
+
+    first = app.orderbook_quotes_snapshot(ids, refresh=True)
+    first_checked_at = dict(app.orderbook_metadata_checked_at)
+    for orderbook_id in ids:
+        app.orderbook_metadata_checked_at[orderbook_id] = datetime.now() - timedelta(seconds=61)
+    second = app.orderbook_quotes_snapshot(ids, refresh=True)
+
+    assert len(first["quotes"]) == len(ids)
+    assert len(second["quotes"]) == len(ids)
+    assert app.avanza.quote_calls == len(ids)
+    assert len(guide_calls) == len(ids)
+    assert app.avanza.search_calls == 0
+    assert set(app.orderbook_metadata_checked_at) == set(first_checked_at)
+    assert all(app.orderbook_metadata_refresh_succeeded[orderbook_id] for orderbook_id in ids)
+    assert all(row["currency_source"] == "MARKET_GUIDE_LISTING_CURRENCY" for row in first["quotes"])
+    assert all(row["currency_verified"] is True for row in first["quotes"])
+
+
+def test_market_guide_failure_falls_back_to_search_and_caches_result(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.search_calls = 0
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-guide-fail",
+                        "name": "Fallback Corp",
+                        "tickerSymbol": "FALL",
+                        "marketPlaceName": "XETRA",
+                        "countryCode": "DE",
+                        "currency": "EUR",
+                        "instrumentType": "STOCK",
+                    }
+                ]
+            }
+
+    guide_calls = []
+
+    def failing_guide(_avanza, path, options=None):
+        guide_calls.append((path, options))
+        raise RuntimeError("guide unavailable")
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", failing_guide)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    first = app.orderbook_metadata_for_quote("ob-guide-fail", allow_remote_lookup=True)
+    second = app.orderbook_metadata_for_quote("ob-guide-fail", allow_remote_lookup=True)
+
+    assert first["currency"] == "EUR"
+    assert first["currency_source"] == "AVANZA_SEARCH_EXPLICIT_CURRENCY"
+    assert first["currency_verified"] is True
+    assert second["currency"] == "EUR"
+    assert len(guide_calls) == 1
+    assert app.avanza.search_calls == 1
+    assert app.orderbook_metadata_refresh_succeeded["ob-guide-fail"] is True
+
+
+def test_complete_top_level_guide_currency_skips_search(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.search_calls = 0
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {"stocks": []}
+
+    monkeypatch.setattr(
+        "avanza_mcp.avanza_ext.avanza_private_get",
+        lambda *_args, **_kwargs: {
+            "orderbookId": "ob-top-guide",
+            "name": "Top Level Guide Corp",
+            "tickerSymbol": "TLGC",
+            "currency": "EUR",
+            "marketPlaceName": "XETRA",
+            "countryCode": "DE",
+            "instrumentType": "STOCK",
+        },
+    )
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    metadata = app.orderbook_metadata_for_quote("ob-top-guide", allow_remote_lookup=True)
+
+    assert metadata["currency"] == "EUR"
+    assert metadata["currency_source"] == "MARKET_GUIDE_EXPLICIT_CURRENCY"
+    assert metadata["currency_verified"] is True
+    assert app.avanza.search_calls == 0
+    assert app.orderbook_metadata_refresh_succeeded["ob-top-guide"] is True
+
+
+def test_verified_tickerless_guide_falls_back_to_search_then_wins(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.search_calls = 0
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-tickerless-guide",
+                        "name": "Tickerless Guide Corp",
+                        "tickerSymbol": "TGC",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                        "currency": "USD",
+                        "instrumentType": "STOCK",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "avanza_mcp.avanza_ext.avanza_private_get",
+        lambda *_args, **_kwargs: {
+            "orderbookId": "ob-tickerless-guide",
+            "name": "Tickerless Guide Corp",
+            "instrumentType": "STOCK",
+            "listing": {
+                "currency": "EUR",
+                "marketPlaceName": "XETRA",
+                "countryCode": "DE",
+            },
+        },
+    )
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    metadata = app.orderbook_metadata_for_quote("ob-tickerless-guide", allow_remote_lookup=True)
+
+    assert app.avanza.search_calls == 1
+    assert metadata["ticker"] == "TGC"
+    assert metadata["currency"] == "EUR"
+    assert metadata["currency_source"] == "MARKET_GUIDE_LISTING_CURRENCY"
+    assert metadata["currency_verified"] is True
+    assert app.orderbook_metadata_refresh_succeeded["ob-tickerless-guide"] is True
+
+
+def test_failed_currency_enrichment_is_negative_cached_and_live_stop_rejects(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.search_calls = 0
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.0, "sell": 101.0}}
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {"stocks": []}
+
+    guide_calls = []
+
+    def failing_guide(_avanza, path, options=None):
+        guide_calls.append((path, options))
+        raise RuntimeError("guide unavailable")
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", failing_guide)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+
+    first = app.orderbook_metadata_for_quote("ob-unresolved-cache", allow_remote_lookup=True)
+    second = app.orderbook_metadata_for_quote("ob-unresolved-cache", allow_remote_lookup=True)
+
+    assert first["currency_source"] == "UNRESOLVED"
+    assert first["currency_verified"] is False
+    assert second["currency_source"] == "UNRESOLVED"
+    assert len(guide_calls) == 1
+    assert app.avanza.search_calls == 1
+    assert app.orderbook_metadata_refresh_succeeded["ob-unresolved-cache"] is False
+    app.orderbook_metadata_checked_at["ob-unresolved-cache"] = datetime.now() - timedelta(seconds=61)
+    third = app.orderbook_metadata_for_quote("ob-unresolved-cache", allow_remote_lookup=True)
+    assert third["currency_source"] == "UNRESOLVED"
+    assert len(guide_calls) == 2
+    assert app.avanza.search_calls == 2
+    preview = {
+        "account_id": "acc-1",
+        "order_book_id": "ob-unresolved-cache",
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY", "valid_days": 1},
+    }
+    with pytest.raises(ValueError, match="currency is unresolved"):
+        app.apply_stoploss_valid_days_safety(preview, live=True)
+
+
+def test_stale_verified_currency_is_revalidated_and_corrected_by_market_guide(monkeypatch):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def search_for_stock(self, _query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-stale",
+                        "name": "Stale Currency Corp",
+                        "tickerSymbol": "SCC",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                        "currency": "USD",
+                        "instrumentType": "STOCK",
+                    }
+                ]
+            }
+
+    guide_calls = []
+
+    def fake_private_get(_avanza, path, options=None):
+        guide_calls.append((path, options))
+        assert path == "/_api/market-guide/stock/ob-stale"
+        return {
+            "orderbookId": "ob-stale",
+            "name": "Stale Currency Corp",
+            "listing": {
+                "currency": "EUR",
+                "marketPlaceName": "XETRA",
+                "countryCode": "DE",
+            },
+        }
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.orderbook_metadata_by_id["ob-stale"] = {
+        "orderbook_id": "ob-stale",
+        "currency": "USD",
+        "currency_source": "MARKET_DATA_EXPLICIT_CURRENCY",
+        "currency_verified": True,
+        "currency_orderbook_id": "ob-stale",
+    }
+    app.orderbook_metadata_checked_at["ob-stale"] = datetime.now() - timedelta(days=1)
+
+    refreshed = app.orderbook_metadata_for_quote("ob-stale", allow_remote_lookup=True)
+
+    assert len(guide_calls) == 1
+    assert refreshed["currency"] == "EUR"
+    assert refreshed["currency_source"] == "MARKET_GUIDE_LISTING_CURRENCY"
+    assert refreshed["currency_verified"] is True
+
+
+def test_stale_verified_currency_demotes_after_failed_revalidation_and_second_cached_call_stays_blocked(monkeypatch):
+    from avanza_mcp.market_data import broker_verified_currency_metadata
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def __init__(self):
+            self.search_calls = 0
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {"stocks": []}
+
+        def get_market_data(self, _orderbook_id):
+            return {
+                "orderbookId": "ob-stale-failed",
+                "quote": {
+                    "last": 100.0,
+                    "buy": 99.0,
+                    "sell": 101.0,
+                    "currency": "EUR",
+                },
+            }
+
+    guide_calls = []
+
+    def failed_guide(_avanza, path, options=None):
+        guide_calls.append((path, options))
+        return {}
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", failed_guide)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    app.orderbook_metadata_by_id["ob-stale-failed"] = {
+        "orderbook_id": "ob-stale-failed",
+        "name": "Stale Failed Corp",
+        "ticker": "SFC",
+        "market": "XETRA",
+        "country_code": "DE",
+        "instrument_type": "STOCK",
+        **broker_verified_currency_metadata(
+            currency="EUR",
+            source="MARKET_GUIDE_LISTING_CURRENCY",
+            orderbook_id="ob-stale-failed",
+            raw_payload={"orderbookId": "ob-stale-failed", "listing": {"currency": "EUR"}},
+            observed_orderbook_ids=["ob-stale-failed"],
+        ),
+    }
+    app.orderbook_metadata_checked_at["ob-stale-failed"] = datetime.now() - timedelta(days=1)
+    app.orderbook_metadata_refresh_succeeded["ob-stale-failed"] = True
+
+    first = app.orderbook_metadata_for_quote("ob-stale-failed", allow_remote_lookup=True)
+    first_guide_calls = len(guide_calls)
+    first_search_calls = app.avanza.search_calls
+    second = app.orderbook_metadata_for_quote("ob-stale-failed", allow_remote_lookup=True)
+
+    assert first["currency"] == second["currency"] == "EUR"
+    assert first["currency_source"] == second["currency_source"] == "STALE_MARKET_GUIDE_LISTING_CURRENCY"
+    assert first["currency_verified"] is second["currency_verified"] is False
+    assert len(guide_calls) == first_guide_calls
+    assert app.avanza.search_calls == first_search_calls
+    preview = {
+        "order_book_id": "ob-stale-failed",
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY", "valid_days": 1},
+    }
+    with pytest.raises(ValueError, match="EUR is unverified.*MARKET_DATA_EXPLICIT_CURRENCY"):
+        app.apply_stoploss_valid_days_safety(preview, live=True)
+
+
+@pytest.mark.parametrize("source_tool", ["movers", "index"])
+def test_live_monetary_stop_rejects_heuristic_mover_or_index_cache(monkeypatch, source_tool):
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    class FakeAvanza:
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.0, "sell": 101.0}}
+
+    def fake_private_post(_avanza, path, body=None):
+        assert source_tool == "movers"
+        assert path == "/_api/market-stock-filter/stocks/gainers-losers"
+        return {
+            "gainers": [
+                {
+                    "orderBookId": "ob-heuristic-cache",
+                    "name": "Heuristic Corp",
+                    "countryCode": "US",
+                    "marketPlaceName": "NASDAQ",
+                    "lastPrice": 100.0,
+                    "oneDayChangePercent": 2.0,
+                    "totalValueTraded": 1_000_000,
+                }
+            ],
+            "losers": [],
+        }
+
+    def fake_private_get(_avanza, path, options=None):
+        if path == "/_api/market-stock-filter/stocks/filter-options":
+            return {"marketPlaces": ["NASDAQ"]}
+        if path == "/_api/market-index/19002/constituents":
+            assert source_tool == "index"
+            return [
+                {
+                    "orderBookId": "ob-heuristic-cache",
+                    "name": "Heuristic Corp",
+                    "countryCode": "US",
+                    "marketPlaceName": "NASDAQ",
+                    "tickerSymbol": "HEUR",
+                }
+            ]
+        raise AssertionError(path)
+
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_post", fake_private_post)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", fake_private_get)
+    app = AvanzaTradingTui()
+    app.avanza = FakeAvanza()
+    if source_tool == "movers":
+        rows = app.execute_mcp_tool("avanza_market_movers", {"countryCodes": ["US"]})["gainers"]
+    else:
+        rows = app.execute_mcp_tool("avanza_index_constituents", {"index_id": "19002"})["constituents"]
+
+    assert rows[0]["currency"] == "USD"
+    assert rows[0]["currency_source"] == "MARKET_COUNTRY_INFERENCE"
+    assert rows[0]["currency_verified"] is False
+    cached = app.orderbook_metadata_by_id["ob-heuristic-cache"]
+    assert cached["currency"] == "USD"
+    assert cached["currency_source"] == "MARKET_COUNTRY_INFERENCE"
+    assert cached["currency_verified"] is False
+    # Keep the live guard on the cached provenance; no unrelated enrichment is needed.
+    app.orderbook_metadata_checked_at["ob-heuristic-cache"] = datetime.now()
+    preview = {
+        "account_id": "acc-1",
+        "order_book_id": "ob-heuristic-cache",
+        "stop_loss_trigger": {"value_type": "MONETARY"},
+        "stop_loss_order_event": {"price_type": "MONETARY", "valid_days": 1},
+    }
+    with pytest.raises(ValueError, match="USD is unverified.*MARKET_COUNTRY_INFERENCE"):
+        app.apply_stoploss_valid_days_safety(preview, live=True)
 
 
 def test_mcp_orderbook_quotes_enriches_metadata_from_cache():
@@ -3175,6 +4832,17 @@ def test_mcp_fee_estimate_infers_currency_from_metadata_and_warns_if_unknown():
         },
     )
     assert swedish["resolved_currency"] == "SEK"
+    assert swedish["exact"] is False
+    assert swedish["basis"] == "MODELED_ESTIMATE"
+    assert swedish["provenance"] == {
+        "calculation": "LOCAL_CONFIGURATION_MODEL",
+        "courtage_basis": "CONSERVATIVE_PERCENTAGE_MINIMUM_ASSUMPTION",
+        "brokerage_class_source": "UNAVAILABLE",
+        "broker_fee_preview_used": False,
+        "broker_tariff_readback_used": False,
+        "currency_source": "KNOWN_ORDERBOOK_METADATA",
+        "currency_verified": False,
+    }
 
     us = app.execute_mcp_tool(
         "avanza_fee_estimate",
@@ -3215,7 +4883,51 @@ def test_mcp_fee_estimate_infers_currency_from_metadata_and_warns_if_unknown():
     )
     assert unknown["resolved_currency"] == "USD"
     assert unknown["estimated_fx_fee"] > 0
+    assert unknown["provenance"]["currency_source"] == "CONSERVATIVE_NON_SWEDISH_FALLBACK"
+    assert unknown["provenance"]["currency_verified"] is False
     assert any("conservative" in str(item).lower() for item in unknown.get("warnings", []))
+
+    caller_currency = app.execute_mcp_tool(
+        "avanza_fee_estimate",
+        {
+            "account_id": "acc-1",
+            "orderbook_id": "99999999",
+            "side": "buy",
+            "price": 100.0,
+            "quantity": 10,
+            "currency": "EUR",
+        },
+    )
+    assert caller_currency["provenance"]["currency_source"] == "CALLER_ARGUMENT"
+    assert caller_currency["provenance"]["currency_verified"] is False
+
+
+def test_mcp_fee_estimate_require_exact_fails_closed_and_is_declared_in_schema():
+    from avanza_mcp.mcp.catalog import MCP_TOOLS
+    from avanza_mcp.tui.app import AvanzaTradingTui
+
+    app = AvanzaTradingTui()
+    app.avanza = object()
+
+    with pytest.raises(ValueError, match="Exact fee unavailable"):
+        app.execute_mcp_tool(
+            "avanza_fee_estimate",
+            {
+                "account_id": "acc-1",
+                "orderbook_id": "4478",
+                "side": "buy",
+                "price": 100.0,
+                "quantity": 10,
+                "brokerage_class": "MINI",
+                "require_exact": True,
+            },
+        )
+
+    tool = next(item for item in MCP_TOOLS if item["name"] == "avanza_fee_estimate")
+    require_exact = tool["inputSchema"]["properties"]["require_exact"]
+    assert require_exact["type"] == "boolean"
+    assert require_exact["default"] is False
+    assert tool["inputSchema"]["additionalProperties"] is False
 
 
 def test_mcp_search_stock_parses_display_symbol_from_parenthesized_name():
@@ -6872,3 +8584,248 @@ def test_stoploss_set_dry_run_allows_explicit_order_valid_days(capsys):
     output = capsys.readouterr().out
 
     assert "Order valid days after trigger: 3" in output
+
+
+def _confirmed_monetary_stoploss_args(
+    command: str,
+    *,
+    order_book_id: str = "ob-currency",
+) -> argparse.Namespace:
+    values = [
+        "stoploss",
+        command,
+        "--account-id",
+        "acc-1",
+        "--order-book-id",
+        order_book_id,
+        "--trigger-type",
+        "less-or-equal",
+        "--trigger-value",
+        "95",
+        "--order-type",
+        "sell",
+        "--order-price",
+        "94",
+        "--volume",
+        "2",
+        "--confirm",
+    ]
+    if command == "edit":
+        values[2:2] = ["--stop-loss-id", "sl-old"]
+    return build_parser().parse_args(values)
+
+
+@pytest.mark.parametrize("command", ["set", "edit"])
+def test_console_live_monetary_stop_rejects_unresolved_or_heuristic_currency(monkeypatch, command):
+    class FakeAvanza:
+        def __init__(self):
+            self.placed = 0
+            self.deleted = 0
+
+        def get_market_data(self, _order_book_id):
+            return {
+                "marketPlaceName": "NASDAQ",
+                "countryCode": "US",
+                "quote": {"last": 100.0, "buy": 99.0, "sell": 101.0},
+            }
+
+        def search_for_stock(self, _query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-currency",
+                        "name": "Currency Test",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                    }
+                ]
+            }
+
+        def place_stop_loss_order(self, **_kwargs):
+            self.placed += 1
+
+        def delete_stop_loss_order(self, *_args):
+            self.deleted += 1
+
+    fake = FakeAvanza()
+    monkeypatch.setattr("avanza_mcp.cli.connect", lambda _args: fake)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+
+    args = _confirmed_monetary_stoploss_args(command)
+    with pytest.raises(ValueError, match="USD is unverified.*MARKET_COUNTRY_INFERENCE"):
+        args.func(args)
+    assert fake.placed == 0
+    assert fake.deleted == 0
+
+
+@pytest.mark.parametrize("command", ["set", "edit"])
+def test_console_live_monetary_stop_rejects_static_known_currency_without_remote_readback(monkeypatch, command):
+    class FakeAvanza:
+        def __init__(self):
+            self.placed = 0
+            self.deleted = 0
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.0, "sell": 101.0}}
+
+        def search_for_stock(self, _query, _limit):
+            return {"stocks": []}
+
+        def place_stop_loss_order(self, **_kwargs):
+            self.placed += 1
+
+        def delete_stop_loss_order(self, *_args):
+            self.deleted += 1
+
+    fake = FakeAvanza()
+    monkeypatch.setattr("avanza_mcp.cli.connect", lambda _args: fake)
+    monkeypatch.setattr("avanza_mcp.avanza_ext.avanza_private_get", lambda *_args, **_kwargs: {})
+
+    args = _confirmed_monetary_stoploss_args(command, order_book_id="5269")
+    with pytest.raises(ValueError, match="SEK is unverified.*KNOWN_ORDERBOOK_METADATA"):
+        args.func(args)
+    assert fake.placed == 0
+    assert fake.deleted == 0
+
+
+@pytest.mark.parametrize("command", ["set", "edit"])
+def test_console_live_monetary_stop_accepts_verified_eur(monkeypatch, command):
+    class FakeAvanza:
+        def __init__(self):
+            self.placed = 0
+            self.deleted = 0
+
+        def get_market_data(self, _order_book_id):
+            return {
+                "orderbookId": "ob-currency",
+                "quote": {
+                    "currency": "EUR",
+                    "last": 100.0,
+                    "buy": 99.0,
+                    "sell": 101.0,
+                }
+            }
+
+        def place_stop_loss_order(self, **_kwargs):
+            self.placed += 1
+            return {"stoplossOrderId": "sl-new"}
+
+        def delete_stop_loss_order(self, *_args):
+            self.deleted += 1
+            return {"status": "DELETED"}
+
+    fake = FakeAvanza()
+    monkeypatch.setattr("avanza_mcp.cli.connect", lambda _args: fake)
+
+    args = _confirmed_monetary_stoploss_args(command)
+    args.func(args)
+
+    assert fake.placed == 1
+    assert fake.deleted == (1 if command == "edit" else 0)
+
+
+def test_console_currency_enrichment_is_guide_first_and_skips_conflicting_search(monkeypatch):
+    class FakeAvanza:
+        def __init__(self):
+            self.placed = 0
+            self.search_calls = 0
+
+        def get_market_data(self, _order_book_id):
+            return {"quote": {"last": 100.0, "buy": 99.0, "sell": 101.0}}
+
+        def search_for_stock(self, _query, _limit):
+            self.search_calls += 1
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-currency",
+                        "name": "Conflicting Search Listing",
+                        "tickerSymbol": "CONFLICT",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                        "currency": "USD",
+                        "instrumentType": "STOCK",
+                    }
+                ]
+            }
+
+        def place_stop_loss_order(self, **_kwargs):
+            self.placed += 1
+            return {"stoplossOrderId": "sl-guide-first"}
+
+    fake = FakeAvanza()
+    monkeypatch.setattr("avanza_mcp.cli.connect", lambda _args: fake)
+    monkeypatch.setattr(
+        "avanza_mcp.avanza_ext.avanza_private_get",
+        lambda *_args, **_kwargs: {
+            "orderbookId": "ob-currency",
+            "name": "Guide Listing",
+            "tickerSymbol": "GUIDE",
+            "marketPlaceName": "XETRA",
+            "countryCode": "DE",
+            "instrumentType": "STOCK",
+            "listing": {
+                "currency": "EUR",
+                "marketPlaceName": "XETRA",
+                "countryCode": "DE",
+                "tickerSymbol": "GUIDE",
+            },
+        },
+    )
+
+    args = _confirmed_monetary_stoploss_args("set")
+    args.func(args)
+
+    assert fake.placed == 1
+    assert fake.search_calls == 0
+
+
+def test_console_live_monetary_stop_rejects_nested_guide_orderbook_mismatch(monkeypatch):
+    class FakeAvanza:
+        def __init__(self):
+            self.placed = 0
+
+        def get_market_data(self, _order_book_id):
+            return {
+                "orderbookId": "ob-currency",
+                "quote": {"currency": "USD", "last": 100.0, "buy": 99.0, "sell": 101.0},
+            }
+
+        def search_for_stock(self, _query, _limit):
+            return {
+                "stocks": [
+                    {
+                        "id": "ob-currency",
+                        "name": "Exact Search Listing",
+                        "tickerSymbol": "EXACT",
+                        "marketPlaceName": "NASDAQ",
+                        "countryCode": "US",
+                        "currency": "USD",
+                        "instrumentType": "STOCK",
+                    }
+                ]
+            }
+
+        def place_stop_loss_order(self, **_kwargs):
+            self.placed += 1
+
+    fake = FakeAvanza()
+    monkeypatch.setattr("avanza_mcp.cli.connect", lambda _args: fake)
+    monkeypatch.setattr(
+        "avanza_mcp.avanza_ext.avanza_private_get",
+        lambda *_args, **_kwargs: {
+            "orderbookId": "ob-currency",
+            "name": "Conflicted Guide",
+            "listing": {
+                "orderbookId": "ob-foreign",
+                "currency": "EUR",
+                "tickerSymbol": "WRONG",
+                "marketPlaceName": "XETRA",
+                "countryCode": "DE",
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="currency .* is unverified"):
+        _confirmed_monetary_stoploss_args("set").func(_confirmed_monetary_stoploss_args("set"))
+    assert fake.placed == 0

@@ -33,6 +33,7 @@ from avanza_mcp.external.tradingview_session import (
     tradingview_session_status,
 )
 from avanza_mcp.market_data import (
+    currency_metadata_evidence,
     infer_currency_from_metadata,
     order_stock_name,
     orderbook_quote_row,
@@ -2051,10 +2052,21 @@ class CoreBridgeMixin:
                     {
                         "orderbook_id": orderbook_id,
                         "name": row.get("name"),
+                        "ticker": row.get("ticker"),
+                        "market": row.get("market"),
                         "currency": row.get("currency"),
+                        "currency_source": row.get("currency_source"),
+                        "currency_verified": row.get("currency_verified"),
+                        "currency_orderbook_id": row.get("currency_orderbook_id"),
+                        "_currency_evidence_token": row.get("_currency_evidence_token"),
+                        "_currency_evidence_payload_sha256": row.get("_currency_evidence_payload_sha256"),
+                        "currency_conflicts": row.get("currency_conflicts"),
                         "country_code": row.get("country"),
+                        "instrument_type": row.get("instrument_type"),
                     },
                 )
+                row.pop("_currency_evidence_token", None)
+                row.pop("_currency_evidence_payload_sha256", None)
             return {
                 "countryCodes": country_codes,
                 "marketPlaces": market_places,
@@ -2105,7 +2117,16 @@ class CoreBridgeMixin:
                         "orderbook_id": orderbook_id,
                         "name": row.get("name"),
                         "ticker": row.get("ticker"),
+                        "market": row.get("market"),
+                        "currency": row.get("currency"),
+                        "currency_source": row.get("currency_source"),
+                        "currency_verified": row.get("currency_verified"),
+                        "currency_orderbook_id": row.get("currency_orderbook_id"),
+                        "_currency_evidence_token": row.get("_currency_evidence_token"),
+                        "_currency_evidence_payload_sha256": row.get("_currency_evidence_payload_sha256"),
+                        "currency_conflicts": row.get("currency_conflicts"),
                         "country_code": row.get("country_code"),
+                        "instrument_type": row.get("instrument_type"),
                     },
                 )
 
@@ -2154,6 +2175,10 @@ class CoreBridgeMixin:
                     enriched.append(merged)
                 rows = enriched
 
+            for row in rows:
+                row.pop("_currency_evidence_token", None)
+                row.pop("_currency_evidence_payload_sha256", None)
+
             return {
                 "index_id": index_id,
                 "index_name": index_name,
@@ -2182,9 +2207,16 @@ class CoreBridgeMixin:
             metadata = self.orderbook_metadata_for_quote(orderbook_id, quote_payload=None, allow_remote_lookup=True)
             warnings: list[str] = []
             currency_input = str(arguments.get("currency", "")).strip().upper()
+            metadata_currency, metadata_currency_source, metadata_currency_verified = currency_metadata_evidence(metadata)
+            currency_source = (
+                "CALLER_ARGUMENT"
+                if currency_input
+                else metadata_currency_source
+            )
+            currency_verified = False if currency_input else metadata_currency_verified
             resolved_currency = currency_input or infer_currency_from_metadata(
                 {
-                    "currency": metadata.get("currency"),
+                    "currency": metadata_currency,
                     "country_code": metadata.get("country_code") or metadata.get("country"),
                     "market": market or metadata.get("market"),
                 }
@@ -2195,12 +2227,18 @@ class CoreBridgeMixin:
                 fallback = infer_currency_from_metadata({"country_code": country_code, "market": market_lower})
                 if fallback:
                     resolved_currency = fallback
+                    currency_source = "MARKET_COUNTRY_INFERENCE"
+                    currency_verified = False
                     warnings.append(f"Currency missing; inferred {fallback} from market/country metadata.")
                 elif country_code == "SE" or "stockholm" in market_lower or "xsto" in market_lower:
                     resolved_currency = "SEK"
+                    currency_source = "SWEDISH_MARKET_FALLBACK"
+                    currency_verified = False
                     warnings.append("Currency missing; inferred SEK from Swedish market context.")
                 else:
                     resolved_currency = "USD"
+                    currency_source = "CONSERVATIVE_NON_SWEDISH_FALLBACK"
+                    currency_verified = False
                     warnings.append("Currency unknown for non-Swedish context; using conservative USD + FX estimate.")
             estimate = estimate_avanza_fee(
                 account_id=str(arguments["account_id"]),
@@ -2212,6 +2250,16 @@ class CoreBridgeMixin:
                 market=market or str(metadata.get("market", "") or ""),
                 brokerage_class=str(arguments.get("brokerage_class", "")),
             )
+            provenance = estimate.get("provenance")
+            if isinstance(provenance, dict):
+                provenance["currency_source"] = currency_source
+                provenance["currency_verified"] = currency_verified
+            if bool(arguments.get("require_exact", False)) and not bool(estimate.get("exact")):
+                raise ValueError(
+                    "Exact fee unavailable: avanza_fee_estimate uses a local model and did not read "
+                    "an exact broker fee preview or venue tariff. Retry without require_exact to receive "
+                    "the explicitly modeled estimate."
+                )
             if warnings:
                 estimate.setdefault("warnings", [])
                 if isinstance(estimate["warnings"], list):
@@ -2235,6 +2283,25 @@ class CoreBridgeMixin:
             trimmed: list[dict[str, Any]] = []
             for row in rows[: max(1, min(limit, 50))]:
                 orderbook_id = str(row.get("orderbook_id") or "").strip()
+                row_currency, row_source, row_verified = currency_metadata_evidence(
+                    {**row, "orderbook_id": orderbook_id}
+                )
+                if orderbook_id and not row_verified:
+                    metadata = self.orderbook_metadata_for_quote(
+                        orderbook_id,
+                        allow_remote_lookup=True,
+                    )
+                    row_currency, row_source, row_verified = currency_metadata_evidence(metadata)
+                    row["currency"] = row_currency
+                    row["currency_source"] = row_source
+                    row["currency_verified"] = row_verified
+                    row["currency_orderbook_id"] = metadata.get("currency_orderbook_id")
+                    row["_currency_evidence_token"] = metadata.get("_currency_evidence_token")
+                    row["_currency_evidence_payload_sha256"] = metadata.get("_currency_evidence_payload_sha256")
+                    row["currency_conflicts"] = metadata.get("currency_conflicts", [])
+                    row["market_place"] = row.get("market_place") or metadata.get("market")
+                    row["country"] = row.get("country") or metadata.get("country_code") or metadata.get("country")
+                    row["instrument_type"] = row.get("instrument_type") or metadata.get("instrument_type")
                 if orderbook_id:
                     self._cache_orderbook_metadata(
                         orderbook_id,
@@ -2245,6 +2312,12 @@ class CoreBridgeMixin:
                             "display_symbol": row.get("display_symbol"),
                             "market": row.get("market_place"),
                             "currency": row.get("currency"),
+                            "currency_source": row.get("currency_source"),
+                            "currency_verified": row.get("currency_verified"),
+                            "currency_orderbook_id": row.get("currency_orderbook_id"),
+                            "_currency_evidence_token": row.get("_currency_evidence_token"),
+                            "_currency_evidence_payload_sha256": row.get("_currency_evidence_payload_sha256"),
+                            "currency_conflicts": row.get("currency_conflicts"),
                             "country_code": row.get("country"),
                             "instrument_type": row.get("instrument_type"),
                         },
@@ -2259,6 +2332,10 @@ class CoreBridgeMixin:
                         "market_place": row.get("market_place"),
                         "country": row.get("country"),
                         "currency": row.get("currency"),
+                        "currency_source": row.get("currency_source"),
+                        "currency_verified": row.get("currency_verified"),
+                        "currency_orderbook_id": row.get("currency_orderbook_id"),
+                        "currency_conflicts": row.get("currency_conflicts"),
                         "instrument_type": row.get("instrument_type"),
                         "tradeable": row.get("tradeable"),
                         "buyable": row.get("buyable"),

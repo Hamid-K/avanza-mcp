@@ -3,6 +3,18 @@
 All commands below may be run with `uv run` when using the `uv` workflow.
 Example: `uv run python avanza_cli.py tui`.
 
+## avanza-api Pin
+
+The runtime pins `avanza-api` to reviewed upstream commit `16b6e260`
+(reporting package version 16.2.0), replacing the former `>=16.1,<17` range.
+The required part corrects regular-order placement and cancellation to
+`/_api/trading/order-entry/order/new` and
+`/_api/trading/order-entry/order/delete`. The same upstream commit also
+adds insider-transactions support and changes `get_insights_report` to accept
+multiple account IDs through POST with a revised response model. This
+repository currently calls neither collateral API; re-audit those changes
+before adopting either surface.
+
 ## Agent Boundary
 
 - The active **developer agent**, regardless of provider, is code-focused.
@@ -232,7 +244,7 @@ uv run --project /ABSOLUTE/PATH/TO/avanza-mcp \
 python avanza_cli.py mcp
 ```
 
-The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, paper-trading, and stock-search tools. MCP starts read-only. To allow live order or stop-loss placement/deletion, enable the TUI `Live R/W` tick box and require the MCP tool call to include `confirm: true`. Dry-run previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
+The MCP proxy exposes account, portfolio, regular buy/sell order, stop-loss, paper-trading, and stock-search tools. MCP starts read-only. To allow live order or stop-loss placement/deletion, enable the TUI `Live R/W` tick box and require the MCP tool call to include `confirm: true`. Monetary stop-losses require an explicit broker-derived currency with `currency_verified=true`; market/country inference remains review-only. Dry-run previews do not require R/W mode. MCP tool activity is logged in the lower-right TUI console.
 
 Multi-session MCP behavior:
 - `avanza_sessions` lists loaded tenant sessions.
@@ -307,7 +319,7 @@ Multi-session MCP behavior:
 | `avanza_orderbook_quotes` | Fetch arbitrary quote snapshots for supplied orderbook IDs (supports 5s polling loops for 20-50 symbols). |
 | `avanza_market_movers` | Fetch Avanza market movers (gainers/losers) with optional country/market/turnover filters. |
 | `avanza_index_constituents` | Fetch index constituents (default OMXS30) with optional quote/spread enrichment for building a liquid scalp universe. |
-| `avanza_fee_estimate` | Estimate courtage/FX costs and break-even move for a planned trade (conservative assumptions when exact class data is unavailable). |
+| `avanza_fee_estimate` | Estimate courtage/FX costs and break-even move, with explicit `exact=false`, modeled basis/provenance, and optional `require_exact=true` fail-closed behavior while no broker tariff preview is available. |
 | `avanza_search_stock` | Search Avanza stock/order book data by name, ticker, or ISIN. |
 | `avanza_paper_stoploss_set` | Create a local paper stop-loss order. |
 | `avanza_paper_orders` | List local paper-trading orders and events for the selected account, or a supplied account_id. |

@@ -48,6 +48,7 @@ from avanza_mcp.rendering import (
 )
 from avanza_mcp.stoploss_rules import (
     enforce_live_stoploss_order_valid_days,
+    enforce_stoploss_currency_safety,
     max_valid_until_date,
     stoploss_order_valid_days_warnings,
 )
@@ -155,11 +156,18 @@ def cmd_stoploss_delete(args: argparse.Namespace) -> None:
 
 def cmd_stoploss_set(args: argparse.Namespace) -> None:
     trigger, order_event, request_preview = build_stop_loss_preview(vars(args))
+    known_metadata = dict(KNOWN_ORDERBOOK_METADATA.get(str(args.order_book_id), {}))
+    if known_metadata.get("currency"):
+        known_metadata["currency_source"] = "KNOWN_ORDERBOOK_METADATA"
+        known_metadata["currency_verified"] = False
     metadata = merged_orderbook_metadata(
         {"orderbook_id": args.order_book_id},
-        KNOWN_ORDERBOOK_METADATA.get(str(args.order_book_id), {}),
+        known_metadata,
     )
-    request_preview["warnings"] = stoploss_order_valid_days_warnings(order_event.valid_days, metadata)
+    request_preview["warnings"] = [
+        *enforce_stoploss_currency_safety(request_preview, metadata, live=False),
+        *stoploss_order_valid_days_warnings(order_event.valid_days, metadata),
+    ]
 
     if not args.confirm:
         render_stop_loss_request(
@@ -170,11 +178,10 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
 
     avanza = connect(args)
     live_metadata = stoploss_instrument_metadata(avanza, str(args.order_book_id), base=metadata)
-    request_preview["warnings"] = enforce_live_stoploss_order_valid_days(
-        order_event.valid_days,
-        live_metadata,
-        live=True,
-    )
+    request_preview["warnings"] = [
+        *enforce_stoploss_currency_safety(request_preview, live_metadata, live=True),
+        *enforce_live_stoploss_order_valid_days(order_event.valid_days, live_metadata, live=True),
+    ]
     result = avanza.place_stop_loss_order(
         parent_stop_loss_id=args.parent_stop_loss_id,
         account_id=args.account_id,
@@ -188,11 +195,18 @@ def cmd_stoploss_set(args: argparse.Namespace) -> None:
 def cmd_stoploss_edit(args: argparse.Namespace) -> None:
     trigger, order_event, request_preview = build_stop_loss_preview(vars(args))
     request_preview["stop_loss_id"] = args.stop_loss_id
+    known_metadata = dict(KNOWN_ORDERBOOK_METADATA.get(str(args.order_book_id), {}))
+    if known_metadata.get("currency"):
+        known_metadata["currency_source"] = "KNOWN_ORDERBOOK_METADATA"
+        known_metadata["currency_verified"] = False
     metadata = merged_orderbook_metadata(
         {"orderbook_id": args.order_book_id},
-        KNOWN_ORDERBOOK_METADATA.get(str(args.order_book_id), {}),
+        known_metadata,
     )
-    request_preview["warnings"] = stoploss_order_valid_days_warnings(order_event.valid_days, metadata)
+    request_preview["warnings"] = [
+        *enforce_stoploss_currency_safety(request_preview, metadata, live=False),
+        *stoploss_order_valid_days_warnings(order_event.valid_days, metadata),
+    ]
 
     if not args.confirm:
         render_message(
@@ -206,11 +220,10 @@ def cmd_stoploss_edit(args: argparse.Namespace) -> None:
 
     avanza = connect(args)
     live_metadata = stoploss_instrument_metadata(avanza, str(args.order_book_id), base=metadata)
-    request_preview["warnings"] = enforce_live_stoploss_order_valid_days(
-        order_event.valid_days,
-        live_metadata,
-        live=True,
-    )
+    request_preview["warnings"] = [
+        *enforce_stoploss_currency_safety(request_preview, live_metadata, live=True),
+        *enforce_live_stoploss_order_valid_days(order_event.valid_days, live_metadata, live=True),
+    ]
     delete_result = avanza.delete_stop_loss_order(args.account_id, args.stop_loss_id)
     place_result = avanza.place_stop_loss_order(
         parent_stop_loss_id=args.parent_stop_loss_id,

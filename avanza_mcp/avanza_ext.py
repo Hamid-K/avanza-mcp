@@ -35,6 +35,7 @@ def estimate_avanza_fee(
         courtage_rate = 0.0
         courtage_min = 99.0 if currency_norm == "SEK" else 9.99
         notes = ["Using conservative fixed-fee assumption for Fast brokerage class."]
+        courtage_basis = "CONSERVATIVE_FIXED_FEE_ASSUMPTION"
     else:
         if currency_norm == "SEK" and ("se" in market_norm or not market_norm):
             courtage_rate = DEFAULT_COURTAGE_RATE_SE
@@ -43,6 +44,7 @@ def estimate_avanza_fee(
             courtage_rate = DEFAULT_COURTAGE_RATE_US
             courtage_min = DEFAULT_COURTAGE_MIN_USD
         notes = ["Using conservative percentage+minimum estimate; exact fee depends on Avanza courtage class and market."]
+        courtage_basis = "CONSERVATIVE_PERCENTAGE_MINIMUM_ASSUMPTION"
 
     estimated_courtage = max(courtage_min, abs(notional) * courtage_rate)
     fx_fee = 0.0
@@ -66,6 +68,15 @@ def estimate_avanza_fee(
         "estimated_total_cost": estimated_total_cost,
         "estimated_round_trip_cost": round_trip_cost,
         "break_even_move_percent": break_even_move_percent,
+        "exact": False,
+        "basis": "MODELED_ESTIMATE",
+        "provenance": {
+            "calculation": "LOCAL_CONFIGURATION_MODEL",
+            "courtage_basis": courtage_basis,
+            "brokerage_class_source": "CALLER_ARGUMENT" if brokerage_norm else "UNAVAILABLE",
+            "broker_fee_preview_used": False,
+            "broker_tariff_readback_used": False,
+        },
         "notes": notes,
         "assumptions": {
             "courtage_rate": courtage_rate,

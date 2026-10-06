@@ -168,7 +168,7 @@ def render_message(title: str, lines: list[str]) -> None:
 def format_stop_loss_request(preview: dict[str, Any]) -> list[str]:
     trigger = preview["stop_loss_trigger"]
     order_event = preview["stop_loss_order_event"]
-    monetary_unit = str(preview.get("currency") or "SEK")
+    monetary_unit = str(preview.get("currency") or "UNKNOWN")
     lines = [
         f"Account: {preview['account_id']}",
         f"Order book: {preview['order_book_id']}",

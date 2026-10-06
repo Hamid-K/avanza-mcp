@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Pin avanza-api to the reviewed upstream order-entry route fix for regular
+  order placement and cancellation. Add a regression test for both paths;
+  live broker acceptance still requires native MCP dry-run and readback. This
+  replaces the prior `avanza-api>=16.1,<17` range with upstream commit
+  `16b6e260` (reporting version 16.2.0). That commit also adds insider
+  transactions and changes the insights-report request/model; this repository
+  does not currently call either collateral API.
+
+- Resolved stock currency from authoritative market-guide `listing` metadata,
+  including Euronext listings, and preserved `currency_source` plus
+  `currency_verified` across caches and previews. Monetary stops now share one
+  fail-closed guard across MCP, TUI, Web and console set/edit: unresolved or
+  heuristic-only units render explicitly and cannot reach live submission.
+  Metadata refresh timestamps advance only after a stale remote lookup attempt.
+  Cold and stale enrichment now checks a complete authoritative market-guide
+  record before search; failed enrichment retries after 60 seconds while
+  successful verified metadata retains the 30-minute refresh interval.
+
+- Made fee-estimate uncertainty machine-readable: results now report
+  `exact=false`, their modeled basis and provenance, and callers can set
+  `require_exact=true` to fail closed when no broker fee preview or venue
+  tariff readback is available. Existing numeric estimate fields remain
+  backward compatible.
+
 - Corrected frozen-holdings attribution currency and inventory horizons:
   require explicit native units, dated historical FX and history through the
   current inventory date; suppress incomplete benchmark figures. Added mocked

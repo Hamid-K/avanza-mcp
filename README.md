@@ -350,7 +350,7 @@ same proxy regardless of provider:
 python avanza_cli.py mcp
 ```
 
-The MCP proxy forwards tool calls to the authenticated TUI session through the localhost bridge. MCP starts read-only. Enable `Live R/W` in the TUI for live mutations; live stop-loss/order placement, edit, or deletion still requires MCP arguments to include `confirm: true`. MCP activity is shown in the lower-right log console.
+The MCP proxy forwards tool calls to the authenticated TUI session through the localhost bridge. MCP starts read-only. Enable `Live R/W` in the TUI for live mutations; live stop-loss/order placement, edit, or deletion still requires MCP arguments to include `confirm: true`. Monetary stop-losses also require broker-derived, verified instrument currency; market/country inference alone cannot authorize a live submission. MCP activity is shown in the lower-right log console.
 
 For multi-session setups:
 - use `avanza_sessions` to inspect loaded tenant sessions,
@@ -425,7 +425,7 @@ For multi-session setups:
 | `avanza_orderbook_quotes` | Fetch arbitrary quote snapshots for supplied orderbook IDs (supports 5s polling loops for 20-50 symbols). |
 | `avanza_market_movers` | Fetch Avanza market movers (gainers/losers) with optional country/market/turnover filters. |
 | `avanza_index_constituents` | Fetch index constituents (default OMXS30) with optional quote/spread enrichment for building a liquid scalp universe. |
-| `avanza_fee_estimate` | Estimate courtage/FX costs and break-even move for a planned trade (conservative assumptions when exact class data is unavailable). |
+| `avanza_fee_estimate` | Estimate courtage/FX costs and break-even move, with explicit `exact=false`, modeled basis/provenance, and optional `require_exact=true` fail-closed behavior while no broker tariff preview is available. |
 | `avanza_search_stock` | Search Avanza stock/order book data by name, ticker, or ISIN. |
 | `avanza_paper_stoploss_set` | Create a local paper stop-loss order. |
 | `avanza_paper_orders` | List local paper-trading orders and events for the selected account, or a supplied account_id. |
@@ -680,3 +680,10 @@ This project builds on the Python `avanza-api` library by fama93:
 
 - PyPI: [avanza-api](https://pypi.org/project/avanza-api/)
 - Source: [github.com/fhqvst/avanza](https://github.com/fhqvst/avanza)
+
+The dependency is pinned to reviewed upstream commit `16b6e260` (package
+version 16.2.0), replacing the previous `>=16.1,<17` range. The pin contains
+the regular-order `/order/new` and `/order/delete` route correction used here.
+It also adds an insider-transactions API and changes the insights-report
+request from one account ID to a POST body containing account IDs, together
+with its response model. Avanza-MCP currently invokes neither collateral API.
