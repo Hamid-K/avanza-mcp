@@ -3,4 +3,4 @@ fastapi>=0.139.0,<1
 rich>=13
 textual>=8.2.8,<9
 uvicorn>=0.30,<1
-websockets>=12
+websockets>=17.1
