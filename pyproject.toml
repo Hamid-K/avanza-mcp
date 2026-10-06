@@ -14,7 +14,7 @@ requires-python = ">=3.11"
 dependencies = [
   "avanza-api @ git+https://github.com/Qluxzz/avanza.git@16b6e260c9a389c0688b5862b75d5cd4dbd04b8f",
   "fastapi>=0.139.0,<1",
-  "rich>=13",
+  "rich>=15.0.0",
   "textual>=8.2.8,<9",
   "uvicorn>=0.30,<1",
   "websockets>=12",
